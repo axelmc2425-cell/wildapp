@@ -28,6 +28,9 @@ pub enum Response {
         warnings: Vec<String>,
     },
     Challenge { code: String },
+    /// Codes: bad-request, no-partner, bad-window, no-such-lock, bad-key, lock-active, the unlock
+    /// reasons, and `persist-failed` (daemon only: applied in memory but the state file could not
+    /// be written, so the change is lost on restart; retried every tick).
     Error { code: String, message: String },
 }
 

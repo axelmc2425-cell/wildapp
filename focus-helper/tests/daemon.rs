@@ -208,3 +208,33 @@ fn mutation_persists_immediately() {
     // and the new block is applied without waiting for a tick
     assert_eq!(p.hosts.len(), 1);
 }
+
+#[test]
+fn persist_failure_is_surfaced_and_retried() {
+    let dir = std::env::temp_dir().join(format!("focus-daemon-{}-pfail", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Parent "directory" is a file, so every save fails deterministically.
+    let blocker = dir.join("sub");
+    std::fs::write(&blocker, b"x").unwrap();
+    let path = blocker.join("state.json");
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    let line = json!({"type":"PushWindows","windows":[window("w", Lock::None, NOW - 10, NOW + 90_000)]}).to_string();
+    let out: Value = serde_json::from_str(&d.handle_line(&line, NOW, 0, [0; 16], &mut p)).unwrap();
+    assert_eq!(out["type"], "Error");
+    assert_eq!(out["code"], "persist-failed");
+    assert!(out["message"].as_str().unwrap().contains("lost on restart"));
+    // still enforced in memory
+    assert_eq!(p.hosts.last().unwrap().len(), 2);
+    d.tick(NOW + 1000, 1000, &mut p); // must not panic
+    let st = status(&mut d, &mut p, NOW + 1000, 1001);
+    assert!(st["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().starts_with("persist: ")));
+    // make it writable again: next tick (well under 30 s) saves and clears the warning
+    std::fs::remove_file(&blocker).unwrap();
+    std::fs::create_dir(&blocker).unwrap();
+    d.tick(NOW + 2000, 2000, &mut p);
+    assert_eq!(persist::load(&path).windows.len(), 1);
+    let st = status(&mut d, &mut p, NOW + 2000, 2001);
+    assert!(!st["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().starts_with("persist: ")));
+}

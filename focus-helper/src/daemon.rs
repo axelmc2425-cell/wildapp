@@ -34,6 +34,8 @@ pub struct Daemon {
     error_warnings: Vec<String>,
     /// High-water mark at the last save; `None` until the first tick anchors it.
     last_saved_ms: Option<i64>,
+    /// Set while the latest save failed; cleared by the next successful save.
+    persist_error: Option<String>,
 }
 
 impl Daemon {
@@ -49,6 +51,7 @@ impl Daemon {
             doh_warnings: Vec::new(),
             error_warnings: Vec::new(),
             last_saved_ms: None,
+            persist_error: None,
         }
     }
 
@@ -58,13 +61,28 @@ impl Daemon {
 
     /// DoH warnings followed by the latest platform errors.
     pub fn warnings(&self) -> Vec<String> {
-        self.doh_warnings.iter().chain(self.error_warnings.iter()).cloned().collect()
+        self.persist_error
+            .iter()
+            .map(|e| format!("persist: {e}"))
+            .chain(self.doh_warnings.iter().cloned())
+            .chain(self.error_warnings.iter().cloned())
+            .collect()
     }
 
-    fn save(&mut self) {
+    /// Returns the error text when the save failed (also remembered in `persist_error`).
+    fn save(&mut self) -> Option<String> {
         match persist::save(&self.state_path, &self.store) {
-            Ok(()) => self.last_saved_ms = Some(self.store.high_water_ms),
-            Err(e) => eprintln!("focus-helper: persist failed: {e}"),
+            Ok(()) => {
+                self.last_saved_ms = Some(self.store.high_water_ms);
+                self.persist_error = None;
+                None
+            }
+            Err(e) => {
+                eprintln!("focus-helper: persist failed: {e}");
+                let msg = e.to_string();
+                self.persist_error = Some(msg.clone());
+                Some(msg)
+            }
         }
     }
 
@@ -85,9 +103,15 @@ impl Daemon {
                         *warnings = self.warnings();
                     }
                 } else {
-                    self.save();
+                    let failed = self.save();
                     let now = self.clock.now(wall_ms, mono_ms);
                     self.apply(now, platform);
+                    if let (Some(e), false) = (failed, matches!(resp, Response::Error { .. })) {
+                        resp = Response::Error {
+                            code: "persist-failed".into(),
+                            message: format!("applied in memory but could not be saved: {e}; it will be lost on restart"),
+                        };
+                    }
                 }
                 resp
             }
@@ -104,9 +128,15 @@ impl Daemon {
             self.store.high_water_ms = self.clock.high_water_ms();
         }
         self.apply(now, platform);
+        if self.persist_error.is_some() {
+            self.save();
+            return;
+        }
         match self.last_saved_ms {
             None => self.last_saved_ms = Some(now),
-            Some(last) if now - last >= PERSIST_INTERVAL_MS => self.save(),
+            Some(last) if now - last >= PERSIST_INTERVAL_MS => {
+                self.save();
+            }
             Some(_) => {}
         }
     }
