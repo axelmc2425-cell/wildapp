@@ -138,3 +138,10 @@ fn pid_0_4_and_self_never_killed() {
     let r = enforce_once(&blocking(&["game.exe"]), &t, 9);
     assert_eq!(r.iter().map(|p| p.pid).collect::<Vec<_>>(), vec![10]);
 }
+
+#[test]
+fn unnamed_and_placeholder_never_killed() {
+    let t = FakeTable::new(&[(100, ""), (101, "   "), (102, "<no name> Process 5"), (103, "<unknown>")]);
+    assert!(enforce_once(&frozen(&[]), &t, 1).is_empty());
+    assert!(t.killed.borrow().is_empty());
+}

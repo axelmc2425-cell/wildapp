@@ -26,16 +26,25 @@ fn any_window_active(d: &Decision) -> bool {
     !d.block_sites.is_empty() || !d.block_apps.is_empty() || d.frozen || d.allow.is_some()
 }
 
+/// Empty, whitespace-only and placeholder names (sysinfo reports `<no name> ...` when a
+/// process name cannot be read) are never killed: we cannot tell what they are.
+pub fn is_killable_name(name: &str) -> bool {
+    let t = name.trim();
+    !t.is_empty() && !t.starts_with('<')
+}
+
 /// Terminates and returns every blocked process. Never touches `self_pid`, pid 0/4 or any
 /// CRITICAL_APPS entry; that guard is enforced here independently of `is_blocked_app`.
 pub fn enforce_once(d: &Decision, table: &dyn ProcessTable, self_pid: u32) -> Vec<Proc> {
-    let active = any_window_active(d);
-    if !active {
+    if !any_window_active(d) {
         return Vec::new();
     }
     let mut killed = Vec::new();
     for p in table.list() {
         if p.pid == 0 || p.pid == 4 || p.pid == self_pid {
+            continue;
+        }
+        if !is_killable_name(&p.name) {
             continue;
         }
         let n = normalize_app(&p.name);
