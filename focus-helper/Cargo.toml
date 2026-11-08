@@ -14,3 +14,4 @@ base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
