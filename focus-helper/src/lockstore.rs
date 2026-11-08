@@ -102,6 +102,8 @@ fn is_active(w: &Window, now_ms: i64) -> bool {
 
 impl LockStore {
     pub fn push(&mut self, incoming: Vec<Window>, now_ms: i64) -> Result<PushReport, PushError> {
+        // Never trust the caller's clock to go backwards.
+        let now_ms = now_ms.max(self.high_water_ms);
         // Validate everything first so a rejected push changes nothing.
         for w in &incoming {
             if !w.sites.iter().all(|s| good_item(s, true)) || !w.apps.iter().all(|a| good_item(a, false)) {
@@ -151,15 +153,17 @@ impl LockStore {
         report.replaced = self.windows.iter().filter(|w| !is_locking(w)).count();
         kept.extend(fresh);
         self.windows = kept;
-        self.high_water_ms = self.high_water_ms.max(now_ms);
+        self.high_water_ms = now_ms;
         Ok(report)
     }
 
     pub fn set_partner(&mut self, public_key_b64: &str, now_ms: i64) -> Result<(), PartnerError> {
+        let now_ms = now_ms.max(self.high_water_ms);
+        self.high_water_ms = now_ms;
         if unlock::parse_public_key(public_key_b64).is_none() {
             return Err(PartnerError::BadKey);
         }
-        if self.windows.iter().any(|w| is_locking(w) && is_active(w, now_ms)) {
+        if self.windows.iter().any(|w| is_locking(w) && w.ends > now_ms) {
             return Err(PartnerError::LockActive);
         }
         self.partner_key = Some(public_key_b64.to_string());
@@ -172,6 +176,8 @@ impl LockStore {
         now_ms: i64,
         nonce: [u8; 16],
     ) -> Result<String, ChallengeError> {
+        let now_ms = now_ms.max(self.high_water_ms);
+        self.high_water_ms = now_ms;
         let ok = self.windows.iter().any(|w| w.id == window_id && is_locking(w) && is_active(w, now_ms));
         if !ok {
             return Err(ChallengeError::NoSuchLock);
@@ -191,6 +197,7 @@ impl LockStore {
     /// Verifies a partner token against its open challenge and ends that window now.
     /// Returns the window id. Nothing is mutated on failure.
     pub fn submit_token(&mut self, token: &str, now_ms: i64) -> Result<String, UnlockError> {
+        let now_ms = now_ms.max(self.high_water_ms);
         let key = self.partner_key.clone();
         let parsed = unlock::parse_token(token)?;
         let idx = self.challenges.iter().position(|c| c.nonce == parsed.nonce);
@@ -216,7 +223,7 @@ impl LockStore {
             .ok_or(UnlockError::WrongLock)?;
         self.challenges[idx].used = true;
         w.ends = w.ends.min(now_ms);
-        self.high_water_ms = self.high_water_ms.max(now_ms);
+        self.high_water_ms = now_ms;
         Ok(window_id)
     }
 }

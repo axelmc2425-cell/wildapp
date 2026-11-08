@@ -215,9 +215,10 @@ fn challenge_only_for_active_lock() {
     assert_eq!(v, serde_json::json!({"n": "AAECAwQFBgcICQoLDA0ODw", "w": "l"}));
     assert_eq!(s.challenges.len(), 1);
     // stale challenges dropped on add
-    s.request_challenge("l", NOW + 2 * H - 1, [1; 16]).ok();
-    s.request_challenge("l", NOW + 59 * 60_000, [2; 16]).unwrap();
-    assert!(s.challenges.iter().all(|c| NOW + 59 * 60_000 - c.issued <= 3_600_000));
+    s.push(vec![win("long", Lock::Locked, NOW - H, NOW + 3 * H)], NOW).unwrap();
+    s.request_challenge("long", NOW + H + 1, [2; 16]).unwrap();
+    assert_eq!(s.challenges.len(), 1);
+    assert_eq!(s.challenges[0].window_id, "long");
 }
 
 fn setup_two_locks() -> (LockStore, SigningKey, String, String) {
@@ -317,4 +318,76 @@ fn store_roundtrips_through_serde() {
     s.request_challenge("l", NOW, [4; 16]).unwrap();
     let back: LockStore = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
     assert_eq!(back, s);
+}
+
+#[test]
+fn set_partner_blocked_by_future_locks() {
+    let (_, other) = {
+        let sk = SigningKey::from_bytes(&[5u8; 32].into()).unwrap();
+        let p = b64u_encode(sk.verifying_key().to_encoded_point(false).as_bytes());
+        (sk, p)
+    };
+    for lock in [Lock::Locked, Lock::Frozen] {
+        let (mut s, _) = with_partner();
+        let before = s.partner_key.clone();
+        s.push(vec![win("f", lock, NOW + 5 * 60_000, NOW + H)], NOW).unwrap();
+        assert_eq!(s.set_partner(&other, NOW), Err(PartnerError::LockActive), "{lock:?}");
+        assert_eq!(s.partner_key, before);
+    }
+    // ends == now is over: allowed
+    let (mut s, _) = with_partner();
+    s.windows.push(win("e", Lock::Locked, NOW - H, NOW));
+    assert!(s.set_partner(&other, NOW).is_ok());
+    // none windows never block
+    let (mut s, _) = with_partner();
+    s.push(vec![win("n", Lock::None, NOW + 1000, NOW + H)], NOW).unwrap();
+    assert!(s.set_partner(&other, NOW).is_ok());
+}
+
+#[test]
+fn store_never_goes_back_in_time() {
+    let (_, other) = {
+        let sk = SigningKey::from_bytes(&[5u8; 32].into()).unwrap();
+        (sk.clone(), b64u_encode(sk.verifying_key().to_encoded_point(false).as_bytes()))
+    };
+    // set_partner with an older now still sees the future lock
+    let (mut s, _) = with_partner();
+    s.push(vec![win("f", Lock::Locked, NOW + H, NOW + 2 * H)], NOW).unwrap();
+    s.push(vec![], NOW + 30 * 60_000).unwrap();
+    assert_eq!(s.high_water_ms, NOW + 30 * 60_000);
+    assert_eq!(s.set_partner(&other, NOW - 10 * H), Err(PartnerError::LockActive));
+
+    // a push with an earlier now does not resurrect a finished window
+    let mut s = LockStore::default();
+    s.push(vec![], NOW + H).unwrap();
+    s.push(vec![win("old", Lock::None, NOW - H, NOW + 30 * 60_000)], NOW).unwrap();
+    assert!(s.windows.is_empty());
+    assert_eq!(s.high_water_ms, NOW + H);
+
+    // request_challenge and set_partner advance the high-water mark
+    let (mut s, _) = with_partner();
+    s.push(vec![win("l", Lock::Locked, NOW - H, NOW + 3 * H)], NOW).unwrap();
+    s.request_challenge("l", NOW + H, [1; 16]).unwrap();
+    assert_eq!(s.high_water_ms, NOW + H);
+    assert_eq!(s.challenges[0].issued, NOW + H);
+    s.request_challenge("l", NOW, [2; 16]).unwrap();
+    assert_eq!(s.challenges[1].issued, NOW + H);
+    let mut s2 = LockStore::default();
+    s2.set_partner(&other, NOW + 5).unwrap();
+    assert_eq!(s2.high_water_ms, NOW + 5);
+}
+
+#[test]
+fn token_expiry_uses_high_water_time() {
+    let (mut s, sk, na, _) = setup_two_locks();
+    s.push(vec![], NOW + 20 * 60_000).unwrap();
+    let before = s.clone();
+    let t = token(&sk, &na, "a", NOW + 600_000);
+    // caller passes an old now, but high water is past exp
+    assert_eq!(s.submit_token(&t, NOW), Err(UnlockError::Expired));
+    assert_eq!(s, before);
+    // success ends the window at the high-water time, not the caller's older time
+    let t2 = token(&sk, &na, "a", NOW + 30 * 60_000);
+    assert_eq!(s.submit_token(&t2, NOW), Ok("a".to_string()));
+    assert_eq!(s.windows.iter().find(|w| w.id == "a").unwrap().ends, NOW + 20 * 60_000);
 }
