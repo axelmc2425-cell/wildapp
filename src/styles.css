@@ -131,3 +131,9 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .timer .phase { text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); font-size: 13px; }
 .timer .clock { font-size: 72px; font-weight: 300; font-variant-numeric: tabular-nums; margin: 6px 0 10px; }
 .timer .one { width: 100%; font-size: 17px; text-align: center; margin: 4px 0 12px; }
+
+/* Review overlay (Skill Tree) */
+.overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); display: flex; align-items: center; justify-content: center; z-index: 40; }
+.review { width: min(620px, 92vw); }
+.review .face { font-size: 26px; text-align: center; padding: 28px 12px; }
+.review .face.back { border-top: 1px dashed var(--border); color: var(--accent); }
