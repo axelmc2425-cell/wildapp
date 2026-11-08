@@ -1,13 +1,13 @@
 import { createDb } from './core/db.js';
 import { searchAll } from './core/search.js';
 import { listModules, getModule } from './shell/modules.js';
-import './shell/builtin.js';
 import './modules/secondbrain/index.js';
 import './modules/focus/index.js';
 import './modules/cooking/index.js';
 import './modules/money/index.js';
 import './modules/skills/index.js';
 import './modules/photos/index.js';
+import './modules/journal/index.js';
 import { applyTheme } from './shell/theme.js';
 import { createPalette } from './shell/palette.js';
 import { renderSettings } from './shell/settings.js';
