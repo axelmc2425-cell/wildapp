@@ -25,7 +25,8 @@ function b64uDecode(text) {
   const s = atob(b64);
   const out = new Uint8Array(s.length);
   for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
-  return out;
+  // Canonical only: atob ignores nonzero trailing bits, so re-encode and compare.
+  return b64uEncode(out) === text ? out : null;
 }
 
 export async function generatePartnerKeys() {
@@ -82,6 +83,10 @@ export async function verifyUnlock(publicKey, token, challenge, nowMs) {
   return { ok: true };
 }
 
-// Source of the functions the offline partner page inlines (see scripts/build-partner-page.js).
-export const PARTNER_PAGE_SOURCE = [b64uEncode, b64uDecode, generatePartnerKeys, signUnlock]
-  .map((f) => f.toString()).join('\n\n');
+// Self-contained source the offline partner page inlines (see scripts/build-partner-page.js).
+// Function.toString does not carry module constants, so they are emitted explicitly.
+export const PARTNER_PAGE_SOURCE = [
+  `const ALG = ${JSON.stringify(ALG)};`,
+  `const SIG = ${JSON.stringify(SIG)};`,
+  ...[b64uEncode, b64uDecode, generatePartnerKeys, signUnlock].map((f) => f.toString()),
+].join('\n\n');
