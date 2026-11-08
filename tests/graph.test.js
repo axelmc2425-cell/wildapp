@@ -66,3 +66,11 @@ test('single node is centered', () => {
   const m = layoutGraph([{ id: 7, title: 'x', tags: [] }], [], { width: 400, height: 300 });
   assert.deepEqual(m.get(7), { x: 200, y: 150 });
 });
+
+test('layout keeps points inside the margin option', () => {
+  const nodes = Array.from({ length: 12 }, (_, i) => ({ id: i + 1, title: 'n', tags: [] }));
+  const edges = nodes.slice(1).map(n => ({ from: 1, to: n.id }));
+  for (const p of layoutGraph(nodes, edges, { width: 600, height: 400, margin: 60 }).values()) {
+    assert.ok(p.x >= 60 && p.x <= 540 && p.y >= 60 && p.y <= 340, JSON.stringify(p));
+  }
+});

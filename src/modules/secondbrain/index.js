@@ -5,6 +5,7 @@ import { openDailyNote } from './daily.js';
 import { relatedNotes } from './resurface.js';
 import { renderPreview } from './preview.js';
 import { createAutosaver, wikiQuery, applyCompletion } from './editor.js';
+import { mountGraph } from './graph-view.js';
 
 function h(tag, props = {}, ...kids) {
   const el = document.createElement(tag);
@@ -51,9 +52,27 @@ function render(root, ctx) {
       h('button', { class: 'primary', onclick: () => newNote() }, '＋ New note'),
       h('button', { onclick: () => today() }, '📅 Today')),
     searchInput, tagSelect, listEl);
-  const tabs = h('div', { class: 'sb-tabs' });
+  const notesView = h('div', { class: 'sb' }, side, main);
+  const graphHost = h('div', { class: 'sg', hidden: true });
+  let graph = null;
+  const notesTab = h('button', { class: 'tab on', onclick: () => showTab('notes') }, 'Notes');
+  const graphTab = h('button', { class: 'tab', onclick: () => showTab('graph') }, 'Graph');
+  const tabs = h('div', { class: 'sb-tabs' }, notesTab, graphTab);
   root.innerHTML = '';
-  root.append(h('div', { class: 'sb' }, side, main));
+  root.append(h('div', { class: 'sb-wrap' }, tabs, notesView, graphHost));
+
+  async function showTab(which) {
+    const g = which === 'graph';
+    notesTab.classList.toggle('on', !g);
+    graphTab.classList.toggle('on', g);
+    notesView.hidden = g;
+    graphHost.hidden = !g;
+    if (g) {
+      await autosaver.flush();
+      if (graph) graph.dispose();
+      graph = mountGraph(graphHost, { db, onOpen: async (id) => { await showTab('notes'); await openNote(id); } });
+    }
+  }
 
   function banner(msg) {
     bannerEl.hidden = !msg;
@@ -263,6 +282,7 @@ function render(root, ctx) {
 
   return () => {
     alive = false;
+    if (graph) graph.dispose();
     autosaver.flush().finally(() => autosaver.dispose());
   };
 }

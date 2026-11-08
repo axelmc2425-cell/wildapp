@@ -17,14 +17,14 @@ export async function graphData(db, { tag } = {}) {
 }
 
 // Deterministic Fruchterman-Reingold layout; every point stays inside the box.
-export function layoutGraph(nodes, edges, { width, height, iterations = 200 }) {
+export function layoutGraph(nodes, edges, { width, height, iterations = 200, margin: wantedMargin = 20 }) {
   const out = new Map();
   if (!nodes.length) return out;
   if (nodes.length === 1) {
     out.set(nodes[0].id, { x: width / 2, y: height / 2 });
     return out;
   }
-  const margin = Math.min(20, width / 4, height / 4);
+  const margin = Math.min(wantedMargin, width / 4, height / 4);
   const pos = nodes.map((n, i) => {
     const a = (2 * Math.PI * i) / nodes.length;
     return { id: n.id, x: width / 2 + Math.cos(a) * width * 0.3, y: height / 2 + Math.sin(a) * height * 0.3, dx: 0, dy: 0 };

@@ -9,6 +9,7 @@
   --hover: rgba(139, 135, 255, 0.14); --code: #272a30;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--text); font: 15px/1.5 "Segoe UI", system-ui, sans-serif; }
 button, input, select, textarea { font: inherit; color: inherit; }
@@ -83,3 +84,17 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .md a.wikilink { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent); }
 .md a.wikilink.missing { color: var(--danger); border-bottom-style: dashed; border-bottom-color: var(--danger); }
 .md img { max-width: 100%; }
+
+/* Tabs and graph */
+.sb-wrap { display: flex; flex-direction: column; height: 100%; }
+.sb-wrap > .sb { flex: 1; min-height: 0; }
+.sb-wrap > [hidden] { display: none; }
+.sb-tabs { display: flex; gap: 4px; padding: 6px 10px 0; border-bottom: 1px solid var(--border); }
+.tab { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; padding: 6px 12px; }
+.tab.on { border-bottom-color: var(--accent); font-weight: 600; }
+.sg { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sg-bar { display: flex; gap: 12px; align-items: center; padding: 8px 12px; }
+.sg-bar select { padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
+.sg-wrap { flex: 1; min-height: 0; position: relative; }
+.sg-tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--border); padding: 2px 8px; border-radius: 6px; font-size: 12px; }
+.sg-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
