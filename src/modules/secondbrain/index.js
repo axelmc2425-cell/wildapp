@@ -6,6 +6,9 @@ import { relatedNotes } from './resurface.js';
 import { renderPreview } from './preview.js';
 import { createAutosaver, wikiQuery, applyCompletion } from './editor.js';
 import { mountGraph } from './graph-view.js';
+import { importNotes, exportNotes } from './importexport.js';
+import { entriesToFiles, textsToEntries, summarizeImport } from '../../core/filebridge.js';
+import { hasNative, invoke, pickFolder } from '../../shell/native.js';
 
 function h(tag, props = {}, ...kids) {
   const el = document.createElement(tag);
@@ -51,6 +54,9 @@ function render(root, ctx) {
     h('div', { class: 'row' },
       h('button', { class: 'primary', onclick: () => newNote() }, '＋ New note'),
       h('button', { onclick: () => today() }, '📅 Today')),
+    hasNative() ? h('div', { class: 'row' },
+      h('button', { onclick: () => importFolder() }, '⬇ Import folder…'),
+      h('button', { onclick: () => exportAll() }, '⬆ Export all…')) : null,
     searchInput, tagSelect, listEl);
   const notesView = h('div', { class: 'sb' }, side, main);
   const graphHost = h('div', { class: 'sg', hidden: true });
@@ -204,6 +210,34 @@ function render(root, ctx) {
     window.location.reload();
   }
 
+  async function importFolder() {
+    try {
+      const dir = await pickFolder('Choose a folder of Markdown (.md) files');
+      if (!dir) return;
+      const entries = await invoke('read_folder_md', { dir });
+      await autosaver.flush();
+      await invoke('backup_auto', { label: 'before-import' }); // a failure here stops the import
+      const result = await importNotes(db, entriesToFiles(entries));
+      await loadNotes();
+      banner(summarizeImport(result));
+    } catch (e) {
+      banner('Import stopped: ' + (e && e.message ? e.message : e));
+    }
+  }
+
+  async function exportAll() {
+    try {
+      const dir = await pickFolder('Choose a folder to export your notes into');
+      if (!dir) return;
+      await autosaver.flush();
+      const notes = await listNotes(db);
+      await invoke('write_files', { dir, files: textsToEntries(exportNotes(notes)) });
+      banner(`Exported ${notes.length} ${notes.length === 1 ? 'note' : 'notes'} to ${dir}`);
+    } catch (e) {
+      banner('Export stopped: ' + (e && e.message ? e.message : e));
+    }
+  }
+
   function showAc(q) {
     const needle = q.query.toLowerCase();
     ac.items = state.all.map(n => n.title).filter(t => t.toLowerCase().includes(needle)).slice(0, 6);
@@ -280,8 +314,16 @@ function render(root, ctx) {
     if (start) await openNote(start); else await openNote(-1);
   })();
 
+  let unlisten = null;
+  const ev = window.__TAURI__ && window.__TAURI__.event;
+  if (ev) {
+    ev.listen('notes-changed', async () => { if (alive) { await loadNotes(); await paintSide(); } })
+      .then(u => { unlisten = u; }).catch(() => {});
+  }
+
   return () => {
     alive = false;
+    if (unlisten) unlisten();
     if (graph) graph.dispose();
     autosaver.flush().finally(() => autosaver.dispose());
   };

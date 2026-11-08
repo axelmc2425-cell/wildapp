@@ -6,6 +6,7 @@ import './modules/secondbrain/index.js';
 import { applyTheme } from './shell/theme.js';
 import { createPalette } from './shell/palette.js';
 import { renderSettings } from './shell/settings.js';
+import './shell/settings-data.js';
 
 applyTheme();
 

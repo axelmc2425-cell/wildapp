@@ -68,14 +68,33 @@ const page = await context.newPage();
 const errors = [];
 page.on('pageerror', e => errors.push('pageerror: ' + e.message));
 page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
+import { mkdirSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
+const importDir = join(dir, 'to-import');
+mkdirSync(importDir);
+writeFileSync(join(importDir, 'From folder.md'), '---\ntitle: From folder\ntags: [imported]\n---\nHello from a file. See [[Welcome]].\r\n');
+writeFileSync(join(importDir, 'Welcome.md'), 'duplicate of an existing note');
+writeFileSync(join(importDir, 'broken.md'), Buffer.from([0xff, 0xfe, 0x80]));
+const exportDir = join(dir, 'exported');
+mkdirSync(exportDir);
+const calls = [];
+await page.exposeFunction('__calls', () => calls);
 await page.exposeFunction('__db', async (cmd, a) => {
+  calls.push(cmd);
+  if (cmd === 'data_dir') return dir;
+  if (cmd === 'backup_auto') return join(dir, 'auto.zip');
+  if (cmd === 'backup_create') return null;
+  if (cmd === 'read_folder_md') return readdirSync(a.dir).map(f => ({ path: f, bytes: [...readFileSync(join(a.dir, f))] }));
+  if (cmd === 'write_files') { for (const f of a.files) writeFileSync(join(exportDir, f.path), Buffer.from(f.bytes)); return null; }
   if (cmd === 'db_all') return db.all(a.sql, a.params);
   if (cmd === 'db_run') return db.run(a.sql, a.params);
   if (cmd === 'db_batch') return db.batch(a.stmts);
   throw new Error('unsupported command in harness: ' + cmd);
 });
 await page.addInitScript(() => {
-  window.__TAURI__ = { core: { invoke: (cmd, a) => window.__db(cmd, a) } };
+  window.__TAURI__ = {
+    core: { invoke: (cmd, a) => window.__db(cmd, a) },
+    dialog: { open: async (o) => (o && o.directory ? (window.__pickDir || null) : null), save: async () => '/tmp/backup.zip' },
+  };
 });
 
 const shot = async (name) => { await page.screenshot({ path: join(outDir, name + '.png') }); console.log('shot', name); };
@@ -83,7 +102,7 @@ await page.goto(url);
 await page.waitForSelector('#modlist .navitem');
 if (stepsFile) {
   const steps = await import(pathToFileURL(stepsFile).href);
-  await steps.default(page, shot, { db });
+  await steps.default(page, shot, { db, importDir, exportDir });
 } else {
   await shot('home');
   await page.goto(url + '#/settings');

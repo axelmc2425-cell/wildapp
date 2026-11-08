@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Quick note</title>
+  <link rel="stylesheet" href="../styles.css">
+  <style>
+    body { display: flex; flex-direction: column; padding: 10px; gap: 8px; }
+    textarea { flex: 1; resize: none; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font: 14px/1.5 "Segoe UI", sans-serif; }
+    .bar { display: flex; justify-content: space-between; align-items: center; }
+  </style>
+</head>
+<body>
+  <textarea id="q" placeholder="Jot something down…" autofocus></textarea>
+  <div class="bar"><span class="muted" id="msg"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> save · <kbd>Esc</kbd> close</span><button class="primary" id="save">Save</button></div>
+  <script type="module" src="quick.js"></script>
+</body>
+</html>
