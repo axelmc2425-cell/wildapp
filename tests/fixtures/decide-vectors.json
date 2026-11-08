@@ -24,6 +24,79 @@
     ]
   },
   {
+    "name": "invalid and empty probes",
+    "windows": [
+      {
+        "id": "a",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "block",
+        "sites": [
+          "reddit.com"
+        ],
+        "apps": [
+          "steam.exe"
+        ]
+      },
+      {
+        "id": "b",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "allow",
+        "sites": [
+          "y.com"
+        ],
+        "apps": []
+      }
+    ],
+    "now": 1500,
+    "decision": {
+      "blockSites": [
+        "reddit.com"
+      ],
+      "blockApps": [
+        "steam.exe"
+      ],
+      "allow": {
+        "sites": [
+          "y.com"
+        ],
+        "apps": []
+      },
+      "frozen": false,
+      "locks": []
+    },
+    "probes": [
+      {
+        "kind": "site",
+        "value": "",
+        "blocked": false
+      },
+      {
+        "kind": "site",
+        "value": ".",
+        "blocked": false
+      },
+      {
+        "kind": "site",
+        "value": "..",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "   ",
+        "blocked": false
+      }
+    ]
+  },
+  {
     "name": "active at starts",
     "windows": [
       {

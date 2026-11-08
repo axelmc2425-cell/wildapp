@@ -12,6 +12,9 @@ const app = (value) => ({ kind: 'app', value });
 const CASES = [
   { name: 'no windows', windows: [], now: 1500,
     probes: [site('reddit.com'), app('notepad.exe')] },
+  { name: 'invalid and empty probes',
+    windows: [w('a', { sites: ['reddit.com'], apps: ['steam.exe'] }), w('b', { mode: 'allow', sites: ['y.com'] })], now: 1500,
+    probes: [site(''), site('.'), site('..'), app(''), app('   ')] },
   { name: 'active at starts', windows: [w('a', { sites: ['reddit.com'], apps: ['steam.exe'] })], now: 1000,
     probes: [site('reddit.com'), site('example.com'), app('steam.exe'), app('notepad.exe')] },
   { name: 'inactive at ends', windows: [w('a', { sites: ['reddit.com'], apps: ['steam.exe'] })], now: 2000,
