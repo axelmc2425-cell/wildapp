@@ -15,7 +15,7 @@ test('migrate creates tables', async () => {
   const db = await fresh();
   await migrate(db);
   const names = (await db.all("SELECT name FROM sqlite_master WHERE type='table'")).map(r => r.name);
-  for (const t of ['notes', 'tags', 'links']) assert.ok(names.includes(t), t);
+  for (const t of ['notes', 'tags', 'links', 'settings', 'focus_sessions', 'pantry', 'recipes', 'scenarios', 'skills', 'practice', 'cards', 'albums', 'photos', 'journal']) assert.ok(names.includes(t), t);
 });
 
 test('migrate is idempotent when run twice', async () => {
@@ -23,7 +23,7 @@ test('migrate is idempotent when run twice', async () => {
   await migrate(db);
   await migrate(db);
   const [{ user_version }] = await db.all('PRAGMA user_version');
-  assert.equal(user_version, 2);
+  assert.equal(user_version, 8);
 });
 
 test('batch rolls back everything when one statement fails', async () => {
@@ -63,7 +63,7 @@ test('migrate upgrades a v1 database, folding non-ASCII titles', async () => {
   await db.run('PRAGMA user_version = 1');
   await migrate(db);
   const [{ user_version }] = await db.all('PRAGMA user_version');
-  assert.equal(user_version, 2);
+  assert.equal(user_version, 8);
   assert.equal((await db.all('SELECT title_key FROM notes'))[0].title_key, 'élan');
   await assert.rejects(db.run("INSERT INTO notes(title, title_key, body, created, updated) VALUES ('élan', 'élan', '', 1, 1)"));
 });
