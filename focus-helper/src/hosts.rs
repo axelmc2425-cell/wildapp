@@ -7,6 +7,14 @@ fn content(line: &str) -> &str {
     line.trim_end_matches(|c| c == '\n' || c == '\r')
 }
 
+/// Defence in depth: only plain host names are ever written.
+fn site_ok(d: &str) -> bool {
+    !d.is_empty()
+        && !d
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '#' | '/' | '\\'))
+}
+
 /// Remove any managed block, then append a fresh one when `sites` is non-empty.
 /// All other lines are kept byte-for-byte; the file's dominant line ending is used.
 pub fn render(existing: &str, sites: &[String]) -> String {
@@ -24,7 +32,11 @@ pub fn render(existing: &str, sites: &[String]) -> String {
             continue;
         }
         // Skip the block: through END if present, otherwise only the managed lines.
-        let end = (i + 1..lines.len()).find(|&j| content(lines[j]).trim() == END);
+        // The END search stops at the next BEGIN: a stray BEGIN must not swallow
+        // user lines up to a later, complete block.
+        let end = (i + 1..lines.len())
+            .take_while(|&j| content(lines[j]).trim() != BEGIN)
+            .find(|&j| content(lines[j]).trim() == END);
         i = match end {
             Some(j) => j + 1,
             None => {
@@ -37,13 +49,13 @@ pub fn render(existing: &str, sites: &[String]) -> String {
         };
     }
 
-    if !sites.is_empty() {
+    if sites.iter().any(|d| site_ok(d)) {
         if !out.is_empty() && !out.ends_with('\n') {
             out.push_str(eol);
         }
         out.push_str(BEGIN);
         out.push_str(eol);
-        for d in sites {
+        for d in sites.iter().filter(|d| site_ok(d)) {
             for prefix in ["", "www.", "m."] {
                 out.push_str(&format!("0.0.0.0 {prefix}{d}{eol}"));
             }
@@ -117,5 +129,28 @@ mod tests {
     fn missing_end_marker_does_not_eat_file() {
         let broken = "x\n# BEGIN MYBRAIN-FOCUS\n0.0.0.0 a.com\n0.0.0.0 www.a.com\nkeep me\n";
         assert_eq!(render(broken, &[]), "x\nkeep me\n");
+    }
+
+    #[test]
+    fn stray_begin_does_not_eat_lines_before_later_block() {
+        let f = "# BEGIN MYBRAIN-FOCUS\n0.0.0.0 old.com\nuser line\n# BEGIN MYBRAIN-FOCUS\n0.0.0.0 a.com\n# END MYBRAIN-FOCUS\ntail\n";
+        assert_eq!(render(f, &[]), "user line\ntail\n");
+    }
+
+    #[test]
+    fn crlf_block_removal_and_empty_sites() {
+        let base = "127.0.0.1 localhost\r\n";
+        let with = render(base, &s(&["a.com"]));
+        assert_eq!(render(&with, &[]), base);
+        assert_eq!(render(base, &[]), base);
+    }
+
+    #[test]
+    fn unsafe_sites_are_skipped() {
+        let bad = s(&["", "a b.com", "a\tb", "x#y", "x/y", "x\\y", "a\u{7}b", "ok.com"]);
+        let out = render("", &bad);
+        assert_eq!(out.matches("0.0.0.0 ok.com\n").count(), 1);
+        assert_eq!(out.matches("0.0.0.0 ").count(), 3);
+        assert_eq!(render("x\n", &s(&["a b"])), "x\n");
     }
 }
