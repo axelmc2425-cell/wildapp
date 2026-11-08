@@ -96,12 +96,25 @@ Nothing on the owner's PC can forge a token, because only the public key is stor
 - **Browser DNS:** set browser policies that disable encrypted DNS (DoH), since it bypasses the hosts file.
 - **VPNs and proxies:** block common VPN and proxy apps while a block is active, as friction.
 
+## Window model and first-build limits
+
+Added while planning. These refine the sections above.
+
+- **Windows, not rules, go to the helper.** The app expands sessions and schedules into concrete time windows (`id, starts, ends, lock, mode, sites, apps`) for the next 30 days and pushes them to the helper. The helper only compares windows to the clock, so locks and schedules keep working while the app is closed. The app re-pushes on every start and daily. A locked or frozen window already pushed cannot be removed or shortened except by a partner token; it may be extended within the maximum duration. A locked schedule is therefore enforced up to 30 days ahead and then needs a re-push.
+- **Locks need a partner.** The helper rejects `locked` and `frozen` windows until a partner public key is set, and rejects changing the partner key while any lock is active.
+- **Subdomains.** The hosts file cannot wildcard. The helper blocks the domain itself plus `www.` and `m.` for each listed domain. Other subdomains must be listed explicitly. (The engine's matching still treats subdomains as matches.)
+- **Site allow-lists.** Hosts-file blocking cannot do "block everything except". The engine supports allow-mode windows, and the helper enforces them for apps only in the first build. Site allow-lists need a DNS sinkhole or firewall layer and belong to sub-project 5.
+- **Clock.** The helper keeps a persisted high-water mark and a monotonic clock, and never lets time move backwards. Moving the clock forward across a reboot is not detectable offline and can end a lock early.
+- **Never-kill list.** Frozen and app blocking never terminate Windows-critical processes, the helper, or MyBrain (and its WebView2).
+- **Helper wins.** The helper's stored windows win over the app's database if they disagree.
+
 ## What this does not stop
 
 This is friction, not a guarantee. These all still work against it:
 
 - Encrypted DNS configured in ways the policies do not cover.
 - VPNs and proxies the block list does not know about.
+- Setting the system clock forward across a reboot.
 - Safe Mode, and a different admin account removing the service.
 - Booting from another operating system.
 
