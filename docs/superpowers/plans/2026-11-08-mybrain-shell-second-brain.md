@@ -151,7 +151,7 @@
 ### Task 8: Shell UI
 
 **Files:**
-- Create: `src/main.js`, `src/styles.css`, `src/shell/modules.js`, `src/shell/palette.js`, `src/shell/settings.js`, `src/shell/theme.js`, `tests/modules.test.js`; Modify: `src/index.html`
+- Create: `scripts/shot.mjs`, `src/main.js`, `src/styles.css`, `src/shell/modules.js`, `src/shell/palette.js`, `src/shell/settings.js`, `src/shell/theme.js`, `tests/modules.test.js`; Modify: `src/index.html`
 
 **Interfaces:**
 - Consumes: `createDb`, `migrate` (Task 2); `searchAll`, `registerSearchProvider` (Task 5).
@@ -162,7 +162,7 @@
 
 - [ ] **Step 1: Write `tests/modules.test.js`**: `listModules returns seven modules in order`; `only secondbrain is ready`; `registering a duplicate id throws`.
 - [ ] **Step 2: Run, verify FAIL. Step 3: Implement the registry; then the UI files.** **Step 4: Run, verify PASS.**
-- [ ] **Step 5: Screenshot check:** serve `src/` with a static server and capture it with the preinstalled Playwright Chromium at 1280×800 in both themes; confirm sidebar, palette and theme toggle render. Expected: no console errors.
+- [ ] **Step 5: Screenshot check:** write `scripts/shot.mjs` (`node scripts/shot.mjs <outDir> [--seed]`): serves `src/` statically, opens it in the preinstalled Playwright Chromium at 1280×800, and injects a `window.__TAURI__.core.invoke` stub that forwards `db_all`/`db_run`/`db_batch` to `openNodeDb` on a temp file (via `page.exposeFunction`), so the page runs on real SQL; `--seed` first inserts 8 linked, tagged notes with `createNote`/`saveNote`. Capture both themes; confirm sidebar, palette and theme toggle render. Expected: no console errors.
 - [ ] **Step 6: Commit** `feat: shell with sidebar, router, palette and theme`.
 
 ### Task 9: Second Brain screen (editor)
@@ -179,7 +179,7 @@
 
 - [ ] **Step 1: Write failing tests** for `renderPreview`: `<script>alert(1)</script>` output contains `&lt;script&gt;` and no `<script`; `[[Foo]]` with set `{"foo"}` has class `wikilink` and not `missing`; `[[Nope]]` has `missing`.
 - [ ] **Step 2: Run, verify FAIL. Step 3: Implement `preview.js`; vendor `marked`; build the screen.** **Step 4: Run, verify PASS.**
-- [ ] **Step 5: Screenshot check** with seeded notes (Node script seeding a temp db is not usable in the browser, so seed through the page's in-memory Node-compatible stub `?demo=1` that implements `Db` over arrays): editor, preview, backlinks and related panels visible. Expected: no console errors.
+- [ ] **Step 5: Screenshot check** with `node scripts/shot.mjs <outDir> --seed`: editor, preview, backlinks and related panels visible. Expected: no console errors.
 - [ ] **Step 6: Commit** `feat: second brain editor with autosave, backlinks and related notes`.
 
 ### Task 10: Graph view and tag filter UI
@@ -192,7 +192,7 @@
 - Produces: a "Graph" tab in the Second Brain screen drawing nodes and edges on a `<canvas>` (node radius grows with link count), tag dropdown calling `graphData({tag})`, click on a node opens that note, hover shows its title, "No notes yet" message on an empty database.
 
 - [ ] **Step 1: Implement** the canvas view using `layoutGraph` sized to the canvas, with hit-testing by distance to node centers.
-- [ ] **Step 2: Screenshot check** with the demo stub: 8 notes and a tag filter. Expected: all nodes visible, no console errors, empty-state text with zero notes.
+- [ ] **Step 2: Screenshot check** with `node scripts/shot.mjs <outDir> --seed`: 8 notes and a tag filter. Expected: all nodes visible, no console errors, empty-state text with zero notes.
 - [ ] **Step 3: Commit** `feat: interactive note graph`.
 
 ### Task 11: Native features (backup, folder import/export, quick capture)
