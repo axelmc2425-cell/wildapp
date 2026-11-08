@@ -1,0 +1,145 @@
+[
+  {
+    "name": "valid",
+    "publicKey": "BLrx4mo6SgoqPpGlGnWOHlveWKwzYdnC91SaidAFDofet9lUXhplvCcQ18vD-68E7dvVoKfpjBaaYW-QLy0da5U",
+    "token": "eyJuIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EdyIsInciOiJ3aW4tMSIsImV4cCI6MTcwMDAwMDYwMDAwMH0.UeI26iL5kFWtI_UCF1-9a6als2pKZNWVuMytO79qt1TIgDJSYFixPdpVrxvWlyAT80DAwS3ElCeeMdEb1Beoyg",
+    "challenge": {
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "windowId": "win-1",
+      "issued": 1699999999000,
+      "used": false
+    },
+    "now": 1700000000000,
+    "expect": {
+      "ok": true
+    }
+  },
+  {
+    "name": "bad-format garbage",
+    "publicKey": "BLrx4mo6SgoqPpGlGnWOHlveWKwzYdnC91SaidAFDofet9lUXhplvCcQ18vD-68E7dvVoKfpjBaaYW-QLy0da5U",
+    "token": "garbage",
+    "challenge": {
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "windowId": "win-1",
+      "issued": 1699999999000,
+      "used": false
+    },
+    "now": 1700000000000,
+    "expect": {
+      "ok": false,
+      "reason": "bad-format"
+    }
+  },
+  {
+    "name": "bad-signature other key",
+    "publicKey": "BLrx4mo6SgoqPpGlGnWOHlveWKwzYdnC91SaidAFDofet9lUXhplvCcQ18vD-68E7dvVoKfpjBaaYW-QLy0da5U",
+    "token": "eyJuIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EdyIsInciOiJ3aW4tMSIsImV4cCI6MTcwMDAwMDYwMDAwMH0.Drpy_RgKAf37WafO2IyaYuXRfZXkaA_cYi3UwzV9SajWQNOFzOgBqttSr5dLF1ymkhkNFrVq-Xum4054UM_4cQ",
+    "challenge": {
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "windowId": "win-1",
+      "issued": 1699999999000,
+      "used": false
+    },
+    "now": 1700000000000,
+    "expect": {
+      "ok": false,
+      "reason": "bad-signature"
+    }
+  },
+  {
+    "name": "bad-signature edited payload",
+    "publicKey": "BLrx4mo6SgoqPpGlGnWOHlveWKwzYdnC91SaidAFDofet9lUXhplvCcQ18vD-68E7dvVoKfpjBaaYW-QLy0da5U",
+    "token": "eyJuIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EdyIsInciOiJ3aW4tMSIsImV4cCI6OTk5OTk5OTk5OTk5OX0.XiIP7dwI9SVEBt32HpVnWwr9e5aOK6HVS6dcT2qUzzCuy7szMfKuBOi7U_aPewA95hXlUFJLTU6dauk27r65Qw",
+    "challenge": {
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "windowId": "win-1",
+      "issued": 1699999999000,
+      "used": false
+    },
+    "now": 1700000000000,
+    "expect": {
+      "ok": false,
+      "reason": "bad-signature"
+    }
+  },
+  {
+    "name": "wrong-challenge",
+    "publicKey": "BLrx4mo6SgoqPpGlGnWOHlveWKwzYdnC91SaidAFDofet9lUXhplvCcQ18vD-68E7dvVoKfpjBaaYW-QLy0da5U",
+    "token": "eyJuIjoiQkJFQ0F3UUZCZ2NJQ1FvTERBME9EdyIsInciOiJ3aW4tMSIsImV4cCI6MTcwMDAwMDYwMDAwMH0.4SeNIi40VXKSpTq1M109s-5lSaBsQ3eWdLr1rKiLbaAsPpYITTri1vpwgPhrf-wqL_ajySwJp9fkA897qU376w",
+    "challenge": {
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "windowId": "win-1",
+      "issued": 1699999999000,
+      "used": false
+    },
+    "now": 1700000000000,
+    "expect": {
+      "ok": false,
+      "reason": "wrong-challenge"
+    }
+  },
+  {
+    "name": "wrong-lock",
+    "publicKey": "BLrx4mo6SgoqPpGlGnWOHlveWKwzYdnC91SaidAFDofet9lUXhplvCcQ18vD-68E7dvVoKfpjBaaYW-QLy0da5U",
+    "token": "eyJuIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EdyIsInciOiJ3aW4tMiIsImV4cCI6MTcwMDAwMDYwMDAwMH0.5nEXJRtHpuVVb4biTnoebdBMAvXcvgH7X2qSAdwLhBfy9q6h5cQT1pNeM9DJWlTT9nFBl8atZwyXeUDBEv-uug",
+    "challenge": {
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "windowId": "win-1",
+      "issued": 1699999999000,
+      "used": false
+    },
+    "now": 1700000000000,
+    "expect": {
+      "ok": false,
+      "reason": "wrong-lock"
+    }
+  },
+  {
+    "name": "used",
+    "publicKey": "BLrx4mo6SgoqPpGlGnWOHlveWKwzYdnC91SaidAFDofet9lUXhplvCcQ18vD-68E7dvVoKfpjBaaYW-QLy0da5U",
+    "token": "eyJuIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EdyIsInciOiJ3aW4tMSIsImV4cCI6MTcwMDAwMDYwMDAwMH0.Glr4L5Fns0f3LT2mgzQ47ZaWeUY7lw1w0Wb5-_sK_TGFa849Za_CYAVtwFERW4URoU_Q1ShurjPby5LKs4BKYQ",
+    "challenge": {
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "windowId": "win-1",
+      "issued": 1699999999000,
+      "used": true
+    },
+    "now": 1700000000000,
+    "expect": {
+      "ok": false,
+      "reason": "used"
+    }
+  },
+  {
+    "name": "challenge-expired",
+    "publicKey": "BLrx4mo6SgoqPpGlGnWOHlveWKwzYdnC91SaidAFDofet9lUXhplvCcQ18vD-68E7dvVoKfpjBaaYW-QLy0da5U",
+    "token": "eyJuIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EdyIsInciOiJ3aW4tMSIsImV4cCI6MTcwMDAwMDYwMDAwMH0.LooUoZ6rZSUJ_vDLFHd_wHBkd7P6Yjt00GR7RJMDidPH2pU3tymg13FVixjnmVTqxlqACL9iBncYArz-hn9Q1w",
+    "challenge": {
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "windowId": "win-1",
+      "issued": 1699996399999,
+      "used": false
+    },
+    "now": 1700000000000,
+    "expect": {
+      "ok": false,
+      "reason": "challenge-expired"
+    }
+  },
+  {
+    "name": "expired",
+    "publicKey": "BLrx4mo6SgoqPpGlGnWOHlveWKwzYdnC91SaidAFDofet9lUXhplvCcQ18vD-68E7dvVoKfpjBaaYW-QLy0da5U",
+    "token": "eyJuIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EdyIsInciOiJ3aW4tMSIsImV4cCI6MTcwMDAwMDYwMDAwMH0.YocY56GiWpSqVRlKVlIQpOb0Csv5iQKq5yJ_XffZrIn-b6s_LMo-y86Ki0kxbM2slMGEe_c6bXQMvwy2pjiTiQ",
+    "challenge": {
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "windowId": "win-1",
+      "issued": 1699999999000,
+      "used": false
+    },
+    "now": 1700000600000,
+    "expect": {
+      "ok": false,
+      "reason": "expired"
+    }
+  }
+]
