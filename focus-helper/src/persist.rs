@@ -31,7 +31,16 @@ pub fn save(path: &Path, store: &LockStore) -> io::Result<()> {
     f.write_all(&json)?;
     f.sync_all()?;
     drop(f);
-    fs::rename(&tmp, path)
+    fs::rename(&tmp, path)?;
+    // Best effort: make the rename itself durable. Not possible on Windows.
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+        if let Ok(d) = File::open(dir) {
+            let _ = d.sync_all();
+        }
+    }
+    Ok(())
 }
 
 pub fn load(path: &Path) -> LockStore {

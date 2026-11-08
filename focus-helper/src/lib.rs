@@ -1,4 +1,5 @@
 pub mod clock;
+pub mod daemon;
 pub mod decide;
 pub mod enforce;
 pub mod hosts;

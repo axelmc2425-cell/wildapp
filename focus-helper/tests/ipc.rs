@@ -105,7 +105,7 @@ fn challenge_and_status() {
         o => panic!("{o:?}"),
     }
     match run(&mut s, &mut c, Request::GetStatus) {
-        Response::Status { decision, windows, partner_set, now_ms } => {
+        Response::Status { decision, windows, partner_set, now_ms, .. } => {
             assert_eq!(decision.block_sites, vec!["x.com".to_string()]);
             assert_eq!(windows.len(), 1);
             assert!(partner_set);

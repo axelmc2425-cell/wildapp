@@ -21,7 +21,12 @@ pub enum Request {
 #[serde(tag = "type")]
 pub enum Response {
     Ok,
-    Status { decision: Decision, windows: Vec<Window>, partner_set: bool, now_ms: i64 },
+    Status { decision: Decision, windows: Vec<Window>, partner_set: bool,
+        now_ms: i64,
+        /// Enforcement problems reported by the daemon (always present, possibly empty).
+        #[serde(default)]
+        warnings: Vec<String>,
+    },
     Challenge { code: String },
     Error { code: String, message: String },
 }
@@ -51,6 +56,7 @@ pub fn handle(
             windows: store.windows.clone(),
             partner_set: store.partner_key.is_some(),
             now_ms: now,
+            warnings: Vec::new(),
         },
         Request::RequestChallenge { window_id } => match store.request_challenge(&window_id, now, nonce) {
             Ok(code) => Response::Challenge { code },

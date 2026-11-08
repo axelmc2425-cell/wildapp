@@ -22,7 +22,7 @@ pub const VPN_APPS: &[&str] = &[
 
 /// A decision has an active block window when it blocks any site or app, is frozen, or has
 /// an allow-list. An entirely empty decision has none, so nothing (VPNs included) is killed.
-fn any_window_active(d: &Decision) -> bool {
+pub fn any_window_active(d: &Decision) -> bool {
     !d.block_sites.is_empty() || !d.block_apps.is_empty() || d.frozen || d.allow.is_some()
 }
 
