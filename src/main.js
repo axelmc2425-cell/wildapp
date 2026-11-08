@@ -11,6 +11,7 @@ import './modules/journal/index.js';
 import { applyTheme } from './shell/theme.js';
 import { createPalette } from './shell/palette.js';
 import { renderSettings } from './shell/settings.js';
+import { createRouteRunner } from './shell/router.js';
 import './shell/settings-data.js';
 
 applyTheme();
@@ -18,7 +19,7 @@ applyTheme();
 const content = document.getElementById('content');
 const modlist = document.getElementById('modlist');
 let db = null;
-let cleanup = null;
+const runner = createRouteRunner();
 
 function parseRoute() {
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
@@ -48,15 +49,23 @@ function paintSidebar(activeId) {
   document.getElementById('settingslink').classList.toggle('active', activeId === 'settings');
 }
 
-function route() {
-  if (typeof cleanup === 'function') { try { cleanup(); } catch { /* ignore */ } }
-  cleanup = null;
+async function route() {
   const { id } = parseRoute();
   paintSidebar(id);
-  if (id === 'settings') { renderSettings(content, ctx); return; }
-  const mod = getModule(id);
-  if (!mod) { content.textContent = 'Not found.'; return; }
-  cleanup = mod.render(content, ctx);
+  // Each screen gets its own container, so a slow render that finishes late can only write into a screen nobody sees.
+  const host = document.createElement('div');
+  host.style.height = '100%';
+  content.replaceChildren(host);
+  try {
+    await runner.run(async () => {
+      if (id === 'settings') { renderSettings(host, ctx); return undefined; }
+      const mod = getModule(id);
+      if (!mod) { host.textContent = 'Not found.'; return undefined; }
+      return mod.render(host, ctx);
+    });
+  } catch (e) {
+    host.textContent = 'Something went wrong opening this screen: ' + (e && e.message ? e.message : e);
+  }
 }
 
 async function boot() {

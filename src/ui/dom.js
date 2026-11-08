@@ -11,6 +11,16 @@ export function h(tag, props = {}, ...kids) {
   return el;
 }
 
+// Wraps an async click handler so a second click while it is still running is ignored.
+export function once(fn) {
+  let busy = false;
+  return async (...args) => {
+    if (busy) return undefined;
+    busy = true;
+    try { return await fn(...args); } finally { busy = false; }
+  };
+}
+
 export function clear(el) {
   el.innerHTML = '';
   return el;

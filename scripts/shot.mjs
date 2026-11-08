@@ -30,7 +30,7 @@ const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x');
   let p = u.pathname;
   if (p === '/__abs') {
-    try { const data = await readFile(u.searchParams.get('p')); res.writeHead(200, { 'content-type': 'image/png' }); res.end(data); }
+    try { const want = u.searchParams.get('p') || ''; if (!want.startsWith(tmpdir())) throw new Error('outside the harness temp folder'); const data = await readFile(want); res.writeHead(200, { 'content-type': 'image/png' }); res.end(data); }
     catch { res.writeHead(404); res.end('missing'); }
     return;
   }
@@ -41,7 +41,7 @@ const server = http.createServer(async (req, res) => {
     res.end(data);
   } catch { res.writeHead(404); res.end('not found'); }
 });
-await new Promise(r => server.listen(0, r));
+await new Promise(r => server.listen(0, '127.0.0.1', r)); // never expose the harness beyond this machine
 const url = `http://localhost:${server.address().port}/`;
 
 await mkdir(outDir, { recursive: true });

@@ -1,7 +1,7 @@
 import { registerModule } from '../../shell/modules.js';
 import { h } from '../../ui/dom.js';
 import { defaultScenario, simulate, compare, buyHouse, changeJob, partTime, addEvent } from './montecarlo.js';
-import { fanChart, formatMoney } from './chart.js';
+import { fanChart, formatMoney, mergeBands } from './chart.js';
 import { saveScenario, listScenarios, deleteScenario, moneySearch } from './repo.js';
 
 const FIELDS = [
@@ -27,6 +27,7 @@ async function render(root, ctx) {
   const state = { id: Number(ctx.route()[0]) || scenarios[0].id, compareId: 0 };
   if (!scenarios.some(s => s.id === state.id)) state.id = scenarios[0].id;
   let timer = null;
+  let pending = null; // the scenario whose edit is waiting to be saved
   const listEl = h('ul', { class: 'list' });
   const editEl = h('div', {});
   const resultEl = h('div', {});
@@ -41,13 +42,24 @@ async function render(root, ctx) {
 
   function schedule() {
     clearTimeout(timer);
-    timer = setTimeout(async () => { await persist(current()); paintResult(); }, 250);
+    pending = current();
+    timer = setTimeout(flush, 250);
+  }
+
+  // Saves the edited scenario now (also called before switching scenarios and when leaving the screen).
+  async function flush() {
+    clearTimeout(timer);
+    const s = pending;
+    pending = null;
+    if (!s) return;
+    await persist(s);
+    if (current() && current().id === s.id) paintResult();
   }
 
   function paintList() {
     listEl.innerHTML = '';
     for (const s of scenarios) {
-      listEl.append(h('li', { style: 'cursor:pointer;' + (s.id === state.id ? 'font-weight:600' : ''), onclick: () => { state.id = s.id; paintAll(); } },
+      listEl.append(h('li', { style: 'cursor:pointer;' + (s.id === state.id ? 'font-weight:600' : ''), onclick: async () => { await flush(); state.id = s.id; paintAll(); } },
         h('span', { class: 'grow' }, s.name), s.id === scenarios[0].id ? h('span', { class: 'pill' }, 'baseline') : null));
     }
   }
@@ -90,7 +102,7 @@ async function render(root, ctx) {
       h('div', { class: 'card' }, h('h3', {}, 'What if…'),
         h('p', { class: 'sub' }, isBase ? 'Tip: copy the baseline first, then add what-ifs to the copy so you can compare.' : 'Add changes to this scenario and compare it with your baseline.'),
         h('div', { class: 'row' },
-          h('button', { onclick: async () => { const copy = await saveScenario(db, { ...JSON.parse(JSON.stringify(s)), id: undefined, name: `${s.name} (what-if)` }); scenarios = await listScenarios(db); state.id = copy.id; state.compareId = scenarios[0].id; paintAll(); } }, '⧉ Copy this scenario'),
+          h('button', { onclick: async () => { await flush(); const copy = await saveScenario(db, { ...JSON.parse(JSON.stringify(s)), id: undefined, name: `${s.name} (what-if)` }); scenarios = await listScenarios(db); state.id = copy.id; state.compareId = scenarios[0].id; paintAll(); } }, '⧉ Copy this scenario'),
           h('button', { onclick: () => forms.replaceChildren(presetForm('Buy a house', [['Price ($)', 400000], ['Down payment ($)', 80000], ['Mortgage rate (%)', 6], ['Mortgage years', 30], ['Rent you stop paying ($/yr)', 18000]],
             (sc, v) => buyHouse(sc, { price: v[0], downPayment: v[1], rate: v[2], years: v[3], rentAvoided: v[4] }))) }, '🏠 Buy a house'),
           h('button', { onclick: () => forms.replaceChildren(presetForm('Change jobs', [['Starting in year', 2], ['Income change ($/yr)', 15000]],
@@ -111,12 +123,12 @@ async function render(root, ctx) {
     const other = state.compareId && state.compareId !== s.id ? scenarios.find(x => x.id === state.compareId) : null;
     const ro = other ? simulate(other, SIM) : null;
     const W = 520, H = 220, L = 58, B = 26;
-    const both = ro ? { ...r, p10: r.p10.map((v, i) => Math.min(v, ro.p10[i])), p90: r.p90.map((v, i) => Math.max(v, ro.p90[i])) } : r;
+    const both = mergeBands(r, ro); // shared scale, even when the horizons differ
     const chart = fanChart(both, { width: W - L - 8, height: H - B - 8 });
     // draw with the shared scale, so recompute r's band against the combined y range
     const lo = Math.min(0, ...both.p10), hi = Math.max(...both.p90, lo + 1);
     const yy = (v) => (H - B - 8) - ((v - lo) / (hi - lo)) * (H - B - 8);
-    const xx = (i) => (i / (r.years.length - 1)) * (W - L - 8);
+    const xx = (i) => (i / (both.years.length - 1)) * (W - L - 8);
     const path = (arr) => arr.map((v, i) => `${i ? 'L' : 'M'}${xx(i).toFixed(1)} ${yy(v).toFixed(1)}`).join(' ');
     const bandPath = `${path(r.p90)} ${r.p10.map((v, i) => [i, v]).reverse().map(([i, v]) => `L${xx(i).toFixed(1)} ${yy(v).toFixed(1)}`).join(' ')} Z`;
     const g = svg('g', { transform: `translate(${L},4)` },
@@ -145,7 +157,7 @@ async function render(root, ctx) {
           })())),
         svg('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', role: 'img', 'aria-label': 'Net worth fan chart' }, g),
         h('div', { class: 'muted', style: 'font-size:12px' }, 'Solid line: typical outcome. Shaded: likely range.' + (ro ? ` Dashed: ${other.name}.` : '')),
-        cmp ? h('p', {}, `Versus ${other.name}: ${cmp.medianFinalDelta >= 0 ? '+' : ''}${formatMoney(cmp.medianFinalDelta)} typical outcome, ${cmp.successDelta >= 0 ? '+' : ''}${Math.round(cmp.successDelta * 100)} points chance of the goal.`) : null),
+        cmp ? h('p', {}, `Versus ${other.name} (at year ${cmp.year}): ${cmp.medianFinalDelta >= 0 ? '+' : ''}${formatMoney(cmp.medianFinalDelta)} typical outcome, ${cmp.successDelta >= 0 ? '+' : ''}${Math.round(cmp.successDelta * 100)} points chance of the goal.`) : null),
       h('p', { class: 'muted', style: 'font-size:12px' }, `A simulation of ${r.trials} possible futures from the numbers you entered. It is a thinking tool, not financial advice.`));
   }
 
@@ -161,7 +173,7 @@ async function render(root, ctx) {
     h('div', { style: 'display:grid;grid-template-columns:220px minmax(0,1fr) minmax(0,1.1fr);gap:16px;align-items:start' },
       h('div', { class: 'card' }, h('h3', {}, 'Scenarios'), listEl), editEl, resultEl)));
   paintAll();
-  return () => clearTimeout(timer);
+  return () => { flush(); };
 }
 
 registerModule({ id: 'money', name: 'Money Sandbox', icon: '💰', ready: true, searchProvider: moneySearch, render });

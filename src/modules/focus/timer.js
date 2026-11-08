@@ -47,6 +47,11 @@ export function tick(state, now) {
   return { state: next(state), finished: { phase: state.phase, minutes: phaseMinutes(state.phase, state.settings) } };
 }
 
+// Apply new lengths. An idle timer picks them up for its current phase straight away.
+export function withSettings(state, settings) {
+  return { ...state, settings, remainingMs: state.status === 'idle' ? phaseMinutes(state.phase, settings) * MIN : state.remainingMs };
+}
+
 export function reset(state) {
   return idleState(state.phase, state.completedWork, state.settings);
 }

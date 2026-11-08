@@ -113,6 +113,7 @@ async function render(root, ctx) {
 
   // ---- review session
   async function startReview(skillId) {
+    if (state.review) return; // already reviewing: a second click must not stack another key handler
     const queue = await dueCards(db, today(), { skillId });
     if (!queue.length) return;
     state.review = { queue, i: 0, revealed: false, done: 0 };

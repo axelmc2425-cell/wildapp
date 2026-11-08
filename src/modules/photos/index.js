@@ -1,6 +1,7 @@
 import { registerModule } from '../../shell/modules.js';
 import { h } from '../../ui/dom.js';
 import { hasNative, invoke } from '../../shell/native.js';
+import { once } from '../../ui/dom.js';
 import { groupByMonth, onThisDay, suggestTrips, dayOf } from './timeline.js';
 import {
   addPhotos, listPhotos, getPhoto, setCaption, deletePhotoRow, createAlbum, listAlbums, renameAlbum, deleteAlbum, setAlbum, photosSearch,
@@ -102,7 +103,7 @@ async function render(root, ctx) {
     return h('div', {},
       trips.length ? h('div', { class: 'card' }, h('h3', {}, '✨ Looks like trips'),
         h('ul', { class: 'list' }, ...trips.map(t => h('li', {}, h('span', { class: 'grow' }, `${t.name} · ${t.photoIds.length} photos`),
-          h('button', { onclick: async () => { const a = await createAlbum(db, t.name); await setAlbum(db, t.photoIds, a.id); await load(); state.albumId = a.id; await paint(); } }, 'Make album'))))) : null,
+          h('button', { onclick: once(async () => { const a = await createAlbum(db, t.name); await setAlbum(db, t.photoIds, a.id); await load(); state.albumId = a.id; await paint(); }) }, 'Make album'))))) : null,
       h('div', { class: 'row', style: 'margin:12px 0' }, nameIn, h('button', { class: 'primary', onclick: add }, 'Create album')),
       cards.length ? h('div', { class: 'agrid' }, ...cards) : h('p', { class: 'muted' }, 'No albums yet.'));
   }

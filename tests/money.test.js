@@ -136,3 +136,34 @@ test('scenarios save, list, load, update and delete; search finds them by name',
   await deleteScenario(db, t.id);
   assert.equal(await getScenario(db, t.id), null);
 });
+
+import { mergeBands } from '../src/modules/money/chart.js';
+
+test('buyHouse never creates a loan shorter than one year', () => {
+  const s = buyHouse(calm(), { price: 100000, downPayment: 0, rate: 5, years: 0 });
+  assert.equal(s.debts[0].years, 1);
+});
+
+test('comparing scenarios with different horizons compares them at the common year', () => {
+  const long = simulate(calm({ horizonYears: 30 }), { trials: 20, seed: 1 });
+  const short = simulate(calm({ horizonYears: 10, liquid: 120000 }), { trials: 20, seed: 1 });
+  const c = compare(long, short);
+  assert.ok(Math.abs(c.medianFinalDelta - (short.median[10] - long.median[10])) < 1e-6);
+  assert.equal(c.year, 10);
+  const back = compare(short, long);
+  assert.ok(Math.abs(back.medianFinalDelta - (long.median[10] - short.median[10])) < 1e-6);
+});
+
+test('mergeBands covers the longer horizon and never produces NaN', () => {
+  const a = simulate(calm({ horizonYears: 30, volatility: 10 }), { trials: 50, seed: 1 });
+  const b = simulate(calm({ horizonYears: 10, volatility: 10 }), { trials: 50, seed: 1 });
+  for (const m of [mergeBands(a, b), mergeBands(b, a)]) {
+    assert.equal(m.years.length, 31);
+    assert.ok(m.p10.every(Number.isFinite) && m.p90.every(Number.isFinite));
+    assert.ok(m.p10.every((v, i) => v <= m.p90[i]));
+  }
+  assert.deepEqual(mergeBands(a, null).p10, a.p10);
+  assert.deepEqual(mergeBands(a, null).median, a.median);
+  assert.doesNotThrow(() => fanChart(mergeBands(a, null), { width: 300, height: 100 }));
+  assert.doesNotThrow(() => fanChart(mergeBands(a, b), { width: 300, height: 100 }));
+});

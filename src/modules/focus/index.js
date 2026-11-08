@@ -89,18 +89,18 @@ async function render(root, ctx) {
       settings[key] = v;
       i.value = String(v);
       await setSetting(db, SETTINGS_KEY, settings);
-      if (c.state().status !== 'running') c.setSettings({ ...settings });
+      c.setSettings({ ...settings }); // applies now if idle, otherwise after the current session
     });
     return h('label', { class: 'field' }, label, i);
   };
   cfg.append(mk('work', 'Focus (min)'), mk('short', 'Short break'), mk('long', 'Long break'), mk('longEvery', 'Long break every'));
 
   async function paintStats() {
-    const sessions = await listSessions(db, { since: Date.now() - 40 * 86400000 });
+    const sessions = await listSessions(db, { since: Date.now() - 400 * 86400000, limit: 5000 }); // long enough for streaks
     const now = Date.now();
     tilesEl.innerHTML = '';
     for (const [value, label] of [[todayMinutes(sessions, now) + ' min', 'Focused today'], [String(streak(sessions, now)), 'Day streak'],
-      [String(sessions.filter(s => s.kind === 'work' && s.completed).length), 'Sessions (40 days)']]) {
+      [String(sessions.filter(s => s.kind === 'work' && s.completed && s.started >= now - 40 * 86400000).length), 'Sessions (40 days)']]) {
       tilesEl.append(h('div', { class: 'tile' }, h('b', {}, value), h('span', {}, label)));
     }
     const days = lastDays(sessions, now, 7);

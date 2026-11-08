@@ -23,3 +23,11 @@ export function fanChart(result, { width, height }) {
   for (let i = 0; i <= H; i += step) xTicks.push({ year: i, x: x(i) });
   return { band: `${up} ${down} Z`, median: result.median.map((v, i) => (i ? 'L' : 'M') + pt(i, v)).join(' '), yTicks, xTicks, y };
 }
+
+// Combined 10th/90th percentile range of two results, over the longer horizon (for a shared chart scale).
+export function mergeBands(a, b) {
+  if (!b) return { years: a.years, p10: a.p10, p90: a.p90, median: a.median };
+  const longer = a.years.length >= b.years.length ? a : b;
+  const pick = (key, fn) => longer.years.map((_, i) => fn(...[a, b].filter(r => i < r.years.length).map(r => r[key][i])));
+  return { years: longer.years, p10: pick('p10', Math.min), p90: pick('p90', Math.max), median: longer.median };
+}

@@ -28,6 +28,7 @@ export function mortgagePayment(balance, ratePct, years) {
 }
 
 export function buyHouse(s, { price, downPayment, rate, years, appreciation = 3, closingPct = 3, upkeepPct = 1.2, rentAvoided = 0 }) {
+  years = Math.max(1, Math.round(years));
   const out = clone(s);
   out.liquid = s.liquid - downPayment - (price * closingPct) / 100;
   out.assets.push({ name: 'Home', value: price, growth: appreciation });
@@ -124,10 +125,13 @@ export function simulate(s, { trials = 1000, seed = 1 } = {}) {
   };
 }
 
+// Differences other - base. Scenarios with different horizons are compared at the last year both cover.
 export function compare(base, other) {
+  const year = Math.min(base.years.length, other.years.length) - 1;
   return {
+    year,
     successDelta: other.success - base.success,
     ruinDelta: other.ruin - base.ruin,
-    medianFinalDelta: other.median.at(-1) - base.median.at(-1),
+    medianFinalDelta: other.median[year] - base.median[year],
   };
 }

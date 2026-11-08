@@ -156,3 +156,27 @@ test('cookRecipe deducts pantry stock and cookingSearch finds recipes by title a
   assert.equal((await cookingSearch(db, 'FLOUR'))[0].title, 'Bread');
   assert.deepEqual(await cookingSearch(db, 'zzz'), []);
 });
+
+test('pantry matching works on whole words: salt is not unsalted, egg is not eggplant', () => {
+  const pantry = [{ id: 1, name: 'salt', qty: 500, unit: 'g' }, { id: 2, name: 'egg', qty: 6, unit: '' }];
+  const r = recipe('R', [{ qty: 250, unit: 'g', name: 'unsalted butter' }, { qty: 1, unit: '', name: 'eggplant' }]);
+  assert.deepEqual(matchRecipe(r, pantry, 2).missing, ['unsalted butter', 'eggplant']);
+  assert.deepEqual(deductPantry(r, pantry, 2), []);
+});
+
+test('pantry matching still links a short pantry name to a longer ingredient name and back', () => {
+  assert.equal(matchRecipe(recipe('R', [{ qty: 1, unit: 'cup', name: 'whole milk' }]), [{ name: 'milk', qty: 500, unit: 'ml' }], 2).coverage, 1);
+  assert.equal(matchRecipe(recipe('R', [{ qty: 1, unit: 'tbsp', name: 'oil' }]), [{ name: 'olive oil', qty: 500, unit: 'ml' }], 2).coverage, 1);
+});
+
+test('quantities written without a space are parsed: 500g flour, 1.5kg potatoes', () => {
+  assert.deepEqual(parseIngredientLine('500g flour'), { qty: 500, unit: 'g', name: 'flour' });
+  assert.deepEqual(parseIngredientLine('1.5kg potatoes'), { qty: 1.5, unit: 'kg', name: 'potatoes' });
+  assert.deepEqual(parseIngredientLine('2 eggs'), { qty: 2, unit: '', name: 'eggs' });
+});
+
+test('small scaled amounts do not round down to zero', () => {
+  const [i] = scaleIngredients([{ qty: 0.25, unit: 'tsp', name: 'saffron' }], 4, 1);
+  assert.ok(i.qty > 0, String(i.qty));
+  assert.equal(formatQty(0.004), '0.004');
+});

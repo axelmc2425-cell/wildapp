@@ -1,5 +1,5 @@
 import { registerModule } from '../../shell/modules.js';
-import { h } from '../../ui/dom.js';
+import { h, once } from '../../ui/dom.js';
 import { parseIngredientLine, formatQty, scaleIngredients, matchRecipe, rankRecipes, extractTimers, mealTotals, shoppingList } from './cooking.js';
 import { addTimer, remainingSeconds, expiredIds, markDone, removeTimer } from './timers.js';
 import {
@@ -32,6 +32,7 @@ function startTimer(label, minutes) {
     tick = setInterval(() => {
       for (const id of expiredIds(timers, Date.now())) { timers = markDone(timers, id); beep(); }
       notify();
+      if (!timers.some(t => !t.done) && tick) { clearInterval(tick); tick = null; } // nothing left to count down
     }, 500);
   }
   notify();
@@ -46,6 +47,7 @@ async function render(root, ctx) {
   const state = { tab: 'tonight', servings: 2, recipeId: Number(ctx.route()[0]) || null, editing: null, pantry: [], recipes: [], msg: '' };
   const main = h('div', {});
   const timersEl = h('div', { class: 'card' });
+  const timersList = h('ul', { class: 'list' });
   const tabs = h('div', { class: 'sb-tabs' });
   let alive = true;
 
@@ -67,18 +69,21 @@ async function render(root, ctx) {
     }
   }
 
+  // The form is built once; only the list is repainted on each tick so typing is never interrupted.
+  const timerLabel = h('input', { type: 'text', placeholder: 'Timer name', 'aria-label': 'Timer name', style: 'flex:1' });
+  const timerMins = h('input', { type: 'number', min: '0.5', step: '0.5', value: '10', style: 'width:70px', 'aria-label': 'Minutes' });
+  timersEl.append(h('h3', {}, '⏱ Kitchen timers'),
+    h('div', { class: 'row' }, timerLabel, timerMins, h('button', { onclick: () => startTimer(timerLabel.value.trim() || 'Timer', Number(timerMins.value) || 10) }, 'Start')),
+    timersList);
+
   function paintTimers() {
     if (!alive) return;
     const now = Date.now();
-    timersEl.innerHTML = '';
-    const label = h('input', { type: 'text', placeholder: 'Timer name', 'aria-label': 'Timer name', style: 'flex:1' });
-    const mins = h('input', { type: 'number', min: '0.5', step: '0.5', value: '10', style: 'width:70px', 'aria-label': 'Minutes' });
-    timersEl.append(h('h3', {}, '⏱ Kitchen timers'),
-      h('div', { class: 'row' }, label, mins, h('button', { onclick: () => startTimer(label.value.trim() || 'Timer', Number(mins.value) || 10) }, 'Start')),
-      h('ul', { class: 'list' }, ...(timers.length ? timers.map(t => h('li', {},
-        h('span', { class: 'grow' }, t.label),
-        h('b', { class: t.done ? 'err' : '' }, t.done ? 'Done!' : mmss(remainingSeconds(t, now))),
-        h('button', { title: 'Remove', onclick: () => { timers = removeTimer(timers, t.id); notify(); } }, '✕'))) : [h('li', { class: 'muted' }, 'No timers running')])));
+    timersList.innerHTML = '';
+    timersList.append(...(timers.length ? timers.map(t => h('li', {},
+      h('span', { class: 'grow' }, t.label),
+      h('b', { class: t.done ? 'err' : '' }, t.done ? 'Done!' : mmss(remainingSeconds(t, now))),
+      h('button', { title: 'Remove', 'aria-label': `Remove timer ${t.label}`, onclick: () => { timers = removeTimer(timers, t.id); notify(); } }, '✕'))) : [h('li', { class: 'muted' }, 'No timers running')]));
   }
 
   function tonightView() {
@@ -170,7 +175,7 @@ async function render(root, ctx) {
         h('ol', {}, ...r.steps.split('\n').filter(s => s.trim()).map(line => h('li', {}, line, ' ',
           ...extractTimers(line).map(t => h('button', { class: 'pill', onclick: () => startTimer(t.label, t.minutes) }, `⏱ ${t.minutes} min`)))))),
       h('div', { class: 'row' },
-        h('button', { class: 'primary', onclick: async () => { const n = await cookRecipe(db, r.id, state.servings); await load(); await go({ msg: n ? `Pantry updated (${n} items used).` : 'Nothing in your pantry matched.' }); } }, '🍳 I cooked this'),
+        h('button', { class: 'primary', onclick: once(async () => { const n = await cookRecipe(db, r.id, state.servings); await load(); await go({ msg: n ? `Pantry updated (${n} items used).` : 'Nothing in your pantry matched.' }); }) }, '🍳 I cooked this'),
         shop.length ? h('button', { onclick: async () => { try { await navigator.clipboard.writeText(shopText); state.msg = 'Shopping list copied.'; } catch { state.msg = 'Shopping list:\n' + shopText; } await paint(); } }, `🛒 Copy shopping list (${shop.length})`) : null),
       state.msg ? h('pre', { class: 'muted' }, state.msg) : null);
   }

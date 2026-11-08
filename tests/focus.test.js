@@ -173,3 +173,38 @@ test('a break finishing is not logged, and pausing then resuming does not log ea
   assert.equal((await listSessions(db)).length, 1);
   assert.equal(c.state().phase, 'work');
 });
+
+test('settings changed while a session is running or paused wait until the next phase', async () => {
+  const db = await fresh();
+  let now = 0;
+  const c = createController({ db, settings: DEFAULTS, now: () => now });
+  c.start('x');
+  now += 5 * MIN;
+  c.setSettings({ work: 50, short: 10, long: 30, longEvery: 4 });
+  assert.equal(c.remaining(), 20 * MIN); // the running session is untouched
+  now += 20 * MIN;
+  await c.tick();
+  assert.equal(c.state().phase, 'short');
+  assert.equal(c.remaining(), 10 * MIN); // new lengths apply to the next phase
+  c.skip();
+  assert.equal(c.remaining(), 50 * MIN);
+});
+
+test('a session that could not be saved is kept and logged on a later tick', async () => {
+  const db = await fresh();
+  let fail = true;
+  const flaky = { all: (...a) => db.all(...a), batch: (...a) => db.batch(...a), run: (...a) => { if (fail) { fail = false; return Promise.reject(new Error('disk busy')); } return db.run(...a); } };
+  let now = 1000;
+  const c = createController({ db: flaky, settings: DEFAULTS, now: () => now });
+  const events = [];
+  c.subscribe(e => events.push(e.type));
+  c.start('Report');
+  now += 25 * MIN;
+  await c.tick();
+  assert.equal((await listSessions(db)).length, 0);
+  assert.ok(events.includes('error'));
+  await c.tick();
+  const [s] = await listSessions(db);
+  assert.equal(s.task, 'Report');
+  assert.equal(s.minutes, 25);
+});

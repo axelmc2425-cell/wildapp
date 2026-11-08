@@ -19,7 +19,7 @@ pub struct ImportResult {
 const EXTENSIONS: [&str; 7] = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "avif"];
 
 /// Copy images into `<data_dir>/attachments/photos/`. Nothing is uploaded anywhere.
-/// Unsupported files are skipped, an identical file already there is skipped as a duplicate,
+/// Unsupported files are skipped, an identical file already there is returned as imported without a second copy,
 /// and a different file with the same name gets a numeric suffix.
 pub fn import_photos(data_dir: &Path, sources: &[String]) -> ImportResult {
     use std::fs;
@@ -75,7 +75,8 @@ pub fn import_photos(data_dir: &Path, sources: &[String]) -> ImportResult {
                 break;
             }
             if fs::read(&target).map_or(false, |b| b == bytes) {
-                skip(&mut out, &name, "already imported".into());
+                // Same file already in the vault: report it so a row whose delete left the file behind can come back.
+                out.imported.push(ImportedPhoto { file: format!("photos/{candidate}"), taken_ms, original: name.clone() });
                 break;
             }
             n += 1;
@@ -154,9 +155,13 @@ mod tests {
         let a2 = make(&s2, "x.png", b"same", 10);
         let b = make(&s3, "x.png", b"different", 20);
         assert_eq!(import_photos(&data, &[a]).imported.len(), 1);
+        // The same file again is reported as imported (same stored name, no second copy) so a row whose
+        // earlier delete left the file behind can come back; the app ignores rows it already has.
         let dup = import_photos(&data, &[a2]);
-        assert!(dup.imported.is_empty());
-        assert!(dup.skipped[0].reason.contains("already"));
+        assert_eq!(dup.imported.len(), 1);
+        assert_eq!(dup.imported[0].file, "photos/x.png");
+        assert!(dup.skipped.is_empty());
+        assert_eq!(fs::read_dir(data.join("attachments/photos")).unwrap().count(), 1);
         let r = import_photos(&data, &[b]);
         assert_eq!(r.imported[0].file, "photos/x-2.png");
         assert_eq!(fs::read(data.join("attachments/photos/x-2.png")).unwrap(), b"different");

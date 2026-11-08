@@ -13,6 +13,7 @@ const BASE = {
 };
 const UNICODE = { '½': 0.5, '¼': 0.25, '¾': 0.75, '⅓': 1 / 3, '⅔': 2 / 3 };
 const round2 = (n) => Math.round(n * 100) / 100;
+const round3 = (n) => Math.round(n * 1000) / 1000;
 
 export function parseQty(str) {
   const s = String(str).trim();
@@ -25,7 +26,9 @@ export function parseQty(str) {
 }
 
 export function parseIngredientLine(line) {
-  const tokens = String(line).trim().split(/\s+/).filter(Boolean);
+  // "500g flour" -> "500 g flour"
+  const spaced = String(line).trim().replace(/^(\d+(?:[./]\d+)?)([a-zA-Z]+)(?=\s|$)/, '$1 $2');
+  const tokens = spaced.split(/\s+/).filter(Boolean);
   if (!tokens.length) return null;
   let i = 0;
   const q = [];
@@ -42,6 +45,7 @@ export function parseIngredientLine(line) {
 
 export function formatQty(n) {
   if (n === null || n === undefined) return '';
+  if (n > 0 && n < 0.01) return String(Number(n.toPrecision(2)));
   const whole = Math.floor(n + 0.02 > Math.floor(n) + 1 ? n + 0.02 : n);
   const frac = n - whole;
   if (frac < 0.02) return String(whole);
@@ -52,7 +56,7 @@ export function formatQty(n) {
 
 export function scaleIngredients(ingredients, fromServings, toServings) {
   const f = fromServings > 0 ? toServings / fromServings : 1;
-  return ingredients.map(i => ({ ...i, qty: i.qty === null || i.qty === undefined ? null : round2(i.qty * f) }));
+  return ingredients.map(i => ({ ...i, qty: i.qty === null || i.qty === undefined ? null : round3(i.qty * f) }));
 }
 
 function toBase(qty, unit) {
@@ -60,15 +64,15 @@ function toBase(qty, unit) {
   return b ? { qty: qty * b[1], kind: b[0] } : { qty, kind: 'count:' + unit };
 }
 
-const fold = (name) => {
-  const n = String(name).toLowerCase().trim();
-  return n.length > 3 && n.endsWith('s') ? n.slice(0, -1) : n;
-};
+const foldWord = (w) => (w.length > 3 && w.endsWith('s') ? w.slice(0, -1) : w);
+const words = (name) => (String(name).toLowerCase().match(/[\p{L}\p{N}]+/gu) || []).map(foldWord);
 
+// Whole-word matching: "salt" is not "unsalted butter" and "egg" is not "eggplant", but "milk" matches "whole milk".
 function findPantry(name, pantry) {
-  const k = fold(name);
-  return pantry.find(p => fold(p.name) === k)
-    || pantry.find(p => k.includes(fold(p.name)) || fold(p.name).includes(k));
+  const k = words(name);
+  const same = (a, b) => a.length === b.length && a.every((w, i) => w === b[i]);
+  const within = (a, b) => a.length > 0 && a.every(w => b.includes(w));
+  return pantry.find(p => same(words(p.name), k)) || pantry.find(p => within(words(p.name), k) || within(k, words(p.name)));
 }
 
 function fractionHave(ing, item) {
