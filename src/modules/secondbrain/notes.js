@@ -1,30 +1,26 @@
 import { extractLinks, extractTags } from './parse.js';
+import { titleKey } from '../../core/titlekey.js';
 
-const LINK_FROM = (idSql) =>
-  `INSERT OR IGNORE INTO links(from_type, from_id, to_type, to_id)
-   SELECT 'note', ${idSql}, 'note', id FROM notes WHERE lower(title) = lower(?)`;
+const tagStatements = (idSql, idParams, body) => [
+  { sql: `DELETE FROM tags WHERE note_id = ${idSql}`, params: idParams },
+  ...extractTags(body).map(tag => ({ sql: `INSERT OR IGNORE INTO tags(note_id, tag) SELECT ${idSql}, ?`, params: [...idParams, tag] })),
+];
 
-// Statements that (re)write the tags and links of one note. idSql/idParams identify the note.
-function derivedStatements(idSql, idParams, body) {
-  const stmts = [
-    { sql: `DELETE FROM tags WHERE note_id = ${idSql}`, params: idParams },
-    { sql: `DELETE FROM links WHERE from_type = 'note' AND from_id = ${idSql}`, params: idParams },
-  ];
-  for (const tag of extractTags(body)) {
-    stmts.push({ sql: `INSERT OR IGNORE INTO tags(note_id, tag) SELECT ${idSql}, ?`, params: [...idParams, tag] });
-  }
-  for (const title of extractLinks(body)) {
-    stmts.push({ sql: LINK_FROM(idSql), params: [...idParams, title] });
-  }
-  return stmts;
-}
+const linkStatements = (idSql, idParams, body) => [
+  { sql: `DELETE FROM links WHERE from_type = 'note' AND from_id = ${idSql}`, params: idParams },
+  ...extractLinks(body).map(title => ({
+    sql: `INSERT OR IGNORE INTO links(from_type, from_id, to_type, to_id)
+          SELECT 'note', ${idSql}, 'note', id FROM notes WHERE title_key = ?`,
+    params: [...idParams, titleKey(title)],
+  })),
+];
 
 async function withTags(db, rows) {
   if (!rows.length) return [];
   const tags = await db.all(`SELECT note_id, tag FROM tags WHERE note_id IN (${rows.map(() => '?').join(',')}) ORDER BY tag`, rows.map(r => r.id));
   const byId = new Map();
   for (const t of tags) (byId.get(t.note_id) || byId.set(t.note_id, []).get(t.note_id)).push(t.tag);
-  return rows.map(r => ({ ...r, tags: byId.get(r.id) || [] }));
+  return rows.map(({ title_key, ...r }) => ({ ...r, tags: byId.get(r.id) || [] }));
 }
 
 export async function getNote(db, id) {
@@ -33,48 +29,65 @@ export async function getNote(db, id) {
 }
 
 export async function findNoteByTitle(db, title) {
-  const rows = await db.all('SELECT * FROM notes WHERE lower(title) = lower(?)', [String(title).trim()]);
+  const rows = await db.all('SELECT * FROM notes WHERE title_key = ?', [titleKey(title)]);
   return (await withTags(db, rows))[0] || null;
 }
 
 // Re-resolve the links of every note whose body mentions [[title]] (used after a title starts to exist).
 async function relinkMentions(db, title) {
-  const key = title.toLowerCase();
+  const key = titleKey(title);
   const rows = await db.all("SELECT id, body FROM notes WHERE body LIKE '%[[%'");
   for (const r of rows) {
-    if (extractLinks(r.body).some(t => t.toLowerCase() === key)) {
-      await db.batch(derivedStatements('?', [r.id], r.body).filter(s => !s.sql.includes('tags')));
-    }
+    if (extractLinks(r.body).some(t => titleKey(t) === key)) await db.batch(linkStatements('?', [r.id], r.body));
   }
 }
 
-export async function createNote(db, { title, body = '' }) {
+// Re-resolve every note's links in one pass (used once after a bulk import).
+export async function relinkAll(db) {
+  const rows = await db.all("SELECT id, body FROM notes WHERE body LIKE '%[[%'");
+  for (const r of rows) await db.batch(linkStatements('?', [r.id], r.body));
+}
+
+export async function createNote(db, { title, body = '' }, { relink = true } = {}) {
   const t = String(title || '').trim();
   if (!t) throw new Error('empty title');
   if (await findNoteByTitle(db, t)) throw new Error('duplicate title');
   const now = Date.now();
-  const idSql = '(SELECT id FROM notes WHERE lower(title) = lower(?))';
+  const idSql = '(SELECT id FROM notes WHERE title_key = ?)';
+  const idParams = [titleKey(t)];
   await db.batch([
-    { sql: 'INSERT INTO notes(title, body, created, updated) VALUES (?, ?, ?, ?)', params: [t, body, now, now] },
-    ...derivedStatements(idSql, [t], body),
+    { sql: 'INSERT INTO notes(title, title_key, body, created, updated) VALUES (?, ?, ?, ?, ?)', params: [t, titleKey(t), body, now, now] },
+    ...tagStatements(idSql, idParams, body),
+    ...linkStatements(idSql, idParams, body),
   ]);
-  await relinkMentions(db, t);
+  if (relink) await relinkMentions(db, t);
   return findNoteByTitle(db, t);
 }
 
+// Only the fields you pass are written, so a rename and a body save can never overwrite each other.
 export async function saveNote(db, id, { title, body } = {}) {
   const old = await getNote(db, id);
   if (!old) throw new Error('note not found');
-  const t = title === undefined ? old.title : String(title).trim();
-  const b = body === undefined ? old.body : body;
-  if (!t) throw new Error('empty title');
-  const clash = await findNoteByTitle(db, t);
-  if (clash && clash.id !== id) throw new Error('duplicate title');
-  await db.batch([
-    { sql: 'UPDATE notes SET title = ?, body = ?, updated = ? WHERE id = ?', params: [t, b, Date.now(), id] },
-    ...derivedStatements('?', [id], b),
-  ]);
-  if (t.toLowerCase() !== old.title.toLowerCase()) await relinkMentions(db, t);
+  const sets = ['updated = ?'];
+  const params = [Date.now()];
+  let renamed = null;
+  if (title !== undefined) {
+    const t = String(title).trim();
+    if (!t) throw new Error('empty title');
+    const clash = await findNoteByTitle(db, t);
+    if (clash && clash.id !== id) throw new Error('duplicate title');
+    sets.push('title = ?', 'title_key = ?');
+    params.push(t, titleKey(t));
+    if (titleKey(t) !== titleKey(old.title)) renamed = t;
+  }
+  if (body !== undefined) {
+    sets.push('body = ?');
+    params.push(body);
+  }
+  const stmts = [{ sql: `UPDATE notes SET ${sets.join(', ')} WHERE id = ?`, params: [...params, id] }];
+  if (body !== undefined) stmts.push(...tagStatements('?', [id], body), ...linkStatements('?', [id], body));
+  await db.batch(stmts);
+  if (renamed) await relinkMentions(db, renamed);
   return getNote(db, id);
 }
 

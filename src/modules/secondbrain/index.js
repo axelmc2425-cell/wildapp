@@ -157,11 +157,12 @@ function render(root, ctx) {
   }
 
   async function openNote(id) {
-    await autosaver.flush();
+    const saved = await autosaver.flush();
     const n = await getNote(db, id);
     if (!alive) return;
     state.cur = n;
-    banner('');
+    // An unsaved edit is kept (per note) and retried in the background; say so instead of hiding it.
+    banner(saved ? '' : "Couldn't save your last edit yet. It is kept and I'm retrying.");
     statusEl.textContent = '';
     hideAc();
     if (!n) {
@@ -214,10 +215,11 @@ function render(root, ctx) {
     try {
       const dir = await pickFolder('Choose a folder of Markdown (.md) files');
       if (!dir) return;
-      const entries = await invoke('read_folder_md', { dir });
+      const read = await invoke('read_folder_md', { dir });
       await autosaver.flush();
       await invoke('backup_auto', { label: 'before-import' }); // a failure here stops the import
-      const result = await importNotes(db, entriesToFiles(entries));
+      const result = await importNotes(db, entriesToFiles(read.files));
+      result.skipped.unshift(...read.skipped); // files the app could not read from disk
       await loadNotes();
       banner(summarizeImport(result));
     } catch (e) {
@@ -283,6 +285,7 @@ function render(root, ctx) {
   titleInput.addEventListener('change', async () => {
     if (!state.cur) return;
     try {
+      await autosaver.flush();
       await saveNote(db, state.cur.id, { title: titleInput.value });
       banner('');
       await afterSave();
@@ -325,7 +328,8 @@ function render(root, ctx) {
     alive = false;
     if (unlisten) unlisten();
     if (graph) graph.dispose();
-    autosaver.flush().finally(() => autosaver.dispose());
+    // Keep retrying in the background if the last save failed; only stop once everything is saved.
+    autosaver.flush().then((ok) => { if (ok) autosaver.dispose(); });
   };
 }
 

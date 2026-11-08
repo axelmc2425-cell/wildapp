@@ -68,6 +68,49 @@ test('dispose stops pending saves', async () => {
 
 import { wikiQuery, applyCompletion } from '../src/modules/secondbrain/editor.js';
 
+test('flush waits for the in-flight save and the newer pending text', async () => {
+  const saved = [];
+  let release;
+  const a = createAutosaver({
+    save: async p => { if (saved.length === 0) await new Promise(r => { release = r; }); saved.push(p.body); },
+    delay: 5,
+  });
+  a.change({ id: 1, body: 'one' });
+  await wait(25);
+  a.change({ id: 1, body: 'two' });
+  const f = a.flush();
+  release();
+  assert.equal(await f, true);
+  assert.deepEqual(saved, ['one', 'two']);
+  a.dispose();
+});
+
+test('flush returns false while saving keeps failing and true once everything is saved', async () => {
+  let fail = true;
+  const saved = [];
+  const a = createAutosaver({ save: async p => { if (fail) throw new Error('x'); saved.push(p); }, delay: 5, retryDelay: 15 });
+  a.change({ id: 1, body: 'a' });
+  assert.equal(await a.flush(), false);
+  fail = false;
+  assert.equal(await a.flush(), true);
+  assert.deepEqual(saved, [{ id: 1, body: 'a' }]);
+  a.dispose();
+});
+
+test('a note whose save failed is kept when you move on to another note', async () => {
+  let fail = true;
+  const saved = [];
+  const a = createAutosaver({ save: async p => { if (fail && p.id === 1) throw new Error('x'); saved.push(p); }, delay: 5, retryDelay: 15 });
+  a.change({ id: 1, body: 'note1 unsaved' });
+  assert.equal(await a.flush(), false);
+  a.change({ id: 2, body: 'note2' });
+  fail = false;
+  await wait(120);
+  assert.ok(saved.some(p => p.id === 1 && p.body === 'note1 unsaved'), JSON.stringify(saved));
+  assert.ok(saved.some(p => p.id === 2 && p.body === 'note2'), JSON.stringify(saved));
+  a.dispose();
+});
+
 test('wikiQuery finds the text typed after an open [[', () => {
   assert.deepEqual(wikiQuery('see [[Gar', 9), { start: 4, query: 'Gar' });
   assert.deepEqual(wikiQuery('see [[', 6), { start: 4, query: '' });

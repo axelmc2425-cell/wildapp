@@ -7,29 +7,65 @@ pub struct FileEntry {
     pub bytes: Vec<u8>,
 }
 
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct Skip {
+    pub path: String,
+    pub reason: String,
+}
+
+#[derive(Serialize, Debug, Default)]
+pub struct ReadResult {
+    pub files: Vec<FileEntry>,
+    pub skipped: Vec<Skip>,
+}
+
 /// Recursively read every `.md` file under `dir`. Paths are relative with `/` separators.
-pub fn read_folder_md(dir: &Path) -> Result<Vec<FileEntry>, String> {
+/// Unreadable files, files over 20 MB and symlinks are reported in `skipped` instead of failing the read.
+pub fn read_folder_md(dir: &Path) -> Result<ReadResult, String> {
     const MAX_BYTES: u64 = 20 * 1024 * 1024;
-    fn walk(root: &Path, dir: &Path, out: &mut Vec<FileEntry>) -> Result<(), String> {
-        for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
-            let path = entry.map_err(|e| e.to_string())?.path();
-            if path.is_dir() {
-                walk(root, &path, out)?;
-            } else if path.extension().map_or(false, |x| x.eq_ignore_ascii_case("md")) {
-                let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
-                if meta.len() > MAX_BYTES {
+    fn rel(root: &Path, path: &Path) -> String {
+        let r = path.strip_prefix(root).unwrap_or(path);
+        let parts: Vec<String> = r.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+        parts.join("/")
+    }
+    fn walk(root: &Path, dir: &Path, out: &mut ReadResult) -> Result<(), std::io::Error> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = match entry {
+                Ok(e) => e.path(),
+                Err(e) => {
+                    out.skipped.push(Skip { path: rel(root, dir), reason: e.to_string() });
                     continue;
                 }
-                let rel = path.strip_prefix(root).map_err(|e| e.to_string())?;
-                let rel: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
-                out.push(FileEntry { path: rel.join("/"), bytes: std::fs::read(&path).map_err(|e| e.to_string())? });
+            };
+            let meta = match std::fs::symlink_metadata(&path) {
+                Ok(m) => m,
+                Err(e) => {
+                    out.skipped.push(Skip { path: rel(root, &path), reason: e.to_string() });
+                    continue;
+                }
+            };
+            if meta.file_type().is_symlink() {
+                out.skipped.push(Skip { path: rel(root, &path), reason: "symlink (not followed)".into() });
+            } else if meta.is_dir() {
+                if let Err(e) = walk(root, &path, out) {
+                    out.skipped.push(Skip { path: rel(root, &path), reason: e.to_string() });
+                }
+            } else if path.extension().map_or(false, |x| x.eq_ignore_ascii_case("md")) {
+                if meta.len() > MAX_BYTES {
+                    out.skipped.push(Skip { path: rel(root, &path), reason: "larger than 20 MB".into() });
+                    continue;
+                }
+                match std::fs::read(&path) {
+                    Ok(bytes) => out.files.push(FileEntry { path: rel(root, &path), bytes }),
+                    Err(e) => out.skipped.push(Skip { path: rel(root, &path), reason: e.to_string() }),
+                }
             }
         }
         Ok(())
     }
-    let mut out = Vec::new();
-    walk(dir, dir, &mut out)?;
-    out.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut out = ReadResult::default();
+    walk(dir, dir, &mut out).map_err(|e| e.to_string())?;
+    out.files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
 }
 
@@ -75,7 +111,7 @@ mod tests {
             FileEntry { path: "sub/b.md".into(), bytes: "bêta".as_bytes().to_vec() },
         ];
         write_files(&d, &files).unwrap();
-        let mut got = read_folder_md(&d).unwrap();
+        let mut got = read_folder_md(&d).unwrap().files;
         got.sort_by(|x, y| x.path.cmp(&y.path));
         assert_eq!(got, files);
     }
@@ -85,7 +121,7 @@ mod tests {
         let d = tmp("ign");
         std::fs::write(d.join("x.txt"), "no").unwrap();
         std::fs::write(d.join("y.MD"), "yes").unwrap();
-        let got = read_folder_md(&d).unwrap();
+        let got = read_folder_md(&d).unwrap().files;
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].path, "y.MD");
     }
@@ -98,5 +134,29 @@ mod tests {
             assert!(r.is_err(), "{bad} should be rejected");
         }
         assert!(!d.parent().unwrap().join("evil.md").exists());
+    }
+
+    #[test]
+    fn oversized_files_are_reported_not_dropped_silently() {
+        let d = tmp("big");
+        let f = std::fs::File::create(d.join("huge.md")).unwrap();
+        f.set_len(21 * 1024 * 1024).unwrap();
+        std::fs::write(d.join("ok.md"), "fine").unwrap();
+        let r = read_folder_md(&d).unwrap();
+        assert_eq!(r.files.len(), 1);
+        assert_eq!(r.skipped.len(), 1);
+        assert_eq!(r.skipped[0].path, "huge.md");
+        assert!(r.skipped[0].reason.contains("20 MB"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_loops_are_skipped_and_reported() {
+        let d = tmp("loop");
+        std::fs::write(d.join("a.md"), "x").unwrap();
+        std::os::unix::fs::symlink(&d, d.join("loop")).unwrap();
+        let r = read_folder_md(&d).unwrap();
+        assert_eq!(r.files.len(), 1);
+        assert_eq!(r.skipped[0].path, "loop");
     }
 }

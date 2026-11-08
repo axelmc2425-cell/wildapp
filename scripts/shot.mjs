@@ -83,7 +83,7 @@ await page.exposeFunction('__db', async (cmd, a) => {
   if (cmd === 'data_dir') return dir;
   if (cmd === 'backup_auto') return join(dir, 'auto.zip');
   if (cmd === 'backup_create') return null;
-  if (cmd === 'read_folder_md') return readdirSync(a.dir).map(f => ({ path: f, bytes: [...readFileSync(join(a.dir, f))] }));
+  if (cmd === 'read_folder_md') return { files: readdirSync(a.dir).map(f => ({ path: f, bytes: [...readFileSync(join(a.dir, f))] })), skipped: [{ path: 'locked.md', reason: 'Access is denied' }] };
   if (cmd === 'write_files') { for (const f of a.files) writeFileSync(join(exportDir, f.path), Buffer.from(f.bytes)); return null; }
   if (cmd === 'db_all') return db.all(a.sql, a.params);
   if (cmd === 'db_run') return db.run(a.sql, a.params);

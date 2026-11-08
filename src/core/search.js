@@ -29,6 +29,19 @@ function snippetFor(body, query) {
 }
 
 export async function notesSearchProvider(db, q) {
+  // SQLite's LIKE only folds ASCII case, so queries with other letters are matched in JS.
+  if (/[^\x00-\x7f]/.test(q)) {
+    const needle = q.toLowerCase();
+    const rows = await db.all('SELECT id, title, body FROM notes ORDER BY updated DESC, id DESC');
+    const hits = [];
+    for (const r of rows) {
+      if (r.title.toLowerCase().includes(needle) || r.body.toLowerCase().includes(needle)) {
+        hits.push({ module: 'secondbrain', id: r.id, title: r.title, snippet: snippetFor(r.body, q) });
+        if (hits.length >= 30) break;
+      }
+    }
+    return hits;
+  }
   const like = '%' + escapeLike(q) + '%';
   const rows = await db.all(
     "SELECT id, title, body FROM notes WHERE title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\' ORDER BY updated DESC, id DESC LIMIT 30",

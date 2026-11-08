@@ -2,7 +2,7 @@
 
 use mybrain_core::backup;
 use mybrain_core::db::Db;
-use mybrain_core::files::{self, FileEntry};
+use mybrain_core::files::{self, FileEntry, ReadResult};
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -39,31 +39,31 @@ fn data_dir(dd: State<DataDir>) -> String {
     dd.0.to_string_lossy().into_owned()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn backup_create(db: State<Db>, dd: State<DataDir>, dest: String) -> Result<(), String> {
     db.checkpoint()?;
     backup::backup_create(&dd.0, Path::new(&dest))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn backup_auto(db: State<Db>, dd: State<DataDir>, label: String) -> Result<String, String> {
     let label: String = label.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
     db.checkpoint()?;
     backup::auto_backup(&dd.0, &label).map(|p| p.to_string_lossy().into_owned())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn backup_restore(db: State<Db>, dd: State<DataDir>, src: String) -> Result<(), String> {
     db.checkpoint()?;
     backup::restore_stage(&dd.0, Path::new(&src))
 }
 
-#[tauri::command]
-fn read_folder_md(dir: String) -> Result<Vec<FileEntry>, String> {
+#[tauri::command(async)]
+fn read_folder_md(dir: String) -> Result<ReadResult, String> {
     files::read_folder_md(Path::new(&dir))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn write_files(dir: String, files: Vec<FileEntry>) -> Result<(), String> {
     files::write_files(Path::new(&dir), &files)
 }

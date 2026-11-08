@@ -113,3 +113,44 @@ test('removing a link from the body removes the backlink', async () => {
   await saveNote(db, a.id, { body: 'nothing' });
   assert.deepEqual(await backlinks(db, foo.id), []);
 });
+
+test('titles are case-insensitive beyond ASCII', async () => {
+  const db = await fresh();
+  const n = await createNote(db, { title: 'Élan' });
+  await assert.rejects(createNote(db, { title: 'élan' }), /duplicate title/);
+  assert.equal((await findNoteByTitle(db, 'ÉLAN')).id, n.id);
+  const a = await createNote(db, { title: 'A' });
+  await saveNote(db, a.id, { body: 'see [[élan]]' });
+  assert.deepEqual((await backlinks(db, n.id)).map(x => x.title), ['A']);
+});
+
+function slow(db) {
+  const d = () => new Promise(r => setTimeout(r, 2));
+  return {
+    all: async (...a) => { await d(); return db.all(...a); },
+    run: async (...a) => { await d(); return db.run(...a); },
+    batch: async (...a) => { await d(); return db.batch(...a); },
+  };
+}
+
+test('a rename and a body save made together both stick', async () => {
+  const db = await fresh();
+  const a = await createNote(db, { title: 'R', body: 'old' });
+  const s = slow(db);
+  await Promise.all([saveNote(s, a.id, { title: 'Renamed' }), saveNote(s, a.id, { body: 'NEW TEXT #t' })]);
+  const n = await getNote(db, a.id);
+  assert.equal(n.title, 'Renamed');
+  assert.equal(n.body, 'NEW TEXT #t');
+  assert.deepEqual(n.tags, ['t']);
+});
+
+test('saving only the title leaves the body, tags and links alone', async () => {
+  const db = await fresh();
+  const foo = await createNote(db, { title: 'Foo' });
+  const a = await createNote(db, { title: 'A', body: '#x [[Foo]]' });
+  await saveNote(db, a.id, { title: 'A2' });
+  const n = await getNote(db, a.id);
+  assert.equal(n.body, '#x [[Foo]]');
+  assert.deepEqual(n.tags, ['x']);
+  assert.equal((await backlinks(db, foo.id)).length, 1);
+});

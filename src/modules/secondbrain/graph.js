@@ -17,13 +17,15 @@ export async function graphData(db, { tag } = {}) {
 }
 
 // Deterministic Fruchterman-Reingold layout; every point stays inside the box.
-export function layoutGraph(nodes, edges, { width, height, iterations = 200, margin: wantedMargin = 20 }) {
+export function layoutGraph(nodes, edges, { width, height, iterations, margin: wantedMargin = 20 }) {
   const out = new Map();
   if (!nodes.length) return out;
   if (nodes.length === 1) {
     out.set(nodes[0].id, { x: width / 2, y: height / 2 });
     return out;
   }
+  // Repulsion is O(n^2) per step, so big graphs get fewer steps.
+  if (iterations === undefined) iterations = Math.max(25, Math.min(200, Math.floor(30_000_000 / (nodes.length * nodes.length))));
   const margin = Math.min(wantedMargin, width / 4, height / 4);
   const pos = nodes.map((n, i) => {
     const a = (2 * Math.PI * i) / nodes.length;

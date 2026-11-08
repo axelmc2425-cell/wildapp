@@ -74,3 +74,12 @@ test('layout keeps points inside the margin option', () => {
     assert.ok(p.x >= 60 && p.x <= 540 && p.y >= 60 && p.y <= 340, JSON.stringify(p));
   }
 });
+
+test('layout of 1500 nodes finishes quickly', () => {
+  const nodes = Array.from({ length: 1500 }, (_, i) => ({ id: i + 1, title: 'n', tags: [] }));
+  const edges = nodes.slice(1).map((n, i) => ({ from: 1 + (i % 50), to: n.id }));
+  const t = Date.now();
+  const m = layoutGraph(nodes, edges, { width: 1000, height: 800 });
+  assert.equal(m.size, 1500);
+  assert.ok(Date.now() - t < 4000, 'took ' + (Date.now() - t) + ' ms');
+});

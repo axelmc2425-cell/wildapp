@@ -17,3 +17,7 @@ test('extractTags lowercases, supports slashes and skips URL fragments', () => {
 test('extractTags ignores headings and code blocks', () => {
   assert.deepEqual(extractTags('# Heading\n```\n#nope\n```\n#yes'), ['yes']);
 });
+
+test('extractLinks understands Obsidian heading, block, folder and embed forms', () => {
+  assert.deepEqual(extractLinks('[[Note#Heading]] [[Note^abc]] [[folder/sub/Note]] ![[pic.png]] [[#Local]]'), ['Note']);
+});
