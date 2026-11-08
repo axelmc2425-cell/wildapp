@@ -14,7 +14,7 @@ const SVG = 'http://www.w3.org/2000/svg';
 const svg = (tag, attrs = {}, ...kids) => {
   const el = document.createElementNS(SVG, tag);
   for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
-  el.append(...kids);
+  el.append(...kids.filter(k => k != null));
   return el;
 };
 const pct = (x) => `${Math.round(x * 100)}%`;

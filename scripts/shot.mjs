@@ -27,7 +27,13 @@ function loadPlaywright() {
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml' };
 const server = http.createServer(async (req, res) => {
-  let p = new URL(req.url, 'http://x').pathname;
+  const u = new URL(req.url, 'http://x');
+  let p = u.pathname;
+  if (p === '/__abs') {
+    try { const data = await readFile(u.searchParams.get('p')); res.writeHead(200, { 'content-type': 'image/png' }); res.end(data); }
+    catch { res.writeHead(404); res.end('missing'); }
+    return;
+  }
   if (p === '/') p = '/index.html';
   try {
     const data = await readFile(join(root, p));
@@ -81,6 +87,13 @@ await page.exposeFunction('__calls', () => calls);
 await page.exposeFunction('__db', async (cmd, a) => {
   calls.push(cmd);
   if (cmd === 'data_dir') return dir;
+  if (cmd === 'photo_import') {
+    mkdirSync(join(dir, 'attachments', 'photos'), { recursive: true });
+    const { copyFileSync, statSync } = await import('node:fs');
+    const imported = a.sources.map(src => { const name = src.split('/').pop(); copyFileSync(src, join(dir, 'attachments', 'photos', name)); return { file: 'photos/' + name, taken_ms: statSync(src).mtimeMs, original: name }; });
+    return { imported, skipped: [{ path: 'notes.txt', reason: 'not a supported image' }] };
+  }
+  if (cmd === 'photo_delete') return null;
   if (cmd === 'backup_auto') return join(dir, 'auto.zip');
   if (cmd === 'backup_create') return null;
   if (cmd === 'read_folder_md') return { files: readdirSync(a.dir).map(f => ({ path: f, bytes: [...readFileSync(join(a.dir, f))] })), skipped: [{ path: 'locked.md', reason: 'Access is denied' }] };
@@ -92,8 +105,8 @@ await page.exposeFunction('__db', async (cmd, a) => {
 });
 await page.addInitScript(() => {
   window.__TAURI__ = {
-    core: { invoke: (cmd, a) => window.__db(cmd, a) },
-    dialog: { open: async (o) => (o && o.directory ? (window.__pickDir || null) : null), save: async () => '/tmp/backup.zip' },
+    core: { invoke: (cmd, a) => window.__db(cmd, a), convertFileSrc: (p) => '/__abs?p=' + encodeURIComponent(p) },
+    dialog: { open: async (o) => (o && o.directory ? (window.__pickDir || null) : (o && o.multiple ? (window.__pickFiles || null) : null)), save: async () => '/tmp/backup.zip' },
   };
 });
 

@@ -3,6 +3,7 @@
 use mybrain_core::backup;
 use mybrain_core::db::Db;
 use mybrain_core::files::{self, FileEntry, ReadResult};
+use mybrain_core::photos::{self, ImportResult};
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -68,6 +69,16 @@ fn write_files(dir: String, files: Vec<FileEntry>) -> Result<(), String> {
     files::write_files(Path::new(&dir), &files)
 }
 
+#[tauri::command(async)]
+fn photo_import(dd: State<DataDir>, sources: Vec<String>) -> ImportResult {
+    photos::import_photos(&dd.0, &sources)
+}
+
+#[tauri::command(async)]
+fn photo_delete(dd: State<DataDir>, file: String) -> Result<(), String> {
+    photos::delete_photo_file(&dd.0, &file)
+}
+
 fn open_quick(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("quick") {
         let _ = w.show();
@@ -117,7 +128,9 @@ fn main() {
             backup_auto,
             backup_restore,
             read_folder_md,
-            write_files
+            write_files,
+            photo_import,
+            photo_delete
         ])
         .run(tauri::generate_context!())
         .expect("error while running MyBrain");

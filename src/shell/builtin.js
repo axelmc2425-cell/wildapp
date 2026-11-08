@@ -1,7 +1,6 @@
 import { registerModule } from './modules.js';
 
 const soon = [
-  ['photos', 'Photo Vault', '🖼️', 'Private photo timeline and trip albums.'],
   ['journal', 'Journal Companion', '📓', 'Weekly reflection and pattern spotting.'],
 ];
 

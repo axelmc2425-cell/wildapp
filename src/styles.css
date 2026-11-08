@@ -137,3 +137,12 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .review { width: min(620px, 92vw); }
 .review .face { font-size: 26px; text-align: center; padding: 28px 12px; }
 .review .face.back { border-top: 1px dashed var(--border); color: var(--accent); }
+
+/* Photo Vault */
+.pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px; }
+.pcell img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; cursor: pointer; background: var(--code); display: block; }
+.agrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+.acard { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
+.acard img, .acard .noimg { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 6px; background: var(--code); display: flex; align-items: center; justify-content: center; font-size: 32px; }
+.lightbox { width: min(960px, 94vw); max-height: 94vh; overflow: auto; }
+.lightbox img.big { width: 100%; max-height: 68vh; object-fit: contain; background: var(--code); border-radius: 8px; }
