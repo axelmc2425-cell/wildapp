@@ -1,7 +1,6 @@
 import { registerModule } from './modules.js';
 
 const soon = [
-  ['cooking', 'Cooking Coach', '🍳', 'What can I cook tonight, timers, macros and cost.'],
   ['money', 'Money Sandbox', '💰', 'What-if simulator for big money decisions.'],
   ['skills', 'Skill Tree', '🌳', 'Learning goals, practice log and flashcards.'],
   ['photos', 'Photo Vault', '🖼️', 'Private photo timeline and trip albums.'],

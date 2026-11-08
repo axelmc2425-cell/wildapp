@@ -4,6 +4,7 @@ import { listModules, getModule } from './shell/modules.js';
 import './shell/builtin.js';
 import './modules/secondbrain/index.js';
 import './modules/focus/index.js';
+import './modules/cooking/index.js';
 import { applyTheme } from './shell/theme.js';
 import { createPalette } from './shell/palette.js';
 import { renderSettings } from './shell/settings.js';

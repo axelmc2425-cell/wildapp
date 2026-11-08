@@ -4,6 +4,7 @@ import { registerModule, listModules } from '../src/shell/modules.js';
 import '../src/shell/builtin.js';
 import '../src/modules/secondbrain/index.js';
 import '../src/modules/focus/index.js';
+import '../src/modules/cooking/index.js';
 
 test('listModules returns seven modules in order', () => {
   assert.deepEqual(listModules().map(m => m.id),
@@ -11,7 +12,7 @@ test('listModules returns seven modules in order', () => {
 });
 
 test('built modules are ready and the rest are coming soon', () => {
-  assert.deepEqual(listModules().filter(m => m.ready).map(m => m.id), ['secondbrain', 'focus']);
+  assert.deepEqual(listModules().filter(m => m.ready).map(m => m.id), ['secondbrain', 'focus', 'cooking']);
 });
 
 test('registering a duplicate id throws', () => {
