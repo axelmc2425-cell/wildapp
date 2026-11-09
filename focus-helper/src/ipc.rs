@@ -28,7 +28,8 @@ pub enum Response {
         warnings: Vec<String>,
     },
     Challenge { code: String },
-    /// Codes: bad-request, no-partner, bad-window, no-such-lock, bad-key, lock-active, the unlock
+    /// Codes: bad-request, no-partner, bad-window (bad-times, bad-lock, too-long, bad-item, allow-needs-apps,
+    /// too-many, duplicate id), frozen-unavailable, too-many, no-such-lock, bad-key, lock-active, the unlock
     /// reasons, and `persist-failed` (daemon only: applied in memory but the state file could not
     /// be written, so the change is lost on restart; retried every tick).
     Error { code: String, message: String },
@@ -53,6 +54,12 @@ pub fn handle(
             Err(PushError::NoPartner) => err("no-partner", "a partner key is required for locked windows"),
             Err(PushError::Invalid(i)) => err("bad-window", i.reason()),
             Err(PushError::BadItem) => err("bad-window", "bad-item"),
+            Err(PushError::FrozenUnavailable) => {
+                err("frozen-unavailable", "frozen windows are not available in this version")
+            }
+            Err(PushError::AllowNeedsApps) => err("bad-window", "allow-needs-apps"),
+            Err(PushError::TooMany) => err("bad-window", "too-many"),
+            Err(PushError::DuplicateId) => err("bad-window", "duplicate id"),
         },
         Request::GetStatus => Response::Status {
             decision: decide(&store.windows, now),
@@ -64,6 +71,7 @@ pub fn handle(
         Request::RequestChallenge { window_id } => match store.request_challenge(&window_id, now, nonce) {
             Ok(code) => Response::Challenge { code },
             Err(ChallengeError::NoSuchLock) => err("no-such-lock", "no active locked window with that id"),
+            Err(ChallengeError::TooMany) => err("too-many", "too many open unlock challenges; wait for older ones to expire"),
         },
         Request::SubmitToken { token } => match store.submit_token(&token, now) {
             Ok(_) => Response::Ok,

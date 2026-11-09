@@ -273,3 +273,41 @@ fn stop_allowed_uses_the_effective_clock() {
     assert!(!d.stop_allowed(NOW - 3_600_000, 1000));
     assert!(d.stop_allowed(NOW + 6000, 7000));
 }
+
+#[test]
+fn state_loaded_from_backup_warns() {
+    let path = tmp("bakwarn");
+    seed(&path, vec![], 1);
+    seed(&path, vec![window("w", Lock::None, NOW - 1000, NOW + 5000)], 2); // first copy becomes .bak
+    std::fs::write(&path, b"{ broken").unwrap();
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    assert_eq!(d.store().high_water_ms, 1);
+    let st = status(&mut d, &mut p, NOW, 0);
+    assert_eq!(st["warnings"][0], "state: loaded from backup");
+}
+
+#[test]
+fn unreadable_state_is_kept_and_reported() {
+    let path = tmp("corrupt");
+    std::fs::write(&path, b"garbage main").unwrap();
+    std::fs::write(path.with_file_name("state.json.bak"), b"garbage bak").unwrap();
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    let st = status(&mut d, &mut p, NOW, 0);
+    let w = st["warnings"][0].as_str().unwrap();
+    assert!(w.starts_with("state: unreadable, started empty — previous state kept as "), "{w}");
+    // the first save must not overwrite the evidence
+    d.handle_line(r#"{"type":"PushWindows","windows":[]}"#, NOW, 1, [0; 16], &mut p);
+    d.handle_line(r#"{"type":"PushWindows","windows":[]}"#, NOW, 2, [0; 16], &mut p);
+    let dir = path.parent().unwrap();
+    let kept: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|n| n.contains(".corrupt-"))
+        .collect();
+    assert_eq!(kept.len(), 2, "{kept:?}");
+    let main = kept.iter().find(|n| n.starts_with("state.json.corrupt-")).unwrap();
+    assert_eq!(std::fs::read(dir.join(main)).unwrap(), b"garbage main");
+    assert!(persist::load(&path).windows.is_empty());
+}

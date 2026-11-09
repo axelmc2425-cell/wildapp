@@ -1,6 +1,6 @@
 use focus_helper::lockstore::LockStore;
 use focus_helper::model::{Lock, Mode, Window};
-use focus_helper::persist::{load, save};
+use focus_helper::persist::{load, load_with_report, quarantine_corrupt, save, LoadSource};
 use std::fs;
 use std::path::PathBuf;
 
@@ -25,6 +25,7 @@ fn store(id: &str, hw: i64) -> LockStore {
         partner_key: Some("k".into()),
         challenges: vec![],
         high_water_ms: hw,
+        ..LockStore::default()
     }
 }
 
@@ -94,4 +95,44 @@ fn stray_tmp_after_crash_is_ignored_then_overwritten() {
     save(&p, &next).unwrap();
     assert_eq!(load(&p), next);
     assert!(!tmp.exists());
+}
+
+#[test]
+fn report_sources() {
+    let d = dir("src");
+    let p = d.join("state.json");
+    assert_eq!(load_with_report(&p).1, LoadSource::Default);
+    save(&p, &store("a", 1)).unwrap();
+    assert_eq!(load_with_report(&p).1, LoadSource::Main);
+    save(&p, &store("b", 2)).unwrap(); // a -> .bak
+    fs::write(&p, b"{ not json").unwrap();
+    let (s, src) = load_with_report(&p);
+    assert_eq!((src, s.high_water_ms), (LoadSource::Backup, 1));
+    fs::write(d.join("state.json.bak"), b"also bad").unwrap();
+    let (s, src) = load_with_report(&p);
+    assert_eq!((src, s.windows.len()), (LoadSource::DefaultAfterCorrupt, 0));
+}
+
+#[test]
+fn quarantine_keeps_unreadable_files() {
+    let d = dir("quar");
+    let p = d.join("state.json");
+    fs::write(&p, b"garbage").unwrap();
+    let moved = quarantine_corrupt(&p, 123);
+    assert_eq!(moved.len(), 1);
+    assert!(!p.exists());
+    assert_eq!(fs::read(d.join("state.json.corrupt-123")).unwrap(), b"garbage");
+    // a good file is left alone
+    save(&p, &store("a", 1)).unwrap();
+    assert!(quarantine_corrupt(&p, 124).is_empty());
+}
+
+#[test]
+fn old_format_state_still_loads() {
+    let d = dir("old");
+    let p = d.join("state.json");
+    fs::write(&p, br#"{"windows":[],"partner_key":"k","challenges":[],"high_water_ms":9}"#).unwrap();
+    let (s, src) = load_with_report(&p);
+    assert_eq!(src, LoadSource::Main);
+    assert_eq!((s.partner_key.as_deref(), s.high_water_ms, s.version), (Some("k"), 9, 1));
 }

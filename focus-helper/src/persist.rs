@@ -43,6 +43,49 @@ pub fn save(path: &Path, store: &LockStore) -> io::Result<()> {
     Ok(())
 }
 
+/// Where `load_with_report` got its state from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadSource {
+    /// The main file parsed.
+    Main,
+    /// The main file was missing or unreadable; the `.bak` parsed.
+    Backup,
+    /// No state files existed: a fresh start.
+    Default,
+    /// State files exist but none parses: started empty (the caller should keep the corrupt files).
+    DefaultAfterCorrupt,
+}
+
+pub fn load_with_report(path: &Path) -> (LockStore, LoadSource) {
+    let bak = with_suffix(path, ".bak");
+    if let Some(s) = read_store(path) {
+        return (s, LoadSource::Main);
+    }
+    if let Some(s) = read_store(&bak) {
+        return (s, LoadSource::Backup);
+    }
+    if path.exists() || bak.exists() {
+        (LockStore::default(), LoadSource::DefaultAfterCorrupt)
+    } else {
+        (LockStore::default(), LoadSource::Default)
+    }
+}
+
 pub fn load(path: &Path) -> LockStore {
-    read_store(path).or_else(|| read_store(&with_suffix(path, ".bak"))).unwrap_or_default()
+    load_with_report(path).0
+}
+
+/// Renames every existing state file (main and `.bak`) that does not parse to
+/// `<name>.corrupt-<unix_ms>`, so a later save can never overwrite it. Returns the new paths.
+pub fn quarantine_corrupt(path: &Path, unix_ms: i64) -> Vec<PathBuf> {
+    let mut moved = Vec::new();
+    for p in [path.to_path_buf(), with_suffix(path, ".bak")] {
+        if p.exists() && read_store(&p).is_none() {
+            let target = with_suffix(&p, &format!(".corrupt-{unix_ms}"));
+            if fs::rename(&p, &target).is_ok() {
+                moved.push(target);
+            }
+        }
+    }
+    moved
 }

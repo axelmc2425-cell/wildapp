@@ -39,11 +39,32 @@ pub struct Daemon {
     last_saved_ms: Option<i64>,
     /// Set while the latest save failed; cleared by the next successful save.
     persist_error: Option<String>,
+    /// Set at load when state came from the backup or could not be read; shown in Status.
+    state_warning: Option<String>,
 }
 
 impl Daemon {
     pub fn load(state_path: &Path) -> Daemon {
-        let store = persist::load(state_path);
+        let (store, source) = persist::load_with_report(state_path);
+        let unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        // Keep unreadable files out of the way of the first save, which would overwrite them.
+        let moved = match source {
+            persist::LoadSource::Backup | persist::LoadSource::DefaultAfterCorrupt => {
+                persist::quarantine_corrupt(state_path, unix_ms)
+            }
+            _ => Vec::new(),
+        };
+        let state_warning = match source {
+            persist::LoadSource::Backup => Some("state: loaded from backup".to_string()),
+            persist::LoadSource::DefaultAfterCorrupt => {
+                let kept = moved.first().map(|p| p.display().to_string()).unwrap_or_else(|| state_path.display().to_string());
+                Some(format!("state: unreadable, started empty — previous state kept as {kept}"))
+            }
+            _ => None,
+        };
         let clock = EffectiveClock::new(store.high_water_ms);
         Daemon {
             store,
@@ -56,6 +77,7 @@ impl Daemon {
             error_warnings: Vec::new(),
             last_saved_ms: None,
             persist_error: None,
+            state_warning,
         }
     }
 
@@ -65,9 +87,10 @@ impl Daemon {
 
     /// DoH warnings followed by the latest platform errors.
     pub fn warnings(&self) -> Vec<String> {
-        self.persist_error
+        self.state_warning
             .iter()
-            .map(|e| format!("persist: {e}"))
+            .cloned()
+            .chain(self.persist_error.iter().map(|e| format!("persist: {e}")))
             .chain(self.doh_warnings.iter().cloned())
             .chain(self.error_warnings.iter().cloned())
             .collect()
@@ -138,6 +161,7 @@ impl Daemon {
         if self.clock.high_water_ms() > self.store.high_water_ms {
             self.store.high_water_ms = self.clock.high_water_ms();
         }
+        self.store.prune_tombstones(now);
         self.apply(now, platform);
         if self.persist_error.is_some() {
             self.save();

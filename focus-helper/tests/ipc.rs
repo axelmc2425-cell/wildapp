@@ -182,3 +182,29 @@ fn full_conversation() {
     let st = call(json!({"type":"GetStatus"}));
     assert_eq!(st["windows"], json!([w]));
 }
+
+#[test]
+fn final_wave_error_codes() {
+    let (mut s, mut c) = with_partner();
+    let msg = |r: Response| match r {
+        Response::Error { code, message } => (code, message),
+        o => panic!("{o:?}"),
+    };
+    let r = run(&mut s, &mut c, Request::PushWindows { windows: vec![win("f", Lock::Frozen, NOW - 1, NOW + 1000)] });
+    assert_eq!(msg(r).0, "frozen-unavailable");
+    let mut w = win("a", Lock::None, NOW - 1, NOW + 1000);
+    w.mode = Mode::Allow;
+    let r = run(&mut s, &mut c, Request::PushWindows { windows: vec![w] });
+    assert_eq!(msg(r), ("bad-window".to_string(), "allow-needs-apps".to_string()));
+    let dup = vec![win("d", Lock::None, NOW - 1, NOW + 1000), win("d", Lock::Locked, NOW - 1, NOW + 1000)];
+    let r = run(&mut s, &mut c, Request::PushWindows { windows: dup });
+    assert_eq!(msg(r), ("bad-window".to_string(), "duplicate id".to_string()));
+    let many: Vec<Window> = (0..1025).map(|i| win(&format!("w{i}"), Lock::None, NOW - 1, NOW + 1000)).collect();
+    let r = run(&mut s, &mut c, Request::PushWindows { windows: many });
+    assert_eq!(msg(r), ("bad-window".to_string(), "too-many".to_string()));
+    run(&mut s, &mut c, Request::PushWindows { windows: vec![win("l", Lock::Locked, NOW - 1, NOW + 100_000)] });
+    for _ in 0..32 {
+        assert!(matches!(run(&mut s, &mut c, Request::RequestChallenge { window_id: "l".into() }), Response::Challenge { .. }));
+    }
+    assert_eq!(code_of(run(&mut s, &mut c, Request::RequestChallenge { window_id: "l".into() })), "too-many");
+}

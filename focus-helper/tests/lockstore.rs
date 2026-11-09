@@ -48,7 +48,6 @@ fn nonce_of(code: &str) -> String {
 fn locked_push_without_partner_rejected() {
     let mut s = LockStore::default();
     assert_eq!(s.push(vec![win("a", Lock::Locked, NOW - H, NOW + H)], NOW), Err(PushError::NoPartner));
-    assert_eq!(s.push(vec![win("a", Lock::Frozen, NOW - H, NOW + H)], NOW), Err(PushError::NoPartner));
     assert!(s.windows.is_empty());
     assert!(s.push(vec![win("n", Lock::None, NOW - H, NOW + H)], NOW).is_ok());
 }
@@ -60,8 +59,7 @@ fn invalid_windows_rejected_with_js_reasons() {
     assert_eq!(e(win("a", Lock::None, 10, 10)), Err(PushError::Invalid(Invalid::BadTimes)));
     assert_eq!(e(win("a", Lock::None, 10, 5)), Err(PushError::Invalid(Invalid::BadTimes)));
     assert_eq!(e(win("a", Lock::Locked, NOW, NOW + MAX_LOCKED_MS + 1)), Err(PushError::Invalid(Invalid::TooLong)));
-    assert_eq!(e(win("a", Lock::Frozen, NOW, NOW + MAX_FROZEN_MS + 1)), Err(PushError::Invalid(Invalid::TooLong)));
-    assert!(e(win("a", Lock::Frozen, NOW, NOW + MAX_FROZEN_MS)).is_ok());
+    assert!(e(win("a", Lock::Locked, NOW, NOW + MAX_LOCKED_MS)).is_ok());
     assert_eq!(Invalid::TooLong.reason(), "too-long");
 }
 
@@ -74,7 +72,7 @@ fn bad_items_rejected() {
         w.sites = vec![b.into()];
         assert_eq!(s.push(vec![w], NOW), Err(PushError::BadItem), "site {b:?}");
     }
-    for b in ["", "my app.exe", "a\u{7}b", "a\r"] {
+    for b in ["", "   ", "a\u{7}b", "a\r", "a\tb", "a\u{a0}b", "dir/app.exe", "dir\\app.exe", "c:app.exe"] {
         let mut w = win("n", Lock::None, NOW - H, NOW + H);
         w.apps = vec![b.into()];
         assert_eq!(s.push(vec![w], NOW), Err(PushError::BadItem), "app {b:?}");
@@ -131,9 +129,9 @@ fn same_id_extends_but_never_shortens_or_edits() {
 #[test]
 fn extension_cap_measured_from_stored_start() {
     let (mut s, _) = with_partner();
-    s.push(vec![win("f", Lock::Frozen, NOW, NOW + H)], NOW).unwrap();
+    s.push(vec![win("f", Lock::Locked, NOW, NOW + H)], NOW).unwrap();
     // incoming moves start later so it passes validation alone, but the stored start governs
-    let r = s.push(vec![win("f", Lock::Frozen, NOW + 5 * H, NOW + 5 * H + MAX_FROZEN_MS)], NOW);
+    let r = s.push(vec![win("f", Lock::Locked, NOW + 5 * H, NOW + 5 * H + MAX_LOCKED_MS)], NOW);
     assert_eq!(r, Err(PushError::Invalid(Invalid::TooLong)));
     assert_eq!(s.windows[0].ends, NOW + H);
 }
@@ -223,7 +221,7 @@ fn challenge_only_for_active_lock() {
 
 fn setup_two_locks() -> (LockStore, SigningKey, String, String) {
     let (mut s, sk) = with_partner();
-    s.push(vec![win("a", Lock::Locked, NOW - H, NOW + H), win("b", Lock::Frozen, NOW - H, NOW + H)], NOW).unwrap();
+    s.push(vec![win("a", Lock::Locked, NOW - H, NOW + H), win("b", Lock::Locked, NOW - H, NOW + H)], NOW).unwrap();
     let ca = nonce_of(&s.request_challenge("a", NOW, [1; 16]).unwrap());
     let cb = nonce_of(&s.request_challenge("b", NOW, [2; 16]).unwrap());
     (s, sk, ca, cb)
@@ -330,7 +328,8 @@ fn set_partner_blocked_by_future_locks() {
     for lock in [Lock::Locked, Lock::Frozen] {
         let (mut s, _) = with_partner();
         let before = s.partner_key.clone();
-        s.push(vec![win("f", lock, NOW + 5 * 60_000, NOW + H)], NOW).unwrap();
+        // A frozen window cannot be pushed any more but may exist in older persisted state.
+        s.windows.push(win("f", lock, NOW + 5 * 60_000, NOW + H));
         assert_eq!(s.set_partner(&other, NOW), Err(PartnerError::LockActive), "{lock:?}");
         assert_eq!(s.partner_key, before);
     }
@@ -390,4 +389,155 @@ fn token_expiry_uses_high_water_time() {
     let t2 = token(&sk, &na, "a", NOW + 30 * 60_000);
     assert_eq!(s.submit_token(&t2, NOW), Ok("a".to_string()));
     assert_eq!(s.windows.iter().find(|w| w.id == "a").unwrap().ends, NOW + 20 * 60_000);
+}
+
+// ---- Final wave: tombstones, rejections, caps, item validation ----
+
+fn bad(w: Window, now: i64) -> PushError {
+    let (mut s, _) = with_partner();
+    s.push(vec![w], now).unwrap_err()
+}
+
+#[test]
+fn frozen_windows_are_rejected_for_the_whole_push() {
+    let (mut s, _) = with_partner();
+    let r = s.push(
+        vec![win("ok", Lock::Locked, NOW - H, NOW + H), win("f", Lock::Frozen, NOW - H, NOW + H)],
+        NOW,
+    );
+    assert_eq!(r, Err(PushError::FrozenUnavailable));
+    assert!(s.windows.is_empty());
+    // even without a partner: frozen is unavailable, not "no partner"
+    assert_eq!(
+        LockStore::default().push(vec![win("f", Lock::Frozen, NOW - H, NOW + H)], NOW),
+        Err(PushError::FrozenUnavailable)
+    );
+}
+
+#[test]
+fn allow_windows_need_apps() {
+    let mut s = LockStore::default();
+    let mut w = win("a", Lock::None, NOW - H, NOW + H);
+    w.mode = Mode::Allow;
+    w.apps = vec![];
+    assert_eq!(s.push(vec![w.clone()], NOW), Err(PushError::AllowNeedsApps));
+    w.apps = vec!["code.exe".into()];
+    assert!(s.push(vec![w], NOW).is_ok());
+    // block windows may have no apps
+    let mut b = win("b", Lock::None, NOW - H, NOW + H);
+    b.apps = vec![];
+    assert!(s.push(vec![b], NOW).is_ok());
+}
+
+#[test]
+fn app_names_with_spaces_are_accepted() {
+    let mut s = LockStore::default();
+    for name in ["League of Legends.exe", "Spotify (beta).exe", "my-app_2.exe", "a.b.exe"] {
+        let mut w = win("n", Lock::None, NOW - H, NOW + H);
+        w.apps = vec![name.into()];
+        assert!(s.push(vec![w], NOW).is_ok(), "{name}");
+    }
+    assert!(good_item("x", false) && good_item("x.com", true));
+}
+
+#[test]
+fn duplicate_ids_in_one_push_are_rejected() {
+    let (mut s, _) = with_partner();
+    let r = s.push(
+        vec![win("d", Lock::None, NOW - H, NOW + H), win("d", Lock::Locked, NOW - H, NOW + H)],
+        NOW,
+    );
+    assert_eq!(r, Err(PushError::DuplicateId));
+    assert!(s.windows.is_empty());
+}
+
+#[test]
+fn window_and_item_caps() {
+    let mut s = LockStore::default();
+    let many: Vec<Window> = (0..=MAX_WINDOWS).map(|i| win(&format!("w{i}"), Lock::None, NOW - H, NOW + H)).collect();
+    assert_eq!(s.push(many.clone(), NOW), Err(PushError::TooMany));
+    assert!(s.push(many[..MAX_WINDOWS].to_vec(), NOW).is_ok());
+    assert_eq!(s.windows.len(), MAX_WINDOWS);
+
+    // stored locked windows count toward the cap
+    let (mut s, _) = with_partner();
+    s.push(vec![win("l", Lock::Locked, NOW - H, NOW + H)], NOW).unwrap();
+    let batch: Vec<Window> = (0..MAX_WINDOWS).map(|i| win(&format!("w{i}"), Lock::None, NOW - H, NOW + H)).collect();
+    assert_eq!(s.push(batch, NOW), Err(PushError::TooMany));
+    assert_eq!(s.windows.len(), 1);
+
+    let mut w = win("big", Lock::None, NOW - H, NOW + H);
+    w.sites = (0..MAX_ITEMS_PER_WINDOW).map(|i| format!("s{i}.com")).collect();
+    w.apps = vec!["a.exe".into()];
+    assert_eq!(bad(w.clone(), NOW), PushError::TooMany);
+    w.apps = vec![];
+    assert!(LockStore::default().push(vec![w], NOW).is_ok());
+}
+
+#[test]
+fn challenge_cap() {
+    let (mut s, _) = with_partner();
+    s.push(vec![win("l", Lock::Locked, NOW - H, NOW + 3 * H)], NOW).unwrap();
+    for i in 0..MAX_CHALLENGES {
+        s.request_challenge("l", NOW, [i as u8; 16]).unwrap();
+    }
+    assert_eq!(s.request_challenge("l", NOW, [99; 16]), Err(ChallengeError::TooMany));
+    assert_eq!(s.challenges.len(), MAX_CHALLENGES);
+    // old ones expire, so requests work again later
+    assert!(s.request_challenge("l", NOW + H + 1000, [98; 16]).is_ok());
+}
+
+fn unlock(s: &mut LockStore, sk: &SigningKey, id: &str, at: i64) {
+    let n = nonce_of(&s.request_challenge(id, at, [7; 16]).unwrap());
+    let t = token(sk, &n, id, at + 600_000);
+    s.submit_token(&t, at + 1000).unwrap();
+}
+
+#[test]
+fn unlocked_window_is_not_resurrected_by_repush() {
+    let (mut s, sk) = with_partner();
+    let w = win("c1@5", Lock::Locked, NOW - H, NOW + H);
+    s.push(vec![w.clone()], NOW).unwrap();
+    unlock(&mut s, &sk, "c1@5", NOW);
+    assert_eq!(s.ended_early, vec![Tombstone { id: "c1@5".into(), ends: NOW + H }]);
+    let r = s.push(vec![w.clone()], NOW + 2000).unwrap();
+    assert_eq!((r.tombstoned, r.added), (1, 0));
+    assert!(s.windows.iter().all(|x| x.ends <= NOW + 2000), "no live lock");
+    // an empty push followed by a re-push cycle never resurrects it either
+    s.push(vec![], NOW + 3000).unwrap();
+    assert!(s.windows.is_empty());
+    s.push(vec![w], NOW + 4000).unwrap();
+    assert!(s.windows.is_empty());
+    assert_eq!(s.ended_early.len(), 1);
+}
+
+#[test]
+fn later_end_with_same_id_is_a_new_lock_and_old_tombstones_prune() {
+    let (mut s, sk) = with_partner();
+    s.push(vec![win("x", Lock::Locked, NOW - H, NOW + H)], NOW).unwrap();
+    unlock(&mut s, &sk, "x", NOW);
+    let r = s.push(vec![win("x", Lock::Locked, NOW - H, NOW + 2 * H)], NOW + 2000).unwrap();
+    assert_eq!((r.added, r.tombstoned), (1, 0));
+    // after the original end passed, the tombstone is gone and the same id is accepted again
+    let mut s2 = LockStore { ended_early: vec![Tombstone { id: "y".into(), ends: NOW + H }], ..LockStore::default() };
+    s2.partner_key = s.partner_key.clone();
+    s2.push(vec![win("y", Lock::Locked, NOW + H + 5, NOW + 3 * H)], NOW + H + 10).unwrap();
+    assert!(s2.ended_early.is_empty());
+    assert_eq!(s2.windows.len(), 1);
+}
+
+#[test]
+fn tombstones_survive_serde_and_old_state_loads() {
+    let (mut s, sk) = with_partner();
+    s.push(vec![win("t", Lock::Locked, NOW - H, NOW + H)], NOW).unwrap();
+    unlock(&mut s, &sk, "t", NOW);
+    let back: LockStore = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+    assert_eq!(back.ended_early, s.ended_early);
+    assert_eq!(back.version, STORE_VERSION);
+    // state written before versioning and tombstones
+    let old: LockStore =
+        serde_json::from_str(r#"{"windows":[],"partner_key":null,"challenges":[],"high_water_ms":7}"#).unwrap();
+    assert_eq!((old.version, old.high_water_ms, old.ended_early.len()), (STORE_VERSION, 7, 0));
+    let empty: LockStore = serde_json::from_str("{}").unwrap();
+    assert_eq!(empty.version, STORE_VERSION);
 }
