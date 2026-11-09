@@ -596,3 +596,102 @@ fn existing_locked_window_ignores_pushed_item_and_delay_changes() {
     s.push(vec![w], NOW).unwrap();
     assert_eq!(s.windows[0], before);
 }
+
+#[test]
+fn delay_bounds_are_inclusive() {
+    for d in [MIN_UNLOCK_DELAY_MS, MAX_UNLOCK_DELAY_MS] {
+        let mut w = win("a", Lock::Locked, NOW, NOW + H);
+        w.unlock_delay_ms = Some(d);
+        assert!(push_one(w).is_ok(), "delay {d}");
+    }
+}
+
+#[test]
+fn frozen_window_with_delay_is_rejected_by_validation() {
+    // Frozen pushes are refused earlier (FrozenUnavailable); a delay on a frozen window would be BadDelay.
+    let mut w = win("f", Lock::Frozen, NOW, NOW + H);
+    w.unlock_delay_ms = Some(86_400_000);
+    let r = push_one(w);
+    assert!(matches!(r, Err(PushError::FrozenUnavailable) | Err(PushError::Invalid(Invalid::BadDelay))), "{r:?}");
+}
+
+const DAY: i64 = 86_400_000;
+
+fn locked_store() -> (LockStore, SigningKey) {
+    let (mut s, sk) = with_partner();
+    s.push(vec![win("a", Lock::Locked, NOW - H, NOW + 2 * DAY)], NOW).unwrap();
+    (s, sk)
+}
+
+#[test]
+fn request_sets_unlock_at_now_plus_delay() {
+    let (mut s, _) = locked_store();
+    assert_eq!(s.request_delayed_unlock("a", NOW), Ok(NOW + DAY));
+    assert_eq!(s.pending_unlocks, vec![PendingUnlock { window_id: "a".into(), unlock_at: NOW + DAY }]);
+}
+
+#[test]
+fn second_request_returns_same_time() {
+    let (mut s, _) = locked_store();
+    s.request_delayed_unlock("a", NOW).unwrap();
+    assert_eq!(s.request_delayed_unlock("a", NOW + H), Ok(NOW + DAY));
+    assert_eq!(s.pending_unlocks.len(), 1);
+}
+
+#[test]
+fn request_on_unknown_or_none_window_errors() {
+    let (mut s, _) = locked_store();
+    s.push(vec![win("n", Lock::None, NOW - H, NOW + H)], NOW).unwrap();
+    assert_eq!(s.request_delayed_unlock("zz", NOW), Err(DelayError::NoSuchLock));
+    assert_eq!(s.request_delayed_unlock("n", NOW), Err(DelayError::NotDelayable));
+    s.windows[0].unlock_delay_ms = None;
+    assert_eq!(s.request_delayed_unlock("a", NOW), Err(DelayError::NotDelayable));
+    assert!(s.pending_unlocks.is_empty());
+}
+
+#[test]
+fn expiry_ends_window_and_writes_tombstone() {
+    let (mut s, _) = locked_store();
+    let at = s.request_delayed_unlock("a", NOW).unwrap();
+    assert!(!s.expire_pending(at - 1));
+    assert_eq!(s.windows[0].ends, NOW + 2 * DAY);
+    assert!(s.expire_pending(at));
+    assert!(s.windows[0].ends <= at);
+    assert!(s.pending_unlocks.is_empty());
+    assert_eq!(s.ended_early, vec![Tombstone { id: "a".into(), ends: NOW + 2 * DAY }]);
+    let r = s.push(vec![win("a", Lock::Locked, NOW - H, NOW + 2 * DAY)], at + 1000).unwrap();
+    assert_eq!((r.tombstoned, r.added), (1, 0));
+    assert!(s.windows.iter().all(|w| w.ends <= at + 1000));
+    assert!(!s.expire_pending(at + 2000));
+}
+
+#[test]
+fn expiry_when_window_ends_first_just_ends_normally() {
+    let (mut s, _) = with_partner();
+    s.push(vec![win("a", Lock::Locked, NOW - H, NOW + 2 * H)], NOW).unwrap();
+    // delay of one day, but the window ends in two hours
+    s.request_delayed_unlock("a", NOW).unwrap();
+    assert!(s.expire_pending(NOW + DAY));
+    assert!(s.pending_unlocks.is_empty());
+    assert_eq!(s.windows[0].ends, NOW + 2 * H);
+    assert!(s.ended_early.is_empty());
+}
+
+#[test]
+fn cancel_removes_pending_and_second_cancel_returns_false() {
+    let (mut s, _) = locked_store();
+    s.request_delayed_unlock("a", NOW).unwrap();
+    assert!(s.cancel_delayed_unlock("a"));
+    assert!(!s.cancel_delayed_unlock("a"));
+    assert!(s.pending_unlocks.is_empty());
+    assert!(!s.expire_pending(NOW + 5 * DAY));
+}
+
+#[test]
+fn partner_token_clears_pending() {
+    let (mut s, sk) = locked_store();
+    s.request_delayed_unlock("a", NOW).unwrap();
+    unlock(&mut s, &sk, "a", NOW + H);
+    assert!(s.pending_unlocks.is_empty());
+    assert!(s.windows[0].ends <= NOW + H + 1000);
+}

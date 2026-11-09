@@ -135,5 +135,19 @@ fn old_format_state_still_loads() {
     fs::write(&p, br#"{"windows":[],"partner_key":"k","challenges":[],"high_water_ms":9}"#).unwrap();
     let (s, src) = load_with_report(&p);
     assert_eq!(src, LoadSource::Main);
-    assert_eq!((s.partner_key.as_deref(), s.high_water_ms, s.version), (Some("k"), 9, 1));
+    assert_eq!((s.partner_key.as_deref(), s.high_water_ms, s.version), (Some("k"), 9, focus_helper::lockstore::STORE_VERSION));
+}
+
+#[test]
+fn pending_survives_save_and_load() {
+    use focus_helper::lockstore::PendingUnlock;
+    let d = dir("pending");
+    let p = d.join("state.json");
+    let mut s = store("w", 5);
+    s.pending_unlocks.push(PendingUnlock { window_id: "w".into(), unlock_at: 77 });
+    save(&p, &s).unwrap();
+    assert_eq!(load(&p).pending_unlocks, s.pending_unlocks);
+    // old files without the field load with an empty list
+    fs::write(&p, br#"{"windows":[],"partner_key":"k","challenges":[],"high_water_ms":9}"#).unwrap();
+    assert!(load(&p).pending_unlocks.is_empty());
 }

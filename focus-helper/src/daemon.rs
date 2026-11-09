@@ -131,8 +131,15 @@ impl Daemon {
         let resp = match serde_json::from_str::<Request>(line) {
             Ok(req) => {
                 let is_status = req == Request::GetStatus;
+                let before = is_status.then(|| (self.store.windows.clone(), self.store.pending_unlocks.clone()));
                 let mut resp = ipc::handle(&mut self.store, &mut self.clock, req, wall_ms, mono_ms, nonce);
                 if is_status {
+                    // A due delayed unlock is applied on any request; persist and enforce it now.
+                    if before != Some((self.store.windows.clone(), self.store.pending_unlocks.clone())) {
+                        self.save();
+                        let now = self.clock.now(wall_ms, mono_ms);
+                        self.apply(now, platform);
+                    }
                     if let Response::Status { warnings, .. } = &mut resp {
                         *warnings = self.warnings();
                     }
@@ -169,8 +176,9 @@ impl Daemon {
             self.store.high_water_ms = self.clock.high_water_ms();
         }
         self.store.prune_tombstones(now);
+        let expired = self.store.expire_pending(now);
         self.apply(now, platform);
-        if self.persist_error.is_some() {
+        if self.persist_error.is_some() || expired {
             self.save();
             return;
         }
