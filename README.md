@@ -2,26 +2,12 @@
 
 A personal, offline, all-in-one desktop app for Windows. Your data stays on your computer.
 
-It has a shell (sidebar, Ctrl+K search across everything, settings, backup) and seven modules:
+It is now just the **Focus Room**: a Cold Turkey-style blocker with timed blocks, locked blocks that
+only a partner's signed code or a waiting period can end, and a tamper-resistant Windows helper
+service. The other modules (Second Brain, Cooking, Money, Skills, Photos, Journal) and the Ctrl+K
+search and Ctrl+Alt+N quick capture were removed; they are still in git history before this change.
 
-| Module | What it does |
-| --- | --- |
-| 🧠 Second Brain | Linked Markdown notes, backlinks, graph, daily note, quick capture, import/export |
-| 🎯 Focus Room | Pomodoro timer, ambient noise, one-thing focus, session log and streaks |
-| 🍳 Cooking Coach | Pantry, recipes, "what can I cook tonight", scaling, timers from steps, macros and cost |
-| 💰 Money Sandbox | Monte Carlo what-if simulator (buy a house, change jobs, go part-time) with comparison |
-| 🌳 Skill Tree | Skills tree, practice log, levels, spaced-repetition flashcards (SM-2) |
-| 🖼️ Photo Vault | Private photo timeline, albums, trip suggestions, on this day |
-| 📓 Journal Companion | Daily entries, weekly review, patterns, reflection prompts (all offline, rule-based) |
-
-Everything is stored on this computer and works offline. Design docs: `docs/superpowers/specs/`.
-
-## Second Brain
-
-- Markdown notes with `[[links]]`, `#tags`, backlinks, a related-notes panel and a graph view
-- A daily note, global search (Ctrl+K), quick capture from anywhere (Ctrl+Alt+N)
-- Import a folder of `.md` files (Obsidian vaults work), export all notes back to `.md`
-- One-click backup and restore (Settings)
+Settings keeps backup and restore. Design docs: `docs/superpowers/specs/`.
 
 ## Get the app
 

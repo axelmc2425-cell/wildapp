@@ -1,4 +1,4 @@
-const ORDER = ['secondbrain', 'focus', 'cooking', 'money', 'skills', 'photos', 'journal'];
+const ORDER = ['focus'];
 const registry = new Map();
 
 export function registerModule(def) {

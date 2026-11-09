@@ -1,21 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { registerModule, listModules, runStartHooks } from '../src/shell/modules.js';
-import '../src/modules/secondbrain/index.js';
 import '../src/modules/focus/index.js';
-import '../src/modules/cooking/index.js';
-import '../src/modules/money/index.js';
-import '../src/modules/skills/index.js';
-import '../src/modules/photos/index.js';
-import '../src/modules/journal/index.js';
 
-test('listModules returns seven modules in order', () => {
-  assert.deepEqual(listModules().map(m => m.id),
-    ['secondbrain', 'focus', 'cooking', 'money', 'skills', 'photos', 'journal']);
-});
+// The start-hook tests need several modules; register throwaway ones (they sort after focus).
+for (const id of ['t-a', 't-b', 't-c']) registerModule({ id, name: id, icon: 'x', ready: true, render() {} });
+const hookMods = () => listModules().filter(m => m.id.startsWith('t-'));
 
-test('all seven modules are ready', () => {
-  assert.deepEqual(listModules().filter(m => m.ready).map(m => m.id), ['secondbrain', 'focus', 'cooking', 'money', 'skills', 'photos', 'journal']);
+test('Focus Room is the first real module', () => {
+  assert.deepEqual(listModules().map(m => m.id).filter(id => !id.startsWith('t-')), ['focus']);
 });
 
 test('the sidebar lists Focus Room as ready (not soon)', () => {
@@ -52,7 +45,7 @@ test('runStartHooks calls each onStart in module order', async () => {
 });
 
 test('a throwing onStart is logged and does not stop later hooks', async () => {
-  const mods = listModules();
+  const mods = hookMods();
   const saved = mods.map(m => m.onStart);
   const ran = [];
   mods[0].onStart = () => { throw new Error('boom'); };
@@ -72,7 +65,7 @@ test('a throwing onStart is logged and does not stop later hooks', async () => {
 });
 
 function patchHooks(hooks) {
-  const mods = listModules();
+  const mods = hookMods();
   const saved = mods.map(m => m.onStart);
   mods.forEach((m, i) => { if (hooks[i]) m.onStart = hooks[i]; else delete m.onStart; });
   return () => mods.forEach((m, i) => { if (saved[i]) m.onStart = saved[i]; else delete m.onStart; });

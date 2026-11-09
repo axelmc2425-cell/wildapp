@@ -1,7 +1,7 @@
 {
   "identifier": "default",
-  "description": "Main and quick-capture window permissions",
-  "windows": ["main", "quick"],
+  "description": "Main window permissions",
+  "windows": ["main"],
   "permissions": [
     "core:default",
     "core:window:allow-close",

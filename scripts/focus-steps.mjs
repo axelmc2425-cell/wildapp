@@ -111,8 +111,8 @@ export default async function steps(page, shot, h) {
   ok(await page.evaluate(() => !document.querySelector('.fr-dialog') && document.activeElement.textContent === 'Extend'), 'Esc closes the dialog and returns focus to Extend');
 
   // (e) navigate away and back: no duplicate banners, no errors
-  await page.goto(page.url().split('#')[0] + '#/secondbrain');
-  await page.waitForSelector('.sb-list, #content');
+  await page.goto(page.url().split('#')[0] + '#/settings');
+  await page.waitForSelector('#content');
   await page.goto(page.url().split('#')[0] + '#/focus');
   await page.waitForSelector('.fr-block');
   ok((await page.locator('.fr-banner').count()) === 1, 'exactly one banner after navigating back');
@@ -535,8 +535,8 @@ async function detailsScenarios(page, shot, h) {
   ok(true, 'Retry restores the rows');
 
   // (e) navigate away and back: one panel, closed again, no errors
-  await page.goto(page.url().split('#')[0] + '#/secondbrain');
-  await page.waitForSelector('.sb-list, #content');
+  await page.goto(page.url().split('#')[0] + '#/settings');
+  await page.waitForSelector('#content');
   await page.goto(page.url().split('#')[0] + '#/focus');
   await page.waitForSelector('.fr-block');
   ok((await page.locator('.fr-details').count()) === 1, 'exactly one details element after navigating back');
