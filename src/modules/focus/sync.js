@@ -1,5 +1,6 @@
 // Push the next 30 days of focus windows (sessions + expanded schedules) to the helper.
 import { sessionToWindow, expandSchedule } from './expand.js';
+import { validateWindow } from './limits.js';
 
 const HORIZON_MS = 30 * 86400000;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -27,7 +28,7 @@ export async function syncWindows(db, client, nowMs, tzOffsetAt) {
   let skipped = 0;
   for (const s of sessions) {
     const list = byId.get(s.list_id);
-    if (!list || !Number.isFinite(s.starts) || !Number.isFinite(s.ends)) { skipped++; continue; }
+    if (!list) { skipped++; continue; }
     windows.push(sessionToWindow(s, list));
   }
   for (const s of schedules) {
@@ -38,7 +39,14 @@ export async function syncWindows(db, client, nowMs, tzOffsetAt) {
       windows.push(...expandSchedule(sched, list, nowMs, HORIZON_MS, tzOffsetAt));
     } catch { skipped++; }
   }
-  const live = windows.filter((w) => w.ends > nowMs);
+  // The helper rejects a whole push if any window is invalid, so drop invalid ones here.
+  const valid = windows.filter((w) => {
+    if (validateWindow(w).ok) return true;
+    skipped++;
+    return false;
+  });
+  // Windows starting at or beyond the horizon are not yet due; a later sync pushes them.
+  const live = valid.filter((w) => w.ends > nowMs && w.starts < nowMs + HORIZON_MS);
   await client.pushWindows(live);
   return { pushed: live.length, skipped };
 }

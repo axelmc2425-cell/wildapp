@@ -61,3 +61,42 @@ test('malformed rows and missing lists are skipped and counted', async () => {
   assert.equal(res.skipped, 3);
   assert.equal(res.pushed, 4);
 });
+
+async function withList() {
+  const db = await mk();
+  await db.run("INSERT INTO focus_lists(name, mode) VALUES ('L','block')");
+  return db;
+}
+const addSession = (db, starts, ends, lock = 'none') =>
+  db.run('INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (1, ?, ?, ?)', [starts, ends, lock]);
+
+test('invalid sessions are skipped and counted, valid ones still push', async () => {
+  const db = await withList();
+  await addSession(db, NOW + H, NOW + 2 * H);
+  await addSession(db, NOW + 2 * H, NOW + H);
+  await addSession(db, NOW, NOW + 8 * DAY, 'locked');
+  await addSession(db, NOW, NOW + DAY + H, 'frozen');
+  const r = rec();
+  const res = await syncWindows(db, r.client, NOW, utc);
+  assert.deepEqual(res, { pushed: 1, skipped: 3 });
+  assert.deepEqual(r.pushed[0].map((w) => w.id), ['s1']);
+});
+
+test('horizon and ended boundaries', async () => {
+  const db = await withList();
+  await addSession(db, NOW + 30 * DAY + 1, NOW + 30 * DAY + H);
+  await addSession(db, NOW + 30 * DAY, NOW + 30 * DAY + H);
+  await addSession(db, NOW - H, NOW);
+  await addSession(db, NOW + 30 * DAY - 1, NOW + 30 * DAY + H);
+  const r = rec();
+  const res = await syncWindows(db, r.client, NOW, utc);
+  assert.deepEqual(res, { pushed: 1, skipped: 0 });
+  assert.deepEqual(r.pushed[0].map((w) => w.id), ['s4']);
+});
+
+test('out-of-range weekday skips the schedule', async () => {
+  const db = await withList();
+  await db.run("INSERT INTO focus_schedules(list_id, weekdays, start_time, end_time, lock) VALUES (1, '[1, 9]', '09:00', '10:00', 'none')");
+  const r = rec();
+  assert.deepEqual(await syncWindows(db, r.client, NOW, utc), { pushed: 0, skipped: 1 });
+});
