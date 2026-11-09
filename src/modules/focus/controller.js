@@ -130,7 +130,7 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
     return enqueue(async () => {
       let res;
       try {
-        res = await store.saveList(db, input);
+        res = await store.saveList(db, input, now());
       } catch (e) {
         const msg = errText(e);
         return { ok: false, errors: { name: msg === 'no such list' ? 'That list no longer exists.' : `Could not save: ${msg}` } };
