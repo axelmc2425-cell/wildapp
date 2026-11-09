@@ -44,6 +44,19 @@ export function mountHome(root, controller, ctx, deps = {}) {
   root.innerHTML = '';
   root.append(page);
 
+  // The details panel is built once and patched in place, so an open panel survives every re-render.
+  let details = null;
+  function mountDetails() {
+    if (typeof deps.mountHelperDetails !== 'function') return;
+    if (!details) {
+      const body = h('div', {});
+      detailsEl.append(h('details', { class: 'fr-details' }, h('summary', {}, 'Helper details'), body));
+      details = deps.mountHelperDetails(body, controller);
+    } else {
+      details.update();
+    }
+  }
+
   let bannerSig = '';
   function renderBanner(state) {
     const b = bannerFor(state.helper);
@@ -277,6 +290,7 @@ export function mountHome(root, controller, ctx, deps = {}) {
       typeof deps.openListEditor, typeof deps.openStartDialog,
     ]);
     renderBanner(state);
+    mountDetails();
     if (sig === lastSig) { restore(); return; }
     lastSig = sig;
 
@@ -313,12 +327,6 @@ export function mountHome(root, controller, ctx, deps = {}) {
       listsEl.append(h('div', { class: 'fr-actions fr-lists-foot' }, newListButton()));
     }
 
-    if (typeof deps.mountHelperDetails === 'function' && !detailsEl.firstChild) {
-      const body = h('div', {});
-      detailsEl.append(h('details', { class: 'fr-details' }, h('summary', {}, 'Helper details'), body));
-      deps.mountHelperDetails(body, controller);
-    }
-
     restore();
   }
 
@@ -335,6 +343,7 @@ export function mountHome(root, controller, ctx, deps = {}) {
     alive = false;
     try { unsubscribe(); } catch { /* ignore */ }
     for (const id of timers) clearInterval(id);
+    try { details?.destroy(); } catch { /* ignore */ }
     for (const d of [...dialogs]) d.close();
     dialogs.clear();
     root.innerHTML = '';

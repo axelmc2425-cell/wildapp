@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { describeLastSync, detailsSignature } from '../src/modules/focus/ui/helper-details.js';
 import { chipSummary, formatClock, minutesLeft } from '../src/modules/focus/ui/util.js';
 
 test('chipSummary caps and counts the rest', () => {
@@ -21,4 +22,19 @@ test('minutesLeft rounds up and clamps', () => {
   assert.equal(minutesLeft(60001), 2);
   assert.equal(minutesLeft(-5), 0);
   assert.equal(minutesLeft(NaN), 0);
+});
+
+test('describeLastSync', () => {
+  assert.equal(describeLastSync(null), null);
+  assert.equal(describeLastSync(undefined), null);
+  assert.equal(describeLastSync({ pushed: 3, skipped: 1 }), 'Last sync: 3 windows sent, 1 skipped');
+  assert.equal(describeLastSync({ pushed: 1, skipped: 0 }), 'Last sync: 1 window sent, 0 skipped');
+});
+
+test('detailsSignature changes only with visible content', () => {
+  const ok = { helper: { kind: 'ok', status: { decision: {}, windows: [], partner_set: false, now_ms: 0, warnings: [] } }, syncPending: false, lastSync: null };
+  assert.equal(detailsSignature(ok), detailsSignature(JSON.parse(JSON.stringify(ok))));
+  assert.notEqual(detailsSignature(ok), detailsSignature({ ...ok, syncPending: true }));
+  assert.notEqual(detailsSignature(ok), detailsSignature({ ...ok, lastSync: { pushed: 1, skipped: 0 } }));
+  assert.notEqual(detailsSignature(ok), detailsSignature({ ...ok, helper: { kind: 'not-running' } }));
 });

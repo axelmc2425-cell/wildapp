@@ -204,3 +204,19 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-strictopt.fr-locked { flex-direction: row; background: var(--fr-muted-bg); border-style: dashed; color: var(--muted); opacity: .75; cursor: not-allowed; }
 .fr-st-summary { margin: 0; font-weight: 600; min-height: 1.4em; }
 .fr-start > .fr-err { margin: 0; }
+
+/* ---- Focus Room: helper details ---- */
+.fr-details { margin-top: 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
+.fr-details > summary { cursor: pointer; padding: 10px 14px; font-weight: 600; font-size: 13.5px; color: var(--muted); border-radius: 10px; }
+.fr-details > summary:hover { color: var(--text); }
+.fr-details > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fr-details[open] > summary { border-bottom: 1px solid var(--border); border-bottom-left-radius: 0; border-bottom-right-radius: 0; color: var(--text); }
+.fr-details-body { padding: 12px 14px 14px; min-width: 0; overflow-wrap: anywhere; }
+.fr-dl { display: grid; grid-template-columns: minmax(110px, max-content) minmax(0, 1fr); gap: 8px 18px; margin: 0; font-size: 13.5px; }
+.fr-dl dt { color: var(--muted); }
+.fr-dl dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.fr-warnlist { margin: 0; padding-left: 18px; }
+.fr-warnlist li { margin: 0 0 4px; }
+.fr-det-title { margin: 0 0 4px; font-weight: 600; }
+.fr-det-detail { margin: 0 0 8px; }
+.fr-details-body > .fr-muted { margin: 10px 0 0; }

@@ -165,3 +165,13 @@ test('detailRows', () => {
   const n = detailRows(null);
   assert.equal(n.find((x) => x.label === 'Helper').value, 'Not reachable');
 });
+
+test('detailRows lines carry each warning verbatim', () => {
+  const st = { decision: {}, windows: [], partner_set: false, now_ms: 0, warnings: ['hosts: Access is denied. (os error 5)', 'state: loaded from backup; ok'] };
+  const w = detailRows(st).find((x) => x.label === 'Warnings');
+  assert.deepEqual(w.lines, ['hosts: Access is denied. (os error 5)', 'state: loaded from backup; ok']);
+  assert.match(w.value, /Access is denied/);
+  assert.equal(detailRows({ ...st, warnings: [] }).find((x) => x.label === 'Warnings').lines, undefined);
+  assert.equal(detailRows({ ...st, warnings: [] }).find((x) => x.label === 'Warnings').value, 'None');
+  assert.equal(detailRows(null).find((x) => x.label === 'Warnings').lines, undefined);
+});

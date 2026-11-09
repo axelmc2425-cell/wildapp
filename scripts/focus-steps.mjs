@@ -4,6 +4,7 @@ import { saveList, createSessions } from '../src/modules/focus/store.js';
 import { STARTERS } from '../src/modules/focus/starters.js';
 
 const ok = (cond, msg) => { if (!cond) throw new Error('ASSERT FAILED: ' + msg); console.log('ok:', msg); };
+const detailMap = (page) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.fr-details .fr-dl dt')].map(dt => [dt.textContent, dt.nextElementSibling.innerText.trim()])));
 const text = (page, sel) => page.evaluate((s) => document.querySelector(s)?.innerText ?? null, sel);
 
 export default async function steps(page, shot, h) {
@@ -16,6 +17,20 @@ export default async function steps(page, shot, h) {
   ok(body.includes('Blank list'), 'blank list button is shown');
   await page.waitForSelector('.fr-banner.fr-ok', { timeout: 8000 });
   await shot('focus-1-first-run');
+
+  // Task 10 (a, fresh helper): details exist, start collapsed, and show the empty status
+  ok((await page.locator('.fr-details').count()) === 1, 'exactly one details element');
+  ok(await page.evaluate(() => !document.querySelector('.fr-details').open), 'details are collapsed by default');
+  await page.click('.fr-details > summary');
+  ok(await page.evaluate(() => document.querySelector('.fr-details').open), 'clicking the summary opens the details');
+  const d0 = await detailMap(page);
+  ok(d0['Helper'] === 'Running' && d0['Partner key'] === 'not set' && d0['Blocking now'] === '0 sites, 0 apps', `fresh details: ${JSON.stringify(d0)}`);
+  await page.focus('.fr-details > summary');
+  await page.keyboard.press('Enter');
+  ok(await page.evaluate(() => !document.querySelector('.fr-details').open), 'Enter on the summary closes it');
+  await page.keyboard.press('Space');
+  ok(await page.evaluate(() => document.querySelector('.fr-details').open), 'Space on the summary opens it');
+  await page.keyboard.press('Enter');
 
   await editorScenarios(page, shot, h);
 
@@ -99,6 +114,7 @@ export default async function steps(page, shot, h) {
   ok((await page.locator('.fr-banner').count()) === 1, 'exactly one banner after navigating back');
   await page.waitForTimeout(1500);
 
+  await detailsScenarios(page, shot, h);
   await startScenarios(page, shot, h);
 }
 
@@ -462,4 +478,62 @@ async function pendingScenarios(page, shot, h) {
   await page.keyboard.press('Escape');
   await closed();
   ok(true, 'plain Esc still closes an idle editor');
+}
+
+// ---- Task 10: helper details panel (runs with the running block from scenario (b) in place) ----
+async function detailsScenarios(page, shot, h) {
+  const isOpen = () => page.evaluate(() => document.querySelector('.fr-details').open);
+  await page.waitForSelector('.fr-banner.fr-ok', { timeout: 8000 });
+  if (!(await isOpen())) await page.click('.fr-details > summary');
+
+  // (a) a running block shows up in the details
+  await page.waitForFunction(() => /^8 sites, 2 apps$/.test([...document.querySelectorAll('.fr-details .fr-dl dd')].map(d => d.innerText.trim())[2] || ''), null, { timeout: 8000 });
+  const d1 = await detailMap(page);
+  ok(d1['Blocking now'] === '8 sites, 2 apps' && d1['Windows held'] === '2', `running details (one window per list): ${JSON.stringify(d1)}`);
+  await page.evaluate(() => document.querySelector('.fr-details').scrollIntoView({ block: 'end' }));
+  await shot('focus-13-details-open');
+
+  // (b) the 5 s poll must not collapse or rebuild the open panel
+  await page.evaluate(() => document.querySelector('.fr-details').setAttribute('data-tag', 'mine'));
+  await page.waitForTimeout(6000);
+  ok(await isOpen(), 'panel is still open after a 5 s poll');
+  ok(await page.evaluate(() => document.querySelector('.fr-details')?.getAttribute('data-tag') === 'mine'), 'the <details> element is the same node after the poll');
+
+  // (c) raw warnings, one per line, while the banner shows the plain sentence
+  h.setWarnings(['hosts: Access is denied. (os error 5)', 'state: loaded from backup']);
+  await page.waitForSelector('.fr-banner.fr-warn', { timeout: 7500 });
+  await page.waitForFunction(() => document.querySelectorAll('.fr-details .fr-warnlist li').length === 2, null, { timeout: 7500 });
+  const lis = await page.evaluate(() => [...document.querySelectorAll('.fr-details .fr-warnlist li')].map(l => l.textContent));
+  ok(lis[0] === 'hosts: Access is denied. (os error 5)' && lis[1] === 'state: loaded from backup', `warnings listed verbatim: ${JSON.stringify(lis)}`);
+  const bd = await text(page, '.fr-banner-detail');
+  ok(bd.startsWith("The helper couldn't update the Windows hosts file"), `banner shows the plain sentence (got "${bd}")`);
+  ok(await isOpen() && await page.evaluate(() => document.querySelector('.fr-details').getAttribute('data-tag') === 'mine'), 'panel stayed open and unreplaced while warnings arrived');
+  await page.evaluate(() => document.querySelector('.fr-details').scrollIntoView({ block: 'end' }));
+  await shot('focus-14-details-warnings');
+  h.setWarnings(null);
+  await page.waitForSelector('.fr-banner.fr-ok', { timeout: 7500 });
+  await page.waitForFunction(() => !document.querySelector('.fr-details .fr-warnlist'), null, { timeout: 7500 });
+
+  // (d) helper down: details show the explanation, not fake data
+  h.setHelperDown(true);
+  await page.waitForSelector('.fr-banner.fr-error', { timeout: 7500 });
+  await page.waitForFunction(() => !document.querySelector('.fr-details .fr-dl'), null, { timeout: 3000 });
+  const dt = await text(page, '.fr-details');
+  ok(dt.includes('start the MyBrainFocus service') && !dt.includes('Running'), `down details explain how to fix (got "${dt.replace(/\n/g, ' ')}")`);
+  await page.evaluate(() => document.querySelector('.fr-details').scrollIntoView({ block: 'end' }));
+  await shot('focus-15-details-down');
+  h.setHelperDown(false);
+  await page.click('.fr-banner .fr-retry');
+  await page.waitForSelector('.fr-banner.fr-ok', { timeout: 8000 });
+  await page.waitForSelector('.fr-details .fr-dl', { timeout: 5000 });
+  ok(true, 'Retry restores the rows');
+
+  // (e) navigate away and back: one panel, closed again, no errors
+  await page.goto(page.url().split('#')[0] + '#/secondbrain');
+  await page.waitForSelector('.sb-list, #content');
+  await page.goto(page.url().split('#')[0] + '#/focus');
+  await page.waitForSelector('.fr-block');
+  ok((await page.locator('.fr-details').count()) === 1, 'exactly one details element after navigating back');
+  ok(await page.evaluate(() => !document.querySelector('.fr-details').open), 'details start collapsed again');
+  await page.waitForTimeout(1200);
 }

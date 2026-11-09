@@ -206,7 +206,7 @@ export function detailRows(status) {
     { label: 'Partner key', value: status.partner_set ? 'set' : 'not set' },
     { label: 'Blocking now', value: `${plural(sites, 'site', 'sites')}, ${plural(apps, 'app', 'apps')}` },
     { label: 'Windows held', value: String(Array.isArray(status.windows) ? status.windows.length : 0) },
-    { label: 'Warnings', value: warnings.length ? warnings.join('; ') : 'None' },
+    { label: 'Warnings', value: warnings.length ? warnings.join('; ') : 'None', ...(warnings.length ? { lines: warnings.map((w) => String(w)) } : {}) },
     { label: 'Helper clock', value: clock },
   ];
 }
