@@ -34,6 +34,9 @@ test('describeLastSync', () => {
 test('detailsSignature changes only with visible content', () => {
   const ok = { helper: { kind: 'ok', status: { decision: {}, windows: [], partner_set: false, now_ms: 0, warnings: [] } }, syncPending: false, lastSync: null };
   assert.equal(detailsSignature(ok), detailsSignature(JSON.parse(JSON.stringify(ok))));
+  const later = JSON.parse(JSON.stringify(ok));
+  if (later.helper.status) later.helper.status.now_ms = (later.helper.status.now_ms || 0) + 5000;
+  assert.equal(detailsSignature(ok), detailsSignature(later));
   assert.notEqual(detailsSignature(ok), detailsSignature({ ...ok, syncPending: true }));
   assert.notEqual(detailsSignature(ok), detailsSignature({ ...ok, lastSync: { pushed: 1, skipped: 0 } }));
   assert.notEqual(detailsSignature(ok), detailsSignature({ ...ok, helper: { kind: 'not-running' } }));

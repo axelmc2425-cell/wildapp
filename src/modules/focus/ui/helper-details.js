@@ -8,23 +8,27 @@ export function describeLastSync(lastSync) {
   return `Last sync: ${lastSync.pushed} ${lastSync.pushed === 1 ? 'window' : 'windows'} sent, ${skipped} skipped`;
 }
 
-/** Everything the panel shows, as a string: equal signatures mean nothing needs repainting. */
+const CLOCK = 'Helper clock';
+
+/** Everything the panel shows (except the helper clock, which is patched in place so it never forces a repaint), as a string: equal signatures mean nothing needs repainting. */
 export function detailsSignature(state) {
   const helper = state.helper || { kind: 'unknown' };
   const status = helper.kind === 'ok' ? helper.status : null;
   return JSON.stringify([
-    helper.kind, helper.kind === 'ok' ? detailRows(status) : bannerFor(helper),
+    helper.kind, helper.kind === 'ok' ? detailRows(status).filter((r) => r.label !== CLOCK) : bannerFor(helper),
     describeLastSync(state.lastSync), !!state.syncPending,
   ]);
 }
 
-function rowsList(rows) {
+function rowsList(rows, onClock) {
   const dl = h('dl', { class: 'fr-dl' });
   for (const r of rows) {
     dl.append(h('dt', {}, r.label));
-    dl.append(h('dd', {}, r.lines
+    const dd = h('dd', {}, r.lines
       ? h('ul', { class: 'fr-warnlist' }, r.lines.map((l) => h('li', {}, l)))
-      : r.value));
+      : r.value);
+    if (r.label === CLOCK) onClock(dd);
+    dl.append(dd);
   }
   return dl;
 }
@@ -36,19 +40,28 @@ function rowsList(rows) {
 export function mountHelperDetails(container, controller) {
   let sig = null;
   let alive = true;
+  let clockDd = null;
   const content = h('div', { class: 'fr-details-body' });
   container.append(content);
+
+  function patchClock(state) {
+    const helper = state.helper || {};
+    if (!clockDd || helper.kind !== 'ok') return;
+    const row = detailRows(helper.status).find((r) => r.label === CLOCK);
+    if (row && clockDd.textContent !== row.value) clockDd.textContent = row.value;
+  }
 
   function update() {
     if (!alive) return;
     const state = controller.state;
     const next = detailsSignature(state);
-    if (next === sig) return;
+    if (next === sig) { patchClock(state); return; }
     sig = next;
     const helper = state.helper || { kind: 'unknown' };
     content.textContent = '';
+    clockDd = null;
     if (helper.kind === 'ok') {
-      content.append(rowsList(detailRows(helper.status)));
+      content.append(rowsList(detailRows(helper.status), (dd) => { clockDd = dd; }));
     } else {
       const b = bannerFor(helper);
       content.append(
