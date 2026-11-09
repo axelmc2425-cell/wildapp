@@ -1,0 +1,139 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  formatCountdown, groupSessions, parseDuration, classifyHelperFailure,
+  bannerFor, describePushProblem, detailRows,
+} from '../src/modules/focus/model.js';
+
+test('formatCountdown', () => {
+  assert.equal(formatCountdown(8040000), '2 h 14 min left');
+  assert.equal(formatCountdown(7200000), '2 h left');
+  assert.equal(formatCountdown(840000), '14 min left');
+  assert.equal(formatCountdown(839001), '14 min left');
+  assert.equal(formatCountdown(59000), '59 s left');
+  assert.equal(formatCountdown(60000), '1 min left');
+  assert.equal(formatCountdown(0), 'Ending…');
+  assert.equal(formatCountdown(-5), 'Ending…');
+  assert.equal(formatCountdown(NaN), 'Ending…');
+  assert.equal(formatCountdown(Infinity), 'Ending…');
+});
+
+test('formatCountdown is epoch based across a US DST change', () => {
+  const start = Date.UTC(2026, 2, 8, 6, 0, 0); // before US spring-forward
+  const end = start + 3 * 3600 * 1000;
+  assert.equal(formatCountdown(end - start), '3 h left');
+});
+
+const lists = [{ id: 1, name: 'Work' }, { id: 2, name: 'Study' }];
+const S = (id, listId, starts, ends, lock = 'none') => ({ id, listId, starts, ends, lock });
+
+test('groupSessions groups, states, progress, sorting', () => {
+  const now = 1500;
+  const b = groupSessions([
+    S(1, 1, 1000, 2000), S(2, 2, 1000, 2000),
+    S(3, 1, 3000, 4000), S(4, 1, 0, 1500), S(5, 1, 0, 500),
+  ], lists, now);
+  assert.equal(b.length, 4);
+  assert.deepEqual(b.map((x) => x.ends), [500, 1500, 2000, 4000]);
+  const run = b.find((x) => x.ends === 2000);
+  assert.deepEqual(run.ids, [1, 2]);
+  assert.deepEqual(run.listNames, ['Work', 'Study']);
+  assert.equal(run.key, '1000:2000');
+  assert.equal(run.state, 'running');
+  assert.equal(run.progress, 0.5);
+  assert.equal(b.find((x) => x.ends === 4000).state, 'upcoming');
+  assert.equal(b.find((x) => x.ends === 4000).progress, 0);
+  assert.equal(b.find((x) => x.ends === 1500).state, 'finished');
+  assert.equal(b.find((x) => x.ends === 1500).progress, 1);
+  assert.equal(b.find((x) => x.ends === 500).state, 'finished');
+});
+
+test('groupSessions starting exactly now is running; drops bad rows; deleted list', () => {
+  const b = groupSessions([
+    S(1, 9, 1000, 2000), S(2, 1, 2000, 1000), S(3, 1, NaN, 5), S(4, 1, 1, Infinity),
+    S(5, 1, 3, 3), null, S(6, 1, '1', 5),
+  ], lists, 1000);
+  assert.equal(b.length, 1);
+  assert.deepEqual(b[0].listNames, ['(deleted list)']);
+  assert.equal(b[0].state, 'running');
+  assert.equal(b[0].progress, 0);
+  assert.deepEqual(groupSessions(null, null, 0), []);
+});
+
+test('groupSessions separates different locks', () => {
+  const b = groupSessions([S(1, 1, 0, 10, 'none'), S(2, 1, 0, 10, 'x')], lists, 5);
+  assert.equal(b.length, 2);
+});
+
+test('parseDuration', () => {
+  for (const c of ['0', '1441', '2.5', 'abc', '', '-3', '1e2']) {
+    assert.equal(parseDuration({ custom: c }).ok, false, c);
+  }
+  assert.deepEqual(parseDuration({ custom: '90' }), { ok: true, minutes: 90 });
+  assert.deepEqual(parseDuration({ custom: ' 1440 ' }), { ok: true, minutes: 1440 });
+  assert.deepEqual(parseDuration({ preset: 25 }), { ok: true, minutes: 25 });
+  assert.equal(parseDuration({}).ok, false);
+  assert.equal(typeof parseDuration({ custom: 'x' }).message, 'string');
+});
+
+test('classifyHelperFailure', () => {
+  assert.equal(classifyHelperFailure({ code: 'persist-failed', message: 'disk' }).kind, 'persist-failed');
+  assert.equal(classifyHelperFailure({ code: 'persist-failed', message: 'disk' }).message, 'disk');
+  assert.equal(classifyHelperFailure({ code: 'unreachable', message: 'The Focus Room helper service is not running' }).kind, 'not-running');
+  assert.equal(classifyHelperFailure({ code: 'unreachable', message: 'Focus Room blocking is only available on Windows' }).kind, 'unavailable');
+  assert.equal(classifyHelperFailure({ code: 'unreachable', message: 'only available in the desktop app' }).kind, 'unavailable');
+  assert.equal(classifyHelperFailure({ code: 'unreachable', message: "Cannot read properties of undefined (reading 'core')" }).kind, 'unavailable');
+  assert.equal(classifyHelperFailure({ code: 'unreachable', message: 'focus helper did not answer in time' }).kind, 'timeout');
+  const u = classifyHelperFailure({ code: 'bad-window', message: 'nope' });
+  assert.deepEqual(u, { kind: 'unknown', message: 'nope' });
+  assert.equal(classifyHelperFailure(null).kind, 'unknown');
+  assert.equal(classifyHelperFailure('weird').kind, 'unknown');
+});
+
+const okStatus = (w = []) => ({ decision: { blockSites: ['a'], blockApps: [], allow: null, frozen: false, locks: [] }, windows: [], partner_set: false, now_ms: 0, warnings: w });
+
+test('bannerFor', () => {
+  assert.equal(bannerFor({ kind: 'ok', status: okStatus() }).level, 'ok');
+  assert.equal(bannerFor({ kind: 'ok', status: okStatus() }).title, 'Helper running.');
+  const w = bannerFor({ kind: 'ok', status: okStatus(['clock-skew']) });
+  assert.equal(w.level, 'warn');
+  assert.equal(w.title, 'Helper running, with warnings.');
+  assert.ok(w.detail.length > 0);
+  assert.equal(bannerFor({ kind: 'ok', status: { warnings: undefined } }).level, 'ok');
+  const n = bannerFor({ kind: 'not-running' });
+  assert.equal(n.level, 'error');
+  assert.equal(n.title, "Blocking is not active. The helper isn't running.");
+  assert.match(n.detail, /MyBrainFocus/);
+  assert.equal(bannerFor({ kind: 'persist-failed', message: 'm' }).level, 'error');
+  assert.equal(bannerFor({ kind: 'persist-failed', message: 'm' }).title, 'A change is active but will be lost on restart.');
+  assert.equal(bannerFor({ kind: 'unavailable' }).level, 'muted');
+  assert.equal(bannerFor({ kind: 'unavailable' }).detail, 'Blocking only works in the Windows app.');
+  assert.equal(bannerFor({ kind: 'timeout' }).level, 'error');
+  assert.equal(bannerFor({ kind: 'timeout' }).title, "The helper didn't answer.");
+  const u = bannerFor({ kind: 'unknown', message: 'boom' });
+  assert.equal(u.level, 'error');
+  assert.equal(u.detail, 'boom');
+});
+
+test('describePushProblem', () => {
+  const s = describePushProblem({ code: 'too-many', message: 'Too many windows in list "Work"' }, 0, ['Work']);
+  assert.match(s, /Work/);
+  assert.doesNotMatch(s, /couldn't be sent/);
+  assert.match(describePushProblem({ message: 'x' }, 3, []), /3 items couldn't be sent/);
+  assert.match(describePushProblem({ message: 'x' }, 1, []), /1 item couldn't be sent/);
+  assert.equal(typeof describePushProblem(null, 0, []), 'string');
+});
+
+test('detailRows', () => {
+  const r = detailRows({ decision: { blockSites: ['a', 'b'], blockApps: ['x', 'y', 'z'], allow: null, frozen: false, locks: [] }, windows: [1, 2], partner_set: true, now_ms: 0, warnings: ['w1', 'w2'] });
+  const m = Object.fromEntries(r.map((x) => [x.label, x.value]));
+  assert.equal(m['Helper'], 'Running');
+  assert.equal(m['Partner key'], 'set');
+  assert.equal(m['Blocking now'], '2 sites, 3 apps');
+  assert.equal(m['Windows held'], '2');
+  assert.match(m['Warnings'], /w1/);
+  assert.match(m['Warnings'], /w2/);
+  assert.ok(m['Helper clock']);
+  const n = detailRows(null);
+  assert.equal(n.find((x) => x.label === 'Helper').value, 'Not reachable');
+});
