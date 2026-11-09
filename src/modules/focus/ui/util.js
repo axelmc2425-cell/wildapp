@@ -7,12 +7,21 @@ export function chipSummary(items, max = 6) {
   return { shown: list.slice(0, m), more: Math.max(0, list.length - m) };
 }
 
-/** Local clock time such as "5:00 PM"; never throws, even for absurd timestamps. */
-export function formatClock(ms) {
+/** Local clock time such as "5:00 PM", with a weekday ("Tue 3:15 PM") or date ("Nov 20, 3:15 PM") when not today; never throws, even for absurd timestamps. */
+export function formatClock(ms, nowMs = Date.now()) {
   if (typeof ms !== 'number' || !Number.isFinite(ms)) return 'later';
   const d = new Date(ms);
   if (Number.isNaN(d.getTime())) return 'later';
-  try { return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch { return 'later'; }
+  try {
+    const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const start = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    const days = Math.round((start(d) - start(new Date(nowMs))) / 86400000);
+    if (days === 0) return time;
+    const day = Math.abs(days) < 7
+      ? d.toLocaleDateString([], { weekday: 'short' })
+      : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    return `${day} ${time}`;
+  } catch { return 'later'; }
 }
 
 /** Whole minutes left (rounded up), used to announce the countdown once a minute. */

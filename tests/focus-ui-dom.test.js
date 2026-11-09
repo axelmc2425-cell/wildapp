@@ -16,6 +16,16 @@ test('formatClock never throws on absurd times', () => {
   assert.match(formatClock(Date.UTC(2026, 0, 1, 12, 0)), /\d{1,2}:\d{2}/);
 });
 
+test('formatClock adds a weekday or date when not today', () => {
+  const now = new Date(2026, 10, 9, 15, 15).getTime();
+  const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  assert.equal(formatClock(new Date(2026, 10, 9, 18, 0).getTime(), now), clock(new Date(2026, 10, 9, 18, 0).getTime()));
+  const tomorrow = new Date(2026, 10, 10, 15, 15).getTime();
+  assert.equal(formatClock(tomorrow, now), `${new Date(tomorrow).toLocaleDateString([], { weekday: 'short' })} ${clock(tomorrow)}`);
+  const later = new Date(2026, 10, 20, 9, 0).getTime();
+  assert.equal(formatClock(later, now), `${new Date(later).toLocaleDateString([], { month: 'short', day: 'numeric' })} ${clock(later)}`);
+});
+
 test('minutesLeft rounds up and clamps', () => {
   assert.equal(minutesLeft(1), 1);
   assert.equal(minutesLeft(60000), 1);

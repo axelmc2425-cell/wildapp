@@ -220,7 +220,7 @@ export function detailRows(status, opts) {
     { label: 'Helper', value: 'Running' },
     { label: 'Partner key', value: status.partner_set ? (name ? `${name} (key set)` : 'set') : 'not set' },
     { label: 'Blocking now', value: `${plural(sites, 'site', 'sites')}, ${plural(apps, 'app', 'apps')}` },
-    { label: 'Windows held', value: String(Array.isArray(status.windows) ? status.windows.length : 0) },
+    { label: 'Windows held', value: String(Array.isArray(status.windows) ? status.windows.filter((w) => !(w && Number.isFinite(w.ends) && Number.isFinite(status.now_ms) && w.ends <= status.now_ms)).length : 0) },
     ...(pendingLines.length ? [{ label: 'Pending unlocks', value: pendingLines.join('; '), lines: pendingLines }] : []),
     { label: 'Warnings', value: warnings.length ? warnings.join('; ') : 'None', ...(warnings.length ? { lines: warnings.map((w) => String(w)) } : {}) },
     { label: 'Helper clock', value: clock },

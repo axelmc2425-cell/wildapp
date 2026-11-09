@@ -41,7 +41,7 @@ Out: Frozen mode and its overlay (4b), locked schedules (sub-project 3 builds th
   - Cancel: removes the pending request. Error `no-pending-unlock`.
   - When effective time reaches `unlock_at` (or the window's end, whichever is first) the window is removed and a tombstone with its original end is kept, exactly like a partner-token unlock. A later push of the same id with the same or an earlier end is skipped.
 - A partner token submitted while a request is pending still works at once and clears the request.
-- `Status` reports, per window, `unlock_at` when pending. The helper's own state version is bumped (missing field defaults to none).
+- `Status` reports a top-level `pending_unlocks` list (`window_id`, `unlock_at`) for pending requests. The helper's own state version is bumped (missing field defaults to none).
 - The wait uses the helper's effective clock (`max(wall, high_water + monotonic)`), so moving the system clock back does not shorten it; moving it forward can, which is the existing documented limit.
 - Push semantics for an existing locked id: the helper keeps its stored sites, apps and delay; a push may only extend `ends` (existing rule). A push that changes items of an accepted locked window is applied as "same window, items ignored", so the helper's copy wins.
 - Test-only: a cargo feature `test-clock` adds an `AdvanceClock { ms }` request so end-to-end tests can pass a delay without waiting. It is not compiled into the release binary or the installer.

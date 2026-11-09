@@ -62,6 +62,8 @@ cargo build --manifest-path focus-helper/Cargo.toml --features test-clock
 node --test tests/focus-locks-e2e.test.js
 ```
 
+The partner is trust-based: the owner could generate their own key from the same offline page. A locked window the helper holds but the app database lacks (for example after clearing app data) currently has no UI to unlock; locked schedules are skipped until sub-project 3.
+
 Never ship a `test-clock` build. The Windows-only behaviour of locks is checked by section 13 of `docs/superpowers/focus-room-windows-checklist.md`.
 
 ## Checklist for trying it on Windows

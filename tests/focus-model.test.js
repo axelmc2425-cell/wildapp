@@ -152,6 +152,11 @@ test('describePushProblem', () => {
   assert.equal(typeof describePushProblem(null, 0, []), 'string');
 });
 
+test('detailRows Windows held excludes early-ended windows', () => {
+  const r = detailRows({ decision: { blockSites: [], blockApps: [], allow: null, frozen: false, locks: [] }, windows: [{ id: 'a', ends: 100 }, { id: 'b', ends: 50 }, { id: 'c', ends: 500 }], partner_set: true, now_ms: 100, warnings: [] });
+  assert.equal(Object.fromEntries(r.map((x) => [x.label, x.value]))['Windows held'], '1');
+});
+
 test('detailRows', () => {
   const r = detailRows({ decision: { blockSites: ['a', 'b'], blockApps: ['x', 'y', 'z'], allow: null, frozen: false, locks: [] }, windows: [1, 2], partner_set: true, now_ms: 0, warnings: ['w1', 'w2'] });
   const m = Object.fromEntries(r.map((x) => [x.label, x.value]));

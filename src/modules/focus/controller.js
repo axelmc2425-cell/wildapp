@@ -96,6 +96,16 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
     return applied;
   }
 
+  // Ids of windows the helper still holds. The real helper ends a window early by pulling its end back
+  // to "now" and keeps listing it until it is pruned, so a window with ends <= now_ms is not held.
+  function heldIds(status) {
+    const helperNow = status && Number.isFinite(status.now_ms) ? status.now_ms : null;
+    const list = status && Array.isArray(status.windows) ? status.windows : [];
+    return new Set(list
+      .filter((w) => w && !(helperNow !== null && Number.isFinite(w.ends) && w.ends <= helperNow))
+      .map((w) => w.id));
+  }
+
   // Runs inside the queue. The helper's copy of a lock wins: a running locked block it no longer
   // holds (ended by token or wait) is removed here. Only called with a status that was just applied,
   // so an unsent (syncPending) change can never look like a block the helper dropped.
@@ -106,10 +116,7 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
       const t = now();
       // The real helper ends a window early by pulling its end back to "now" and keeps listing it until
       // it is pruned, so a window already over on the helper's own clock is not held any more.
-      const helperNow = Number.isFinite(status.now_ms) ? status.now_ms : null;
-      const held = new Set(status.windows
-        .filter((w) => w && !(helperNow !== null && Number.isFinite(w.ends) && w.ends <= helperNow))
-        .map((w) => w.id));
+      const held = heldIds(status);
       const gone = groupSessions(sessions, lists, t)
         .filter((b) => b.lock === 'locked' && t < b.ends && !held.has(windowIdForBlock(b)));
       if (!gone.length) return;
@@ -252,9 +259,15 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
         return { ok: false, message: 'Enter a whole number of minutes from 1 to 1440.' };
       }
       try {
-        const block = await findLiveBlock(key);
+        let block = await findLiveBlock(key);
         if (!block) return { ok: false, message: FINISHED };
         const locked = block.lock === 'locked';
+        if (locked) {
+          // The helper may have just ended this lock (wait expired); extending now would revive it.
+          await pollAndReconcile();
+          block = await findLiveBlock(key);
+          if (!block) return { ok: false, message: 'This lock has just ended, so it cannot be extended.' };
+        }
         const cap = block.starts + (locked ? MAX_LOCKED_MINUTES : MAX_MINUTES) * MIN;
         if (block.ends >= cap) {
           return { ok: false, message: locked ? 'A locked block can be at most 7 days long.' : 'A block can be at most 24 hours long.' };
@@ -360,7 +373,7 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
       const holds = async () => {
         try {
           const st = await client.status();
-          return Array.isArray(st && st.windows) && st.windows.some((w) => w && w.id === wid);
+          return Array.isArray(st && st.windows) && heldIds(st).has(wid);
         } catch { return null; }
       };
       const unconfirmed = () => {

@@ -552,6 +552,19 @@ test('extend only lengthens a locked block and caps at 7 days', async () => {
   assert.match(r.message, /7 days/);
 });
 
+test('extend refuses a locked block the helper just ended and does not revive it', async () => {
+  const x = await lockedSetup();
+  await startLocked(x, { minutes: 60 });
+  const key = x.ctl.state.blocks[0].key;
+  const pushes = x.calls.pushes.length;
+  x.client.windows = [];
+  const r = await x.ctl.extendBlock(key, 30);
+  assert.equal(r.ok, false);
+  assert.match(r.message, /just ended/);
+  assert.equal(x.calls.pushes.length, pushes);
+  assert.equal(x.ctl.state.blocks.length, 0);
+});
+
 test('extend of a normal block keeps the 24 hour cap', async () => {
   const x = await lockedSetup();
   await x.ctl.startBlock({ listIds: [x.a.id], minutes: 60 });
