@@ -33,6 +33,7 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
   let syncPending = false;
   let lastSync = null;
   let notice = null;
+  let loaded = false;
 
   const changed = () => { try { onChange?.(); } catch { /* UI callback must not break the controller */ } };
 
@@ -113,9 +114,11 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
       try {
         await store.purgeFinished(db, now());
         await reload();
+        loaded = true;
         changed();
       } catch (e) {
         notice = `Could not read your focus data: ${errText(e)}`;
+        loaded = true;
         changed();
         return;
       }
@@ -225,7 +228,7 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
 
   return {
     get state() {
-      return { lists, blocks: groupSessions(sessions, lists, now()), helper, syncPending, lastSync, notice };
+      return { loaded, lists, blocks: groupSessions(sessions, lists, now()), helper, syncPending, lastSync, notice };
     },
     load, saveList, deleteList, startBlock, extendBlock, cancelBlock, refreshStatus, resync,
   };

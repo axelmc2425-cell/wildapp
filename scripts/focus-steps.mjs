@@ -26,6 +26,8 @@ export default async function steps(page, shot, h) {
   ok(a.ok && b.ok && hostile.ok, 'lists saved: ' + JSON.stringify(hostile));
   await createSessions(h.db, { listIds: [a.id, b.id], starts: now - 45 * 60000, ends: now + 134 * 60000 });
   await page.reload();
+  await page.waitForSelector('.fr-home');
+  ok(!(await text(page, '.fr-home')).includes('Create your first list'), 'no first-run flash while lists exist');
   await page.waitForSelector('.fr-block');
   const cd = await page.evaluate(() => document.querySelector('.fr-big').textContent);
   ok(/^\d+ h \d+ min left$/.test(cd), `countdown reads like "2 h 14 min left" (got "${cd}")`);
@@ -45,8 +47,13 @@ export default async function steps(page, shot, h) {
   const down = await text(page, '.fr-banner');
   ok(down.includes("helper isn't running"), `red banner says helper isn't running (got "${down.replace(/\n/g, ' ')}")`);
   await shot('focus-3-helper-down');
+  await page.focus('.fr-banner .fr-retry');
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(600);
+  ok(await page.evaluate(() => document.activeElement.classList.contains('fr-retry')), 'keyboard Retry while helper is down keeps focus on Retry');
   h.setHelperDown(false);
-  await page.click('.fr-banner .fr-retry');
+  await page.focus('.fr-banner .fr-retry');
+  await page.keyboard.press('Enter');
   await page.waitForSelector('.fr-banner.fr-ok', { timeout: 5000 });
   ok(true, 'Retry turned the banner green again');
   await shot('focus-4-recovered');
@@ -70,6 +77,15 @@ export default async function steps(page, shot, h) {
   await page.keyboard.press('Tab'); await page.keyboard.press('Tab'); await page.keyboard.press('Tab'); await page.keyboard.press('Tab'); await page.keyboard.press('Tab'); await page.keyboard.press('Tab');
   ok(await page.evaluate(() => !!document.activeElement.closest('.fr-dialog')), 'focus stays trapped inside the dialog');
   await shot('focus-7-extend');
+  await page.keyboard.press('Escape');
+  await page.click('.fr-block button:has-text("Extend")');
+  await page.waitForSelector('.fr-dialog');
+  await page.focus('.fr-choices button');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => !document.querySelector('.fr-dialog'));
+  await page.waitForTimeout(800);
+  ok(await page.evaluate(() => document.activeElement.textContent === 'Extend' && !!document.activeElement.closest('.fr-block')), 'after keyboard +15 min, focus is on the card Extend button (not BODY)');
+  await page.click('.fr-block button:has-text("Extend")');
   await page.keyboard.press('Escape');
   ok(await page.evaluate(() => !document.querySelector('.fr-dialog') && document.activeElement.textContent === 'Extend'), 'Esc closes the dialog and returns focus to Extend');
 

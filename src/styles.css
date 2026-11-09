@@ -163,5 +163,5 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-custom label { display: flex; gap: 8px; align-items: center; }
 .fr-num { width: 90px; padding: 4px 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
 .fr-err { color: var(--danger); font-size: 13px; margin: 8px 0 0; }
-button:disabled { opacity: .5; cursor: not-allowed; }
+.fr-home button:disabled, .fr-dialog button:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 960px) { .fr-home { padding: 20px 16px; } .fr-list { flex-wrap: wrap; } }

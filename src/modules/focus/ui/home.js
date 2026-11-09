@@ -133,7 +133,7 @@ export function mountHome(root, controller, ctx, deps = {}) {
   }
 
   // ---- cards ----
-  function blockCard(state, block) {
+  function blockCard(state, block, idx) {
     const t = now();
     const names = block.listNames.join(' + ');
     const running = block.state === 'running';
@@ -149,8 +149,8 @@ export function mountHome(root, controller, ctx, deps = {}) {
       h('div', { class: 'fr-card-bottom' },
         h('span', { class: 'fr-muted' }, running ? `ends at ${formatClock(block.ends)}` : `starts at ${formatClock(block.starts)}, ends at ${formatClock(block.ends)}`),
         h('span', { class: 'fr-actions' },
-          h('button', { type: 'button', 'data-fk': `extend-${block.key}`, onclick: () => extendDialog(block) }, 'Extend'),
-          h('button', { type: 'button', class: 'danger', 'data-fk': `cancel-${block.key}`, onclick: () => cancelDialog(block) }, 'Cancel'))),
+          h('button', { type: 'button', 'data-fk': `extend-${idx}`, onclick: () => extendDialog(block) }, 'Extend'),
+          h('button', { type: 'button', class: 'danger', 'data-fk': `cancel-${idx}`, onclick: () => cancelDialog(block) }, 'Cancel'))),
       state.syncPending && state.helper.kind !== 'ok' ? h('p', { class: 'fr-muted fr-small' }, 'Saved, not yet enforced.') : null);
     const entry = { block, state: block.state, cd, sr, bar, lastMin: -1 };
     live.push(entry);
@@ -262,18 +262,23 @@ export function mountHome(root, controller, ctx, deps = {}) {
     if (!alive) return;
     const state = controller.state;
     const t = now();
+    // Capture the focused control BEFORE any re-render step, restore after all of them.
+    const active = document.activeElement;
+    const fk = active && root.contains(active) ? active.getAttribute('data-fk') : null;
+    const restore = () => {
+      if (!fk) return;
+      const again = [...root.querySelectorAll('[data-fk]')].find(el => el.getAttribute('data-fk') === fk && !el.disabled);
+      if (again && again !== document.activeElement) again.focus();
+    };
     const blocks = state.blocks.filter(b => b.state !== 'finished' && b.ends > t);
     const sig = JSON.stringify([
       bannerFor(state.helper), state.syncPending, state.notice, local, listMsg,
-      state.lists, blocks.map(b => [b.key, b.state, b.listNames]),
+      state.loaded, state.lists, blocks.map(b => [b.key, b.state, b.listNames]),
       typeof deps.openListEditor, typeof deps.openStartDialog,
     ]);
     renderBanner(state);
-    if (sig === lastSig) return;
+    if (sig === lastSig) { restore(); return; }
     lastSig = sig;
-
-    const active = document.activeElement;
-    const fk = active && root.contains(active) ? active.getAttribute('data-fk') : null;
 
     live = [];
     notesEl.textContent = '';
@@ -284,25 +289,29 @@ export function mountHome(root, controller, ctx, deps = {}) {
     }
 
     cardsEl.textContent = '';
-    if (blocks.length === 0) {
+    if (!state.loaded) {
+      cardsEl.append(h('p', { class: 'fr-muted fr-loading' }, 'Loading…'));
+    } else if (blocks.length === 0) {
       cardsEl.append(h('div', { class: 'fr-card' },
         h('h3', { class: 'fr-card-title' }, 'No block running'),
         h('p', { class: 'fr-muted' }, 'Start a block to keep your lists blocked for a while.'),
         h('div', { class: 'fr-actions' }, startButton(state))));
     } else {
-      for (const b of blocks) cardsEl.append(blockCard(state, b));
+      blocks.forEach((b, i) => cardsEl.append(blockCard(state, b, i)));
       if (state.lists.length > 0 && typeof deps.openStartDialog === 'function') {
         cardsEl.append(h('div', { class: 'fr-actions' }, startButton(state)));
       }
     }
 
-    welcome(state);
+    if (state.loaded) welcome(state); else welcomeEl.textContent = '';
 
     listsEl.textContent = '';
     listsEl.append(h('h3', { id: 'fr-lists-title' }, 'Block lists'));
     if (listMsg) listsEl.append(h('p', { class: 'fr-note', role: 'alert' }, listMsg));
-    for (const l of state.lists) listsEl.append(listRow(state, l));
-    listsEl.append(h('div', { class: 'fr-actions fr-lists-foot' }, newListButton()));
+    if (state.loaded) {
+      for (const l of state.lists) listsEl.append(listRow(state, l));
+      listsEl.append(h('div', { class: 'fr-actions fr-lists-foot' }, newListButton()));
+    }
 
     if (typeof deps.mountHelperDetails === 'function' && !detailsEl.firstChild) {
       const body = h('div', {});
@@ -310,10 +319,7 @@ export function mountHome(root, controller, ctx, deps = {}) {
       deps.mountHelperDetails(body, controller);
     }
 
-    if (fk) {
-      const again = [...root.querySelectorAll('[data-fk]')].find(el => el.getAttribute('data-fk') === fk && !el.disabled);
-      if (again) again.focus();
-    }
+    restore();
   }
 
   // ---- wiring ----

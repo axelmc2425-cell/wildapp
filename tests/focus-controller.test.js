@@ -427,3 +427,19 @@ test('an ok status is not applied while syncPending even if it is the newest', a
   await ctl.refreshStatus();
   assert.equal(ctl.state.helper.kind, 'not-running');
 });
+
+test('state.loaded is false until load settles, true after (also after a failing load)', async () => {
+  const { ctl } = await setup();
+  assert.equal(ctl.state.loaded, false);
+  const p = ctl.load();
+  assert.equal(ctl.state.loaded, false);
+  await p;
+  assert.equal(ctl.state.loaded, true);
+
+  const { db, client, ctl: c2 } = await setup();
+  const bad = createController({ db: { all: async () => { throw new Error('disk gone'); }, run: async () => { throw new Error('disk gone'); }, batch: async () => { throw new Error('disk gone'); } }, client, now: () => T0, tzOffsetAt: utc });
+  await bad.load();
+  assert.equal(bad.state.loaded, true);
+  assert.match(bad.state.notice, /Could not read/);
+  void c2; void db;
+});
