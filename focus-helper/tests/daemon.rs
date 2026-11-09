@@ -156,12 +156,14 @@ fn clock_rollback_does_not_end_locked_window() {
     let w = window("w", Lock::Locked, NOW - 1000, NOW + 60_000);
     let line = json!({"type":"PushWindows","windows":[w]}).to_string();
     assert!(d.handle_line(&line, NOW, 10, [0; 16], &mut p).contains("\"Ok\""));
-    let after_push = p.hosts.len();
     assert_eq!(p.hosts.last().unwrap().len(), 2);
     d.tick(NOW + 30_000, 30_000, &mut p);
+    let after_push = p.hosts.len();
     // Wall clock jumps back 10 minutes; only 10 s of monotonic time pass.
     d.tick(NOW - 600_000, 40_000, &mut p);
-    assert_eq!(p.hosts.len(), after_push, "block neither lifted nor reapplied");
+    // The 30 s drift re-apply may run (monotonic time passed) but the block is never lifted.
+    assert!(p.hosts.len() >= after_push);
+    assert!(p.hosts[1..].iter().all(|h| h.len() == 2), "block never lifted: {:?}", p.hosts);
     // Wall clock forward past the end but effective time must still count monotonic only: still active.
     let st = status(&mut d, &mut p, NOW - 600_000, 41_000);
     assert_eq!(st["decision"]["locks"].as_array().unwrap().len(), 1);
@@ -310,4 +312,115 @@ fn unreadable_state_is_kept_and_reported() {
     let main = kept.iter().find(|n| n.starts_with("state.json.corrupt-")).unwrap();
     assert_eq!(std::fs::read(dir.join(main)).unwrap(), b"garbage main");
     assert!(persist::load(&path).windows.is_empty());
+}
+
+fn vector(name: &str) -> Value {
+    serde_json::from_str::<Vec<Value>>(
+        &std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/unlock-vectors.json")).unwrap(),
+    )
+    .unwrap()
+    .into_iter()
+    .find(|v| v["name"] == name)
+    .unwrap()
+}
+
+fn send(d: &mut Daemon, p: &mut Fake, req: Value, wall: i64, mono: i64, nonce: [u8; 16]) -> Value {
+    serde_json::from_str(&d.handle_line(&req.to_string(), wall, mono, nonce, p)).unwrap()
+}
+
+#[test]
+fn set_partner_persists_immediately() {
+    let path = tmp("setpartner");
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    let key = vector("valid")["publicKey"].as_str().unwrap().to_string();
+    let out = send(&mut d, &mut p, json!({"type":"SetPartner","public_key":key}), NOW, 0, [0; 16]);
+    assert_eq!(out["type"], "Ok");
+    assert_eq!(persist::load(&path).partner_key.as_deref(), Some(key.as_str()));
+}
+
+#[test]
+fn submit_token_persists_and_applies_immediately() {
+    let path = tmp("submit");
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    let key = vector("valid")["publicKey"].as_str().unwrap().to_string();
+    send(&mut d, &mut p, json!({"type":"SetPartner","public_key":key}), NOW, 0, [0; 16]);
+    let w = window("win-1", Lock::Locked, NOW - 1000, NOW + 60_000);
+    assert_eq!(send(&mut d, &mut p, json!({"type":"PushWindows","windows":[w.clone()]}), NOW, 1, [0; 16])["type"], "Ok");
+    assert_eq!(p.hosts.last().unwrap().len(), 2);
+    let nonce: [u8; 16] = core::array::from_fn(|i| i as u8);
+    assert_eq!(send(&mut d, &mut p, json!({"type":"RequestChallenge","window_id":"win-1"}), NOW, 2, nonce)["type"], "Challenge");
+    let token = vector("valid")["token"].as_str().unwrap().to_string();
+    let out = send(&mut d, &mut p, json!({"type":"SubmitToken","token":token}), NOW, 3, [0; 16]);
+    assert_eq!(out["type"], "Ok", "{out}");
+    // saved to disk now, with the tombstone, and the block lifted without waiting for a tick
+    let loaded = persist::load(&path);
+    assert!(loaded.windows.iter().all(|x| x.ends <= NOW + 1000));
+    assert_eq!(loaded.ended_early.len(), 1);
+    assert!(p.hosts.last().unwrap().is_empty());
+    // the app's next re-push does not bring the lock back
+    send(&mut d, &mut p, json!({"type":"PushWindows","windows":[w]}), NOW + 5000, 5000, [0; 16]);
+    let st = status(&mut d, &mut p, NOW + 5000, 5001);
+    assert_eq!(st["decision"]["locks"], json!([]));
+    assert!(p.hosts.last().unwrap().is_empty());
+}
+
+#[test]
+fn hosts_are_reapplied_every_30s_while_sites_are_active() {
+    let path = tmp("drift");
+    seed(&path, vec![window("w", Lock::None, NOW - 1000, NOW + 200_000)], 0);
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    d.tick(NOW, 0, &mut p);
+    assert_eq!(p.hosts.len(), 1);
+    d.tick(NOW + 29_000, 29_000, &mut p);
+    assert_eq!(p.hosts.len(), 1, "not before 30 s");
+    d.tick(NOW + 30_000, 30_000, &mut p);
+    assert_eq!(p.hosts.len(), 2, "re-applied after 30 s");
+    assert_eq!(p.hosts[1], vec!["a.com".to_string(), "x.com".to_string()]);
+    d.tick(NOW + 59_000, 59_000, &mut p);
+    assert_eq!(p.hosts.len(), 2);
+    d.tick(NOW + 60_000, 60_000, &mut p);
+    assert_eq!(p.hosts.len(), 3);
+}
+
+#[test]
+fn no_hosts_reapply_when_no_sites_active() {
+    let path = tmp("drift-idle");
+    seed(&path, vec![window("w", Lock::None, NOW + 500_000, NOW + 600_000)], 0);
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    d.tick(NOW, 0, &mut p);
+    let n = p.hosts.len(); // the initial empty apply
+    for i in 1..=4 {
+        d.tick(NOW + i * 31_000, i * 31_000, &mut p);
+    }
+    assert_eq!(p.hosts.len(), n, "idle daemon never touches the hosts file again");
+}
+
+#[test]
+fn reset_clock_refused_with_pending_lock_allowed_otherwise() {
+    let path = tmp("resetclock");
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    let key = vector("valid")["publicKey"].as_str().unwrap().to_string();
+    send(&mut d, &mut p, json!({"type":"SetPartner","public_key":key}), NOW, 0, [0; 16]);
+    // a pending (future) lock refuses the reset
+    let w = window("later", Lock::Locked, NOW + 10_000, NOW + 60_000);
+    send(&mut d, &mut p, json!({"type":"PushWindows","windows":[w]}), NOW, 1, [0; 16]);
+    let out = send(&mut d, &mut p, json!({"type":"ResetClock"}), NOW, 2, [0; 16]);
+    assert_eq!((out["type"].as_str(), out["code"].as_str()), (Some("Error"), Some("lock-active")));
+    // wall clock far in the future was persisted; once the lock is gone, reset recovers
+    let mut d2 = Daemon::load(&tmp("resetclock2"));
+    let far = NOW + 400 * 86_400_000;
+    assert_eq!(status(&mut d2, &mut p, far, 0)["now_ms"], far);
+    assert_eq!(status(&mut d2, &mut p, NOW, 1000)["now_ms"], far + 1000);
+    assert_eq!(send(&mut d2, &mut p, json!({"type":"ResetClock"}), NOW, 2000, [0; 16])["type"], "Ok");
+    assert_eq!(status(&mut d2, &mut p, NOW, 2000)["now_ms"], NOW);
+    assert_eq!(persist::load(&tmp_same("resetclock2")).high_water_ms, NOW);
+}
+
+fn tmp_same(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("focus-daemon-{}-{name}", std::process::id())).join("state.json")
 }

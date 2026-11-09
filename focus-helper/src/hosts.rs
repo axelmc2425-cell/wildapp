@@ -41,7 +41,9 @@ pub fn render(existing: &str, sites: &[String]) -> String {
             Some(j) => j + 1,
             None => {
                 let mut j = i + 1;
-                while j < lines.len() && content(lines[j]).starts_with("0.0.0.0 ") {
+                while j < lines.len()
+                    && (content(lines[j]).starts_with("0.0.0.0 ") || content(lines[j]).starts_with(":: "))
+                {
                     j += 1;
                 }
                 j
@@ -57,7 +59,9 @@ pub fn render(existing: &str, sites: &[String]) -> String {
         out.push_str(eol);
         for d in sites.iter().filter(|d| site_ok(d)) {
             for prefix in ["", "www.", "m."] {
+                // IPv4 and IPv6 sinks, so AAAA lookups are blocked as well.
                 out.push_str(&format!("0.0.0.0 {prefix}{d}{eol}"));
+                out.push_str(&format!(":: {prefix}{d}{eol}"));
             }
         }
         out.push_str(END);
@@ -79,7 +83,7 @@ mod tests {
         let out = render("", &s(&["a.com"]));
         assert_eq!(
             out,
-            "# BEGIN MYBRAIN-FOCUS\n0.0.0.0 a.com\n0.0.0.0 www.a.com\n0.0.0.0 m.a.com\n# END MYBRAIN-FOCUS\n"
+            "# BEGIN MYBRAIN-FOCUS\n0.0.0.0 a.com\n:: a.com\n0.0.0.0 www.a.com\n:: www.a.com\n0.0.0.0 m.a.com\n:: m.a.com\n# END MYBRAIN-FOCUS\n"
         );
     }
 
@@ -103,6 +107,7 @@ mod tests {
         let out = render(base, &s(&["a.com", "b.org"]));
         assert!(out.starts_with(base));
         assert!(out.contains("0.0.0.0 m.b.org\n"));
+        assert!(out.contains(":: m.b.org\n"));
         let with_after = format!("{out}192.168.0.1 router\n");
         let again = render(&with_after, &s(&["c.com"]));
         assert!(again.starts_with(base));
@@ -127,7 +132,7 @@ mod tests {
 
     #[test]
     fn missing_end_marker_does_not_eat_file() {
-        let broken = "x\n# BEGIN MYBRAIN-FOCUS\n0.0.0.0 a.com\n0.0.0.0 www.a.com\nkeep me\n";
+        let broken = "x\n# BEGIN MYBRAIN-FOCUS\n0.0.0.0 a.com\n:: a.com\n0.0.0.0 www.a.com\n:: www.a.com\nkeep me\n";
         assert_eq!(render(broken, &[]), "x\nkeep me\n");
     }
 
@@ -151,6 +156,8 @@ mod tests {
         let out = render("", &bad);
         assert_eq!(out.matches("0.0.0.0 ok.com\n").count(), 1);
         assert_eq!(out.matches("0.0.0.0 ").count(), 3);
+        assert_eq!(out.matches(":: ").count(), 3);
+        assert_eq!(out.matches(":: ok.com\n").count(), 1);
         assert_eq!(render("x\n", &s(&["a b"])), "x\n");
     }
 }

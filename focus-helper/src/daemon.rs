@@ -11,6 +11,10 @@ use crate::ipc::{self, Request, Response};
 use crate::lockstore::LockStore;
 use crate::persist;
 
+/// While block sites are active, re-assert the hosts file this often (effective ms): repairs
+/// edits and ACL changes made behind the helper's back. A no-op when nothing differs.
+pub const HOSTS_REAPPLY_INTERVAL_MS: i64 = 30_000;
+
 /// Persist at least this often, in effective-clock milliseconds.
 pub const PERSIST_INTERVAL_MS: i64 = 30_000;
 
@@ -29,6 +33,8 @@ pub struct Daemon {
     clock: EffectiveClock,
     state_path: PathBuf,
     last_sites: Option<Vec<String>>,
+    /// Effective time of the last `enforce_hosts` call that was made with the current sites.
+    last_hosts_ms: i64,
     doh_on: bool,
     /// Set once DoH has been cleared (or deliberately set) since start. Until then an idle
     /// daemon clears DoH-off unconditionally, to undo state left behind by a crash.
@@ -71,6 +77,7 @@ impl Daemon {
             clock,
             state_path: state_path.to_path_buf(),
             last_sites: None,
+            last_hosts_ms: 0,
             doh_on: false,
             doh_startup_done: false,
             doh_warnings: Vec::new(),
@@ -186,12 +193,27 @@ impl Daemon {
         sites.dedup();
         if self.last_sites.as_ref() != Some(&sites) {
             match platform.enforce_hosts(&sites) {
-                Ok(_) => self.last_sites = Some(sites),
+                Ok(_) => {
+                    self.last_sites = Some(sites);
+                    self.last_hosts_ms = now;
+                }
                 Err(e) => errors.push(format!("hosts: {e}")),
             }
             // Flush regardless of the hosts result: stale cache entries must not linger.
             if let Err(e) = platform.flush_dns() {
                 errors.push(format!("dns: {e}"));
+            }
+        } else if !sites.is_empty() && now - self.last_hosts_ms >= HOSTS_REAPPLY_INTERVAL_MS {
+            // Drift repair: the platform reports whether it had to rewrite anything.
+            self.last_hosts_ms = now;
+            match platform.enforce_hosts(&sites) {
+                Ok(true) => {
+                    if let Err(e) = platform.flush_dns() {
+                        errors.push(format!("dns: {e}"));
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => errors.push(format!("hosts: {e}")),
             }
         }
 

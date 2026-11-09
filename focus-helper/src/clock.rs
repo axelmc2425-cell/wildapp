@@ -25,6 +25,12 @@ impl EffectiveClock {
         value
     }
 
+    /// Recovery from a bogus far-future high-water mark: continues from the current wall clock.
+    pub fn reset(&mut self, wall_ms: i64, mono_ms: i64) {
+        self.high_water_ms = wall_ms;
+        self.mono_at_high_water = Some(mono_ms);
+    }
+
     /// Value to persist so a restart cannot go below it.
     pub fn high_water_ms(&self) -> i64 {
         self.high_water_ms
@@ -55,6 +61,17 @@ mod tests {
         let mut c = EffectiveClock::new(5_000_000);
         assert_eq!(c.now(1_000, 77), 5_000_000);
         assert_eq!(c.now(1_000, 177), 5_000_100);
+    }
+
+    #[test]
+    fn reset_returns_to_wall_time() {
+        let mut c = EffectiveClock::new(0);
+        c.now(9_000_000_000, 0); // wall was set far into the future
+        assert_eq!(c.now(1_000, 10), 9_000_000_010);
+        c.reset(1_000, 20);
+        assert_eq!(c.now(1_000, 20), 1_000);
+        assert_eq!(c.now(1_500, 30), 1_500);
+        assert_eq!(c.high_water_ms(), 1_500);
     }
 
     #[test]

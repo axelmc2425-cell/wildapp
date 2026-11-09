@@ -15,6 +15,8 @@ pub enum Request {
     RequestChallenge { window_id: String },
     SubmitToken { token: String },
     SetPartner { public_key: String },
+    /// Recovery from a bogus far-future clock: refused while any lock is pending.
+    ResetClock,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,7 +31,7 @@ pub enum Response {
     },
     Challenge { code: String },
     /// Codes: bad-request, no-partner, bad-window (bad-times, bad-lock, too-long, bad-item, allow-needs-apps,
-    /// too-many, duplicate id), frozen-unavailable, too-many, no-such-lock, bad-key, lock-active, the unlock
+    /// too-many, duplicate id), frozen-unavailable, too-many, no-such-lock, bad-key, lock-active (also ResetClock), the unlock
     /// reasons, and `persist-failed` (daemon only: applied in memory but the state file could not
     /// be written, so the change is lost on restart; retried every tick).
     Error { code: String, message: String },
@@ -77,6 +79,16 @@ pub fn handle(
             Ok(_) => Response::Ok,
             Err(e) => err(e.reason(), e.reason()),
         },
+        Request::ResetClock => {
+            if store.windows.iter().any(|w| w.lock != crate::model::Lock::None && w.ends > now) {
+                err("lock-active", "cannot reset the clock while a lock is active or scheduled")
+            } else {
+                clock.reset(wall_ms, mono_ms);
+                store.high_water_ms = wall_ms;
+                store.challenges.clear();
+                Response::Ok
+            }
+        }
         Request::SetPartner { public_key } => match store.set_partner(&public_key, now) {
             Ok(()) => Response::Ok,
             Err(PartnerError::BadKey) => err("bad-key", "not a valid P-256 public key"),

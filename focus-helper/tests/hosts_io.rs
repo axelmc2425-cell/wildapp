@@ -24,6 +24,7 @@ fn creates_missing_file() {
     assert!(apply(&p, &s(&["a.com"])).unwrap());
     let t = fs::read_to_string(&p).unwrap();
     assert!(t.contains("0.0.0.0 www.a.com\n"));
+    assert!(t.contains(":: www.a.com\n"));
     assert!(!tmpfile(&p).exists());
 }
 
