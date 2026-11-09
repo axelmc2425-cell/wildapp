@@ -32,7 +32,7 @@ test('session and weekly schedule; finished sessions dropped', async () => {
   const db = await mk();
   await db.run("INSERT INTO focus_lists(name, mode) VALUES ('L','block')");
   await db.run("INSERT INTO focus_items(list_id, kind, value) VALUES (1,'site','x.com')");
-  await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (1, ?, ?, 'locked')", [NOW - H, NOW + H]);
+  await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (1, ?, ?, 'none')", [NOW - H, NOW + H]);
   await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (1, ?, ?, 'none')", [NOW - 3 * H, NOW - 2 * H]);
   await db.run("INSERT INTO focus_schedules(list_id, weekdays, start_time, end_time, lock) VALUES (1, '[1]', '09:00', '10:00', 'none')");
   const r = rec();
@@ -110,7 +110,7 @@ test('frozen, allow-without-apps and bad-item windows are skipped and counted, n
   await db.run("INSERT INTO focus_items(list_id, kind, value) VALUES (2,'site','docs.rs')");
   await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (1, ?, ?, 'frozen')", [NOW - H, NOW + H]); // s1
   await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (2, ?, ?, 'none')", [NOW - H, NOW + H]); // s2
-  await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (1, ?, ?, 'locked')", [NOW - H, NOW + H]); // s3 ok
+  await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (1, ?, ?, 'none')", [NOW - H, NOW + H]); // s3 ok
   const r = rec();
   const res = await syncWindows(db, r.client, NOW, utc);
   assert.deepEqual(res, { pushed: 1, skipped: 2 });

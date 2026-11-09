@@ -24,7 +24,7 @@ test('validateItems rejects bad entries and over-cap windows', () => {
 });
 
 test('validateForPush: frozen and allow windows without apps are not pushable', () => {
-  assert.deepEqual(validateForPush(win({ lock: 'locked' })), { ok: true });
+  assert.deepEqual(validateForPush(win({ lock: 'locked', unlock_delay_ms: 86400000 })), { ok: true });
   assert.deepEqual(validateForPush(win({ lock: 'frozen' })), { ok: false, reason: 'frozen-unavailable' });
   assert.deepEqual(validateForPush(win({ mode: 'allow', sites: ['a.com'] })), { ok: false, reason: 'allow-needs-apps' });
   assert.deepEqual(validateForPush(win({ mode: 'allow', apps: ['code.exe'] })), { ok: true });

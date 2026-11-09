@@ -9,14 +9,28 @@
  * @property {'block'|'allow'} mode
  * @property {string[]} sites
  * @property {string[]} apps
+ * @property {number|null} [unlock_delay_ms] required for `locked` (1 h to 7 days), null/absent otherwise
  */
 
 export const MAX_DURATION_MS = { locked: 604800000, frozen: 86400000 };
+
+export const MIN_UNLOCK_DELAY_MS = 3600000;
+export const MAX_UNLOCK_DELAY_MS = 604800000;
 
 const LOCKS = ['none', 'locked', 'frozen'];
 
 function capFor(lock) {
   return Object.prototype.hasOwnProperty.call(MAX_DURATION_MS, lock) ? MAX_DURATION_MS[lock] : Infinity;
+}
+
+/** Locked windows need a delay in range; other locks must not carry one. */
+export function validateUnlockDelay(lock, delayMs) {
+  if (lock === 'locked') {
+    const ok = typeof delayMs === 'number' && Number.isFinite(delayMs)
+      && delayMs >= MIN_UNLOCK_DELAY_MS && delayMs <= MAX_UNLOCK_DELAY_MS;
+    return ok ? { ok: true } : { ok: false, reason: 'bad-delay' };
+  }
+  return delayMs == null ? { ok: true } : { ok: false, reason: 'bad-delay' };
 }
 
 /** @param {Window} w */
@@ -76,6 +90,8 @@ export function validateItems(w) {
 export function validateForPush(w) {
   const v = validateWindow(w);
   if (!v.ok) return v;
+  const d = validateUnlockDelay(w.lock, w.unlock_delay_ms);
+  if (!d.ok) return d;
   if (w.lock === 'frozen') return { ok: false, reason: 'frozen-unavailable' };
   if (w.mode === 'allow' && (!Array.isArray(w.apps) || w.apps.length === 0)) {
     return { ok: false, reason: 'allow-needs-apps' };
