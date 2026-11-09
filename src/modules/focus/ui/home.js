@@ -164,7 +164,7 @@ export function mountHome(root, controller, ctx, deps = {}) {
         h('span', { class: 'fr-actions' },
           h('button', { type: 'button', 'data-fk': `extend-${idx}`, onclick: () => extendDialog(block) }, 'Extend'),
           h('button', { type: 'button', class: 'danger', 'data-fk': `cancel-${idx}`, onclick: () => cancelDialog(block) }, 'Cancel'))),
-      state.syncPending && state.helper.kind !== 'ok' ? h('p', { class: 'fr-muted fr-small' }, 'Saved, not yet enforced.') : null);
+      state.syncPending && state.helper.kind !== 'ok' && state.helper.kind !== 'persist-failed' ? h('p', { class: 'fr-muted fr-small' }, 'Saved, not yet enforced.') : null);
     const entry = { block, state: block.state, cd, sr, bar, lastMin: -1 };
     live.push(entry);
     paintLive(entry, t);

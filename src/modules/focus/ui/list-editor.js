@@ -93,7 +93,7 @@ export function openListEditor({ controller, list, preset, onDone } = {}) {
 
   nameInput.addEventListener('input', () => { show(nameErr, ''); refreshSave(); });
   nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sites.input.focus(); } });
-  cancelBtn.addEventListener('click', () => dlg.close());
+  cancelBtn.addEventListener('click', () => { if (!saving) dlg.close(); });
   saveBtn.addEventListener('click', async () => {
     if (saving || !canSave({ name: nameInput.value, ...state })) return;
     saving = true; refreshSave();
