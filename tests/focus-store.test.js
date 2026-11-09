@@ -202,7 +202,8 @@ test('saveList refuses editing a list in a running locked block', async () => {
   await createSessions(db, { listIds: [id], starts: 100, ends: 100 + 2 * HOUR, lock: 'locked', unlockDelayMs: HOUR });
   const r = await saveList(db, { id, name: 'L', sites: ['b.com'], apps: [] }, 200);
   assert.equal(r.ok, false);
-  assert.match(r.errors.name, /^That list is part of a locked block until /);
+  assert.equal(r.errors.name, 'That list is part of a locked block.');
+  assert.equal(r.lockedUntil, 100 + 2 * HOUR);
   assert.deepEqual((await listLists(db))[0].sites, ['a.com']);
 });
 

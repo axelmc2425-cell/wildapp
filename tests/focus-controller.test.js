@@ -19,7 +19,7 @@ async function setup() {
   const db = await openNodeDb(join(mkdtempSync(join(tmpdir(), 'focus-ctl-')), 't.db'));
   await migrateFocus(db);
   let clock = T0;
-  const calls = { pushes: [], statuses: 0, active: 0, maxActive: 0 };
+  const calls = { pushes: [], statuses: 0, active: 0, maxActive: 0, lock: [] };
   const client = {
     fail: null, statusFail: null, delay: 0,
     async pushWindows(w) {
@@ -28,10 +28,22 @@ async function setup() {
         if (client.delay) await new Promise(r => setTimeout(r, client.delay));
         if (client.fail) throw client.fail;
         calls.pushes.push(w);
+        client.windows = w;
         return { type: 'Ok' };
       } finally { calls.active--; }
     },
-    async status() { calls.statuses++; if (client.statusFail) throw client.statusFail; return STATUS; },
+    statusValue: STATUS, mirror: false, windows: [], pending: [],
+    async status() {
+      calls.statuses++;
+      if (client.statusFail) throw client.statusFail;
+      return { ...client.statusValue, windows: client.mirror ? client.windows : client.statusValue.windows, pending_unlocks: client.pending };
+    },
+    lockErr: null,
+    async requestChallenge(id) { calls.lock.push(['challenge', id]); if (client.lockErr) throw client.lockErr; return { type: 'Challenge', code: 'CODE-' + id }; },
+    async submitToken(t) { calls.lock.push(['token', t]); if (client.lockErr) throw client.lockErr; client.windows = []; return { type: 'Ok' }; },
+    async setPartner(k) { calls.lock.push(['partner', k]); if (client.lockErr) throw client.lockErr; return { type: 'Ok' }; },
+    async requestDelayedUnlock(id) { calls.lock.push(['delay', id]); if (client.lockErr) throw client.lockErr; client.pending = [{ window_id: id, unlock_at: T0 + 99 }]; return { type: 'UnlockPending', unlock_at: T0 + 99 }; },
+    async cancelDelayedUnlock(id) { calls.lock.push(['cancel', id]); if (client.lockErr) throw client.lockErr; client.pending = []; return { type: 'Ok' }; },
   };
   let changes = 0;
   const ctl = createController({ db, client, now: () => clock, tzOffsetAt: utc, onChange: () => { changes++; } });
@@ -442,4 +454,249 @@ test('state.loaded is false until load settles, true after (also after a failing
   assert.equal(bad.state.loaded, true);
   assert.match(bad.state.notice, /Could not read/);
   void c2; void db;
+});
+
+// ---- locked blocks ----
+const HOUR = 3600000;
+const lockedSetup = async () => {
+  const x = await setup();
+  x.client.mirror = true;
+  x.a = await x.ctl.saveList(list('A'));
+  x.b = await x.ctl.saveList(list('B', ['b.com']));
+  return x;
+};
+const rowCount = async (db) => (await db.all('SELECT id FROM focus_sessions')).length;
+const startLocked = (x, over = {}) => x.ctl.startLockedBlock({ listIds: [x.a.id, x.b.id], minutes: 120, delayHours: 6, ...over });
+
+test('locked start fails and writes nothing when the helper is down', async () => {
+  const x = await lockedSetup();
+  x.client.statusFail = mkErr('unreachable', 'The Focus Room helper is not running');
+  const r = await startLocked(x);
+  assert.equal(r.ok, false);
+  assert.match(r.message, /^Nothing was locked\. /);
+  assert.equal(await rowCount(x.db), 0);
+});
+
+test('locked start fails when no partner key', async () => {
+  const x = await lockedSetup();
+  x.client.statusValue = { ...STATUS, partner_set: false };
+  const r = await startLocked(x);
+  assert.equal(r.ok, false);
+  assert.match(r.message, /partner/i);
+  assert.equal(await rowCount(x.db), 0);
+});
+
+test('locked start validates input before anything', async () => {
+  const x = await lockedSetup();
+  const before = x.calls.statuses;
+  for (const over of [{ minutes: 0 }, { minutes: 10081 }, { minutes: 1.5 }, { minutes: 'x' }, { delayHours: 0 }, { delayHours: 169 }, { delayHours: 'abc' }, { delayHours: null }, { listIds: [] }, { listIds: 'a' }, { listIds: [9999] }]) {
+    const r = await startLocked(x, over);
+    assert.equal(r.ok, false, JSON.stringify(over));
+    assert.equal(typeof r.message, 'string');
+  }
+  assert.equal(x.calls.statuses, before);
+  assert.equal(await rowCount(x.db), 0);
+});
+
+test('locked start rolls back rows when the push is rejected', async () => {
+  const x = await lockedSetup();
+  x.client.fail = mkErr('bad-window', 'too-long');
+  const r = await startLocked(x);
+  assert.equal(r.ok, false);
+  assert.match(r.message, /^Nothing was locked\. /);
+  assert.equal(await rowCount(x.db), 0);
+  assert.equal(x.ctl.state.syncPending, false);
+  assert.equal(x.ctl.state.blocks.length, 0);
+});
+
+test('locked start succeeds and the helper receives one merged window with the delay', async () => {
+  const x = await lockedSetup();
+  const r = await startLocked(x);
+  assert.deepEqual(r, { ok: true });
+  const w = last(x.calls);
+  assert.equal(w.length, 1);
+  assert.equal(w[0].lock, 'locked');
+  assert.equal(w[0].unlock_delay_ms, 6 * HOUR);
+  assert.equal(w[0].ends, T0 + 120 * MIN);
+  const rows = await x.db.all('SELECT lock, unlock_delay_ms FROM focus_sessions');
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every((q) => q.lock === 'locked' && q.unlock_delay_ms === 6 * HOUR));
+  assert.equal(x.ctl.state.blocks[0].lock, 'locked');
+});
+
+test('cancelBlock refuses a locked block before touching the store', async () => {
+  const x = await lockedSetup();
+  await startLocked(x);
+  const key = x.ctl.state.blocks[0].key;
+  const r = await x.ctl.cancelBlock(key);
+  assert.deepEqual(r, { ok: false, message: 'A locked block cannot be cancelled. Use Unlock early.' });
+  assert.equal(await rowCount(x.db), 2);
+});
+
+test('extend only lengthens a locked block and caps at 7 days', async () => {
+  const x = await lockedSetup();
+  await startLocked(x, { minutes: 60 });
+  let key = x.ctl.state.blocks[0].key;
+  for (const bad of [0, -5, 1.5, 'x', NaN]) assert.equal((await x.ctl.extendBlock(key, bad)).ok, false);
+  assert.equal(x.ctl.state.blocks[0].ends, T0 + 60 * MIN);
+  assert.deepEqual(await x.ctl.extendBlock(key, 30), { ok: true });
+  assert.equal(x.ctl.state.blocks[0].ends, T0 + 90 * MIN);
+  assert.equal(last(x.calls)[0].ends, T0 + 90 * MIN);
+  key = x.ctl.state.blocks[0].key;
+  assert.deepEqual(await x.ctl.extendBlock(key, 20000), { ok: true });
+  assert.equal(x.ctl.state.blocks[0].ends, T0 + 7 * 24 * HOUR);
+  assert.equal(last(x.calls)[0].ends, T0 + 7 * 24 * HOUR);
+  key = x.ctl.state.blocks[0].key;
+  const r = await x.ctl.extendBlock(key, 5);
+  assert.equal(r.ok, false);
+  assert.match(r.message, /7 days/);
+});
+
+test('extend of a normal block keeps the 24 hour cap', async () => {
+  const x = await lockedSetup();
+  await x.ctl.startBlock({ listIds: [x.a.id], minutes: 60 });
+  const key = x.ctl.state.blocks[0].key;
+  await x.ctl.extendBlock(key, 100000);
+  assert.equal(x.ctl.state.blocks[0].ends, T0 + 24 * HOUR);
+  assert.match((await x.ctl.extendBlock(x.ctl.state.blocks[0].key, 5)).message, /24 hours/);
+});
+
+test('token success removes the block after reconcile', async () => {
+  const x = await lockedSetup();
+  await startLocked(x);
+  const key = x.ctl.state.blocks[0].key;
+  const c = await x.ctl.requestPartnerChallenge(key);
+  assert.equal(c.ok, true);
+  assert.match(c.code, /^CODE-b/);
+  const r = await x.ctl.submitPartnerToken(key, 'TOKEN');
+  assert.deepEqual(r, { ok: true });
+  assert.equal(await rowCount(x.db), 0);
+  assert.equal(x.ctl.state.blocks.length, 0);
+});
+
+test('each token error leaves the lock and returns the plain message', async () => {
+  const x = await lockedSetup();
+  await startLocked(x);
+  const key = x.ctl.state.blocks[0].key;
+  for (const code of ['bad-format', 'bad-signature', 'wrong-challenge', 'wrong-lock', 'used', 'challenge-expired', 'expired']) {
+    x.client.lockErr = mkErr(code, code);
+    const r = await x.ctl.submitPartnerToken(key, 'TOKEN');
+    assert.equal(r.ok, false, code);
+    assert.match(r.message, /The lock stays on\./, code);
+    assert.equal(await rowCount(x.db), 2, code);
+  }
+});
+
+test('garbage token, partner key and block key never throw', async () => {
+  const x = await lockedSetup();
+  await startLocked(x);
+  const key = x.ctl.state.blocks[0].key;
+  for (const t of [undefined, null, 5, {}, [], '', '   ', 'x'.repeat(100000)]) {
+    const r = await x.ctl.submitPartnerToken(key, t);
+    assert.equal(r.ok, false);
+    assert.equal(typeof r.message, 'string');
+  }
+  for (const k of [undefined, null, 5, {}, 'nope', '1:2:locked:3']) {
+    for (const f of [() => x.ctl.requestPartnerChallenge(k), () => x.ctl.submitPartnerToken(k, 'T'), () => x.ctl.startDelayedUnlock(k), () => x.ctl.cancelDelayedUnlock(k)]) {
+      const r = await f();
+      assert.equal(r.ok, false);
+      assert.equal(typeof r.message, 'string');
+    }
+  }
+  for (const p of [undefined, null, {}, { publicKey: 5, name: 'N' }, { publicKey: '', name: 'N' }, { publicKey: 'k', name: 7 }, { publicKey: 'k', name: '  ' }, { publicKey: 'x'.repeat(100000), name: 'N' }]) {
+    const r = await x.ctl.setPartner(p);
+    assert.equal(r.ok, false);
+    assert.equal(typeof r.message, 'string');
+  }
+  assert.equal(x.calls.lock.filter((c) => c[0] === 'partner').length, 0);
+  assert.equal(await rowCount(x.db), 2);
+});
+
+test('a normal block key is not a lockable target', async () => {
+  const x = await lockedSetup();
+  await x.ctl.startBlock({ listIds: [x.a.id], minutes: 30 });
+  const r = await x.ctl.requestPartnerChallenge(x.ctl.state.blocks[0].key);
+  assert.equal(r.ok, false);
+  assert.equal(x.calls.lock.length, 0);
+});
+
+test('delayed unlock request returns the unlock time; cancel clears it', async () => {
+  const x = await lockedSetup();
+  await startLocked(x);
+  const key = x.ctl.state.blocks[0].key;
+  assert.deepEqual(await x.ctl.startDelayedUnlock(key), { ok: true, unlockAt: T0 + 99 });
+  assert.equal(x.ctl.state.helper.status.pending_unlocks.length, 1);
+  assert.deepEqual(await x.ctl.cancelDelayedUnlock(key), { ok: true });
+  assert.equal(x.ctl.state.helper.status.pending_unlocks.length, 0);
+  assert.equal(await rowCount(x.db), 2);
+});
+
+test('request while helper unreachable says it was not sent and changes nothing', async () => {
+  const x = await lockedSetup();
+  await startLocked(x);
+  const key = x.ctl.state.blocks[0].key;
+  x.client.lockErr = mkErr('unreachable', 'The Focus Room helper is not running');
+  for (const f of [() => x.ctl.requestPartnerChallenge(key), () => x.ctl.submitPartnerToken(key, 'T'), () => x.ctl.startDelayedUnlock(key), () => x.ctl.cancelDelayedUnlock(key)]) {
+    const r = await f();
+    assert.deepEqual(r, { ok: false, message: 'Not sent. The lock is unchanged.' });
+  }
+  assert.equal(await rowCount(x.db), 2);
+});
+
+test('reconcile removes a locked block the helper no longer holds, and keeps it while pushes are pending', async () => {
+  const x = await lockedSetup();
+  await startLocked(x);
+  x.client.windows = [];
+  await x.ctl.refreshStatus();
+  assert.equal(await rowCount(x.db), 0);
+  assert.equal(x.ctl.state.blocks.length, 0);
+
+  // a failed push of an extension must not make reconcile delete the block
+  await startLocked(x);
+  const key = x.ctl.state.blocks[0].key;
+  x.client.fail = mkErr('unreachable', 'The Focus Room helper is not running');
+  await x.ctl.extendBlock(key, 10);
+  assert.equal(x.ctl.state.syncPending, true);
+  await x.ctl.refreshStatus();
+  assert.equal(await rowCount(x.db), 2);
+});
+
+test('reconcile leaves a block whose time has passed alone', async () => {
+  const x = await lockedSetup();
+  await startLocked(x, { minutes: 5 });
+  x.client.windows = [];
+  x.setNow(T0 + 10 * MIN);
+  await x.ctl.refreshStatus();
+  assert.equal(await rowCount(x.db), 2);
+});
+
+test('setPartner stores the name and key only after the helper accepts', async () => {
+  const x = await lockedSetup();
+  assert.equal(x.ctl.state.partner.set, true);
+  assert.deepEqual(await x.ctl.setPartner({ publicKey: 'KEY1', name: ' Sam ' }), { ok: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(await x.db.all('SELECT public_key, name FROM focus_partner'))), [{ public_key: 'KEY1', name: 'Sam' }]);
+  assert.deepEqual(x.ctl.state.partner, { set: true, name: 'Sam' });
+  await x.ctl.setPartner({ publicKey: 'KEY2', name: 'Alex' });
+  assert.deepEqual(JSON.parse(JSON.stringify(await x.db.all('SELECT public_key, name FROM focus_partner'))), [{ public_key: 'KEY2', name: 'Alex' }]);
+  for (const code of ['lock-active', 'bad-key']) {
+    x.client.lockErr = mkErr(code, code);
+    const r = await x.ctl.setPartner({ publicKey: 'KEY3', name: 'Zed' });
+    assert.equal(r.ok, false);
+    assert.equal(typeof r.message, 'string');
+    assert.deepEqual(JSON.parse(JSON.stringify(await x.db.all('SELECT public_key, name FROM focus_partner'))), [{ public_key: 'KEY2', name: 'Alex' }]);
+  }
+});
+
+test('partner state follows the latest status', async () => {
+  const x = await setup();
+  x.client.statusValue = { ...STATUS, partner_set: false };
+  await x.ctl.load();
+  assert.deepEqual(x.ctl.state.partner, { set: false, name: null });
+});
+
+test('HELPER_UNAVAILABLE_CLIENT answers every lock call without throwing', async () => {
+  const c = HELPER_UNAVAILABLE_CLIENT;
+  for (const m of ['requestChallenge', 'submitToken', 'setPartner', 'requestDelayedUnlock', 'cancelDelayedUnlock']) {
+    await assert.rejects(() => c[m]('x'), (e) => e.code === 'unreachable');
+  }
 });

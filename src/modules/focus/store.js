@@ -45,7 +45,7 @@ export async function saveList(db, input, nowMs = Date.now()) {
   if (input.id !== undefined) {
     const [held] = await db.all("SELECT MAX(ends) AS ends FROM focus_sessions WHERE list_id = ? AND lock <> 'none' AND ends > ?", [input.id, nowMs]);
     if (held && held.ends != null) {
-      return { ok: false, errors: { name: `That list is part of a locked block until ${new Date(held.ends).toISOString()}` } };
+      return { ok: false, errors: { name: 'That list is part of a locked block.' }, lockedUntil: held.ends };
     }
   }
   const name = typeof input.name === 'string' ? input.name.trim() : '';
