@@ -14,6 +14,18 @@ function validSchedule(s, list) {
   return { ...s, weekdays };
 }
 
+/** Keep one window per id (largest unlock delay, then latest end); a duplicate id would fail the whole push. */
+export function dedupeById(windows) {
+  const best = new Map();
+  for (const w of windows) {
+    const p = best.get(w.id);
+    const d = w.unlock_delay_ms ?? 0;
+    const pd = p ? (p.unlock_delay_ms ?? 0) : 0;
+    if (!p || d > pd || (d === pd && w.ends > p.ends)) best.set(w.id, w);
+  }
+  return { windows: [...best.values()], dropped: windows.length - best.size };
+}
+
 export async function syncWindows(db, client, nowMs, tzOffsetAt) {
   const [lists, items, sessions, schedules] = await Promise.all([
     db.all('SELECT id, mode FROM focus_lists'),
@@ -40,7 +52,15 @@ export async function syncWindows(db, client, nowMs, tzOffsetAt) {
       windows.push(sessionToWindow(s, list));
     }
   }
-  for (const group of blocks.values()) windows.push(lockedBlockToWindow(group, byId));
+  // Blocks differing only by delay would share a window id (the helper rejects duplicate ids), so
+  // they merge into one window with the longest delay.
+  const merged = new Map();
+  for (const group of blocks.values()) {
+    const w = lockedBlockToWindow(group, byId);
+    const prev = merged.get(w.id);
+    if (!prev || w.unlock_delay_ms > prev.unlock_delay_ms) merged.set(w.id, w);
+  }
+  windows.push(...merged.values());
   for (const s of schedules) {
     const list = byId.get(s.list_id);
     const sched = validSchedule(s, list);
@@ -52,7 +72,9 @@ export async function syncWindows(db, client, nowMs, tzOffsetAt) {
   // The helper rejects a whole push if any window is invalid, so drop invalid ones here. That
   // includes frozen windows (the helper rejects them until sub-project 4 ships frozen mode),
   // allow-mode windows without apps, and windows with a bad site or app entry.
-  const valid = windows.filter((w) => {
+  const dd = dedupeById(windows);
+  skipped += dd.dropped;
+  const valid = dd.windows.filter((w) => {
     if (validateForPush(w).ok) return true;
     skipped++;
     return false;
@@ -61,7 +83,8 @@ export async function syncWindows(db, client, nowMs, tzOffsetAt) {
   let live = valid.filter((w) => w.ends > nowMs && w.starts < nowMs + HORIZON_MS);
   // The helper caps a push (and its store) at MAX_WINDOWS; keep the soonest ones.
   if (live.length > MAX_WINDOWS) {
-    live.sort((a, b) => a.starts - b.starts);
+    // Locked windows win over none windows so a new lock never silently fails to push.
+    live.sort((a, b) => (b.lock === 'locked') - (a.lock === 'locked') || a.starts - b.starts);
     skipped += live.length - MAX_WINDOWS;
     live = live.slice(0, MAX_WINDOWS);
   }

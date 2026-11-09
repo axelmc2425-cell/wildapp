@@ -4,8 +4,9 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openNodeDb } from '../src/core/db-node.js';
+import { MAX_WINDOWS } from '../src/modules/focus/limits.js';
 import { migrateFocus } from '../src/modules/focus/schema.js';
-import { syncWindows } from '../src/modules/focus/sync.js';
+import { syncWindows, dedupeById } from '../src/modules/focus/sync.js';
 
 const H = 3600000;
 const DAY = 86400000;
@@ -168,13 +169,44 @@ test('same lists and times but lock none stay separate windows from a locked blo
   assert.deepEqual(r.pushed[0].map((w) => w.id).sort(), [`b${NOW - H}-${NOW + H}-1.2`, 's3', 's4'].sort());
 });
 
-test('locked sessions with different unlock delays or times form separate blocks', async () => {
+test('locked sessions with different times, or different lists and delays, stay separate windows', async () => {
   const db = await twoLists();
   await addLocked(db, 1, NOW - H, NOW + H, H);
   await addLocked(db, 2, NOW - H, NOW + H, 2 * H);
-  await addLocked(db, 2, NOW - H, NOW + 2 * H, H);
+  await addLocked(db, 1, NOW - H, NOW + 2 * H, H);
   const r = rec();
   assert.deepEqual(await syncWindows(db, r.client, NOW, utc), { pushed: 3, skipped: 0 });
+  assert.equal(new Set(r.pushed[0].map((w) => w.id)).size, 3);
+});
+
+for (const order of [[H, 2 * H], [2 * H, H]]) {
+  test(`same list and times with delays ${order.join('/')} make one window with the longest delay`, async () => {
+    const db = await twoLists();
+    for (const d of order) await addLocked(db, 1, NOW - H, NOW + H, d);
+    const r = rec();
+    assert.deepEqual(await syncWindows(db, r.client, NOW, utc), { pushed: 1, skipped: 0 });
+    assert.equal(r.pushed[0][0].unlock_delay_ms, 2 * H);
+    assert.equal(r.pushed[0][0].id, `b${NOW - H}-${NOW + H}-1`);
+  });
+}
+
+test('dedupeById keeps the longest delay then the later end and reports the dropped count', () => {
+  const w = (id, d, ends) => ({ id, starts: 0, ends, unlock_delay_ms: d });
+  const a = dedupeById([w('x', H, 5), w('x', 2 * H, 4), w('y', null, 1), w('x', 2 * H, 6)]);
+  assert.equal(a.dropped, 2);
+  assert.deepEqual(a.windows.map((v) => [v.id, v.unlock_delay_ms, v.ends]).sort(), [['x', 2 * H, 6], ['y', null, 1]]);
+  const b = dedupeById([w('x', 2 * H, 6), w('x', H, 5), w('x', 2 * H, 4)]);
+  assert.deepEqual(b.windows.map((v) => [v.unlock_delay_ms, v.ends]), [[2 * H, 6]]);
+});
+
+test('trimming to MAX_WINDOWS keeps locked windows over none windows', async () => {
+  const db = await twoLists();
+  for (let i = 0; i < MAX_WINDOWS; i++) await addSession(db, NOW + i * 1000, NOW + i * 1000 + 500);
+  await addLocked(db, 1, NOW + 20 * DAY, NOW + 20 * DAY + H);
+  const r = rec();
+  const res = await syncWindows(db, r.client, NOW, utc);
+  assert.deepEqual(res, { pushed: MAX_WINDOWS, skipped: 1 });
+  assert.ok(r.pushed[0].some((w) => w.lock === 'locked'));
 });
 
 test('a locked session whose list was deleted is skipped; the rest of its block still pushes', async () => {
