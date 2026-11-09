@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod focus;
+
 use mybrain_core::backup;
 use mybrain_core::db::Db;
 use mybrain_core::files::{self, FileEntry, ReadResult};
@@ -130,7 +132,8 @@ fn main() {
             read_folder_md,
             write_files,
             photo_import,
-            photo_delete
+            photo_delete,
+            focus::focus_helper_call
         ])
         .run(tauri::generate_context!())
         .expect("error while running MyBrain");

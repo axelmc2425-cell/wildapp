@@ -1,0 +1,187 @@
+[
+  {
+    "kind": "site",
+    "value": "example.com",
+    "valid": true
+  },
+  {
+    "kind": "site",
+    "value": "a-b.example.org",
+    "valid": true
+  },
+  {
+    "kind": "site",
+    "value": "xn--bcher-kva.example",
+    "valid": true
+  },
+  {
+    "kind": "site",
+    "value": "",
+    "valid": false
+  },
+  {
+    "kind": "site",
+    "value": "a b.com",
+    "valid": false
+  },
+  {
+    "kind": "site",
+    "value": " a.com",
+    "valid": false
+  },
+  {
+    "kind": "site",
+    "value": "a.com ",
+    "valid": false
+  },
+  {
+    "kind": "site",
+    "value": "a\tb",
+    "valid": false
+  },
+  {
+    "kind": "site",
+    "value": "a\nb.com",
+    "valid": false
+  },
+  {
+    "kind": "site",
+    "value": "evil.com\n127.0.0.1 bank.com",
+    "valid": false
+  },
+  {
+    "kind": "site",
+    "value": "a#b.com",
+    "valid": false
+  },
+  {
+    "kind": "site",
+    "value": "a/b.com",
+    "valid": false
+  },
+  {
+    "kind": "site",
+    "value": "a\\b.com",
+    "valid": false
+  },
+  {
+    "kind": "site",
+    "value": "a\u0000b",
+    "valid": false
+  },
+  {
+    "kind": "site",
+    "value": "a\u0007b",
+    "valid": false
+  },
+  {
+    "kind": "site",
+    "value": "a b",
+    "valid": false
+  },
+  {
+    "kind": "site",
+    "value": "ab",
+    "valid": false
+  },
+  {
+    "kind": "site",
+    "value": "a b",
+    "valid": false
+  },
+  {
+    "kind": "app",
+    "value": "steam.exe",
+    "valid": true
+  },
+  {
+    "kind": "app",
+    "value": "League of Legends.exe",
+    "valid": true
+  },
+  {
+    "kind": "app",
+    "value": "Spotify (beta).exe",
+    "valid": true
+  },
+  {
+    "kind": "app",
+    "value": "my-app_2.exe",
+    "valid": true
+  },
+  {
+    "kind": "app",
+    "value": "a.b.exe",
+    "valid": true
+  },
+  {
+    "kind": "app",
+    "value": "steam",
+    "valid": true
+  },
+  {
+    "kind": "app",
+    "value": "",
+    "valid": false
+  },
+  {
+    "kind": "app",
+    "value": "   ",
+    "valid": false
+  },
+  {
+    "kind": "app",
+    "value": "a\tb.exe",
+    "valid": false
+  },
+  {
+    "kind": "app",
+    "value": "a\nb",
+    "valid": false
+  },
+  {
+    "kind": "app",
+    "value": "a\rb",
+    "valid": false
+  },
+  {
+    "kind": "app",
+    "value": "a\u0007b",
+    "valid": false
+  },
+  {
+    "kind": "app",
+    "value": "a b.exe",
+    "valid": false
+  },
+  {
+    "kind": "app",
+    "value": "a b.exe",
+    "valid": false
+  },
+  {
+    "kind": "app",
+    "value": "dir/app.exe",
+    "valid": false
+  },
+  {
+    "kind": "app",
+    "value": "dir\\app.exe",
+    "valid": false
+  },
+  {
+    "kind": "app",
+    "value": "C:\\Windows\\app.exe",
+    "valid": false
+  },
+  {
+    "kind": "app",
+    "value": "c:app.exe",
+    "valid": false
+  },
+  {
+    "kind": "app",
+    "value": "app.exe:stream",
+    "valid": false
+  }
+]

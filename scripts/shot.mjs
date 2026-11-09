@@ -1,5 +1,5 @@
 // Headless screenshot harness. Runs src/ in Chromium on top of a real SQLite file.
-// Usage: node scripts/shot.mjs <outDir> [--seed] [--steps path/to/steps.mjs] [--dark]
+// Usage: node scripts/shot.mjs <outDir> [--seed] [--steps path/to/steps.mjs] [--dark] [--helper <focus-helper binary>] [--helper-down]
 import http from 'node:http';
 import { readFile, mkdir, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -9,6 +9,7 @@ import { execSync } from 'node:child_process';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { openNodeDb } from '../src/core/db-node.js';
 import { migrate } from '../src/core/schema.js';
+import { createStdioCall } from './helper-bridge.mjs';
 import { createNote, saveNote } from '../src/modules/secondbrain/notes.js';
 
 const args = process.argv.slice(2);
@@ -17,6 +18,11 @@ const seed = args.includes('--seed');
 const dark = args.includes('--dark');
 const stepsIdx = args.indexOf('--steps');
 const stepsFile = stepsIdx >= 0 ? resolve(args[stepsIdx + 1]) : null;
+const helperIdx = args.indexOf('--helper');
+const helperBin = helperIdx >= 0 ? resolve(args[helperIdx + 1]) : null;
+let helperDown = args.includes('--helper-down');
+let helperDelay = 0; // steps can set this to stall every helper call
+let warningsOverride = null; // steps can set this to rewrite Status.warnings in helper replies
 const root = join(fileURLToPath(import.meta.url), '..', '..', 'src');
 
 function loadPlaywright() {
@@ -82,6 +88,7 @@ writeFileSync(join(importDir, 'Welcome.md'), 'duplicate of an existing note');
 writeFileSync(join(importDir, 'broken.md'), Buffer.from([0xff, 0xfe, 0x80]));
 const exportDir = join(dir, 'exported');
 mkdirSync(exportDir);
+let bridge = null;
 const calls = [];
 await page.exposeFunction('__calls', () => calls);
 await page.exposeFunction('__db', async (cmd, a) => {
@@ -98,6 +105,19 @@ await page.exposeFunction('__db', async (cmd, a) => {
   if (cmd === 'backup_create') return null;
   if (cmd === 'read_folder_md') return { files: readdirSync(a.dir).map(f => ({ path: f, bytes: [...readFileSync(join(a.dir, f))] })), skipped: [{ path: 'locked.md', reason: 'Access is denied' }] };
   if (cmd === 'write_files') { for (const f of a.files) writeFileSync(join(exportDir, f.path), Buffer.from(f.bytes)); return null; }
+  if (cmd === 'focus_helper_call') {
+    if (helperDown) throw new Error('The Focus Room helper service is not running');
+    if (!bridge) throw new Error('Focus Room blocking is only available on Windows');
+    if (helperDelay > 0) await new Promise(r => setTimeout(r, helperDelay));
+    const reply = await bridge.call(a.request);
+    if (warningsOverride) {
+      try {
+        const j = JSON.parse(reply);
+        if (j && j.type === 'Status') return JSON.stringify({ ...j, warnings: warningsOverride });
+      } catch { /* not JSON: pass through */ }
+    }
+    return reply;
+  }
   if (cmd === 'db_all') return db.all(a.sql, a.params);
   if (cmd === 'db_run') return db.run(a.sql, a.params);
   if (cmd === 'db_batch') return db.batch(a.stmts);
@@ -111,19 +131,24 @@ await page.addInitScript(() => {
 });
 
 const shot = async (name) => { await page.screenshot({ path: join(outDir, name + '.png') }); console.log('shot', name); };
-await page.goto(url);
-await page.waitForSelector('#modlist .navitem');
-if (stepsFile) {
-  const steps = await import(pathToFileURL(stepsFile).href);
-  await steps.default(page, shot, { db, importDir, exportDir });
-} else {
-  await shot('home');
-  await page.goto(url + '#/settings');
-  await shot('settings');
-  await page.keyboard.press('Control+k');
-  await shot('palette');
+try {
+  if (helperBin) bridge = createStdioCall(helperBin, join(dir, 'helper-state.json'));
+  await page.goto(url);
+  await page.waitForSelector('#modlist .navitem');
+  if (stepsFile) {
+    const steps = await import(pathToFileURL(stepsFile).href);
+    await steps.default(page, shot, { db, importDir, exportDir, bridge, setHelperDown: (v) => { helperDown = !!v; }, setHelperDelay: (ms) => { helperDelay = Number(ms) || 0; }, setWarnings: (arr) => { warningsOverride = Array.isArray(arr) ? arr : null; } });
+  } else {
+    await shot('home');
+    await page.goto(url + '#/settings');
+    await shot('settings');
+    await page.keyboard.press('Control+k');
+    await shot('palette');
+  }
+} finally {
+  if (bridge) await bridge.close();
+  await browser.close();
+  server.close();
 }
-await browser.close();
-server.close();
 if (errors.length) { console.error(errors.join('\n')); process.exit(1); }
 console.log('no console errors');

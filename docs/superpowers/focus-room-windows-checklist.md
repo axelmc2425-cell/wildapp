@@ -1,0 +1,181 @@
+# Focus Room: manual Windows verification checklist
+
+All Windows-only code (service, named pipe, file permissions, browser encrypted-DNS policy, hosts-file locking, process killing, installer hooks, the Tauri pipe bridge) was only type-checked in CI, never run. This checklist is the only proof it works.
+
+**RELEASE GATE: do not distribute the CI installer to other people until sections 1, 8, 9 and 10 pass on a snapshotted VM.**
+
+**Getting the installer:** open the `build-windows` workflow run on GitHub (Actions tab), scroll to Artifacts, download `MyBrain-windows-installer`, unzip it, then right-click the `.exe` and choose "Run as administrator" on a Windows 10/11 PC. Use a spare PC or a VM (with a snapshot) first. The helper is designed to be hard to remove, so read the next section before testing any lock.
+
+Note: `focus-helper` is not on PATH, so commands below spell out the full path (the folder is the 64-bit Program Files folder, normally `C:\Program Files`). Both services run the same exe, so Task Manager shows two `focus-helper.exe` rows: add the Command line column on the Details tab (`... service` is the main service, `... watchdog` the watchdog).
+
+Install/uninstall steps are also logged to `%TEMP%\mybrain-focus-install.log` (the temp folder of the user who ran them; for the installer usually an Administrator profile). Look there first if an install or uninstall fails.
+
+## Talking to the helper (`send`)
+
+The checklist drives the helper with `focus-helper send`, one JSON request in, one JSON reply out. In PowerShell pipe the JSON on stdin (`send -`): Windows PowerShell 5.1 strips double quotes from native arguments. Paste this once per session:
+
+```powershell
+$h = "C:\Program Files\MyBrainFocus\focus-helper.exe"
+function Send-Focus($obj) { ($obj | ConvertTo-Json -Depth 6 -Compress) | & $h send - }
+$now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+```
+
+- GetStatus: `Send-Focus @{type='GetStatus'}` (shows `decision`, `windows`, `warnings`, `now_ms`; the number of `decision.locks` is the lock count)
+- SetPartner (public key copied from the partner page): `Send-Focus @{type='SetPartner'; public_key='<paste key>'}`
+- PushWindows, one locked window that started a minute ago and ends in 3 minutes:
+  `Send-Focus @{type='PushWindows'; windows=@(@{id='t1'; starts=$now-60000; ends=$now+180000; lock='locked'; mode='block'; sites=@('example.com'); apps=@('notepad.exe')})}`
+- RequestChallenge: `Send-Focus @{type='RequestChallenge'; window_id='t1'}` (returns `code`; paste it into the partner page)
+- SubmitToken: `Send-Focus @{type='SubmitToken'; token='<paste token>'}`
+- ResetClock (clock recovery, see section 7): `Send-Focus @{type='ResetClock'}`
+
+`send` prints the reply and exits 0 whenever the helper answered (an Error reply included); it exits 1 with a message if the helper is unreachable. It works for normal (non-admin) users too.
+
+Terms: "service" = a background Windows program; "ACL" = the permission list on a file or folder; "pipe" = the local channel (`\\.\pipe\mybrain-focus`) the app uses to talk to the helper; "DoH" = encrypted DNS in browsers, which would bypass the hosts-file block.
+
+## Escape hatches (read before testing locks)
+
+- [ ] Snapshot the VM before the locks sections (2-9) — Expected: you can always roll back
+- [ ] Always test locks with SHORT durations (2-5 minutes) first — Expected: a mistake costs minutes, not days
+- [ ] Keep a partner key ready (see section 6) and push only locks of about 2 minutes — Expected: you have an early exit and a mistake costs minutes
+- [ ] If the clock was moved far into the future by mistake and no lock is pending, run ResetClock (`send` above) — Expected: `Ok`; GetStatus `now_ms` is the real time again. With a lock pending it answers `lock-active`
+- [ ] Remember: locks always end at their end time — Expected: waiting is always a valid way out
+- [ ] The partner token flow is the early exit while a lock is active — Expected: it ends exactly that one window
+- [ ] If the helper misbehaves while NO lock is active, run `& "C:\Program Files\MyBrainFocus\focus-helper.exe" uninstall` in PowerShell as Administrator — Expected: services and policies are removed
+- [ ] If a lock is active and something is wrong, wait out the end time or use the partner token — Expected: uninstall is refused during a lock (by design)
+- [ ] If services are stuck disabled, run `& "C:\Program Files\MyBrainFocus\focus-helper.exe" install` again in PowerShell as Administrator — Expected: services are re-enabled (start=auto) and running
+
+## 1. Install and service hardening
+
+- [ ] Run the installer as Administrator — Expected: it completes with no error dialog
+- [ ] Run `sc query MyBrainFocus` and `sc query MyBrainFocusWatchdog` — Expected: both exist and are RUNNING
+- [ ] Run `sc qc MyBrainFocus` and `sc qc MyBrainFocusWatchdog` — Expected: START_TYPE is AUTO_START and SERVICE_START_NAME is LocalSystem
+- [ ] Check BINARY_PATH_NAME in the `sc qc` output — Expected: it points at `C:\Program Files\MyBrainFocus\focus-helper.exe` (not a per-user folder)
+- [ ] Check the Security tab / `icacls "C:\Program Files\MyBrainFocus"` — Expected: SYSTEM full control; Administrators read/execute only; no Users entry
+- [ ] In an Administrator prompt run `sc stop MyBrainFocus` — Expected: "Access is denied"
+- [ ] In an Administrator prompt run `sc delete MyBrainFocus` — Expected: "Access is denied"
+- [ ] Open Services (services.msc) as Administrator, right-click MyBrainFocus — Expected: Stop/Pause/Properties changes are denied or greyed out
+- [ ] Watchdog check: in Task Manager Details (with the Command line column) kill the `focus-helper.exe ... watchdog` process — Expected: the main service restarts it within about 10 seconds
+- [ ] Main check: kill the `focus-helper.exe ... service` process — Expected: the watchdog restarts it within about 10 seconds (the pipe answers again; run GetStatus)
+
+## 2. Websites
+
+Start a short lock that blocks a test site (e.g. `example.com`).
+
+- [ ] Open the site (and its `www.` and `m.` variants) in Chrome — Expected: the page fails to load
+- [ ] Repeat in Edge — Expected: fails to load
+- [ ] Repeat in Firefox — Expected: fails to load
+- [ ] Open a different subdomain that is not listed (e.g. `blog.example.com`) — Expected: it still loads (known limit: only listed names are blocked)
+- [ ] Open `C:\Windows\System32\drivers\etc\hosts` in Notepad as Administrator — Expected: a managed block between `# BEGIN MYBRAIN-FOCUS` and `# END MYBRAIN-FOCUS` markers; any lines you added yourself are unchanged and outside the block
+- [ ] During a block, open Notepad AS ADMINISTRATOR, edit the hosts file and save — Expected: "access denied" (a normal user is denied by Windows default, so this is the meaningful test)
+- [ ] During a block, open the hosts file Security tab (or `icacls`) — Expected: SYSTEM full control, Administrators read/execute only, Users read only
+- [ ] Start a block, let it end, start another, let it end — Expected: the hosts block and its ACL are correct each time (lock, apply, unlock works as SYSTEM) and `service.log` shows no error
+- [ ] During a block, as Administrator take ownership/edit the hosts file back to remove the managed block (VM only) — Expected: within about 30 seconds the helper writes the block and the ACL lock back (drift repair)
+- [ ] After all blocks end, view the hosts file and its Security tab — Expected: no managed block remains and the ACL is back to the Windows default (Administrators have full control again)
+
+## 3. Encrypted DNS
+
+- [ ] While blocking, open `chrome://policy` — Expected: the DoH policy (DnsOverHttpsMode) is shown as off/disabled
+- [ ] While blocking, open `edge://policy` — Expected: same DoH policy shown as off/disabled
+- [ ] While blocking, open `about:policies` in Firefox — Expected: the DoH policy is listed as disabled
+- [ ] After all blocks end, reload the three policy pages — Expected: the values the helper wrote are gone
+- [ ] Before a lock, set a conflicting DoH value yourself in the registry (e.g. Chrome `DnsOverHttpsMode` = `secure` under `HKLM\SOFTWARE\Policies\Google\Chrome`), then start a lock — Expected: the app's status (GetStatus warnings) reports that DoH is not enforced for that browser, and your admin value is left untouched
+- [ ] Remove your test registry value afterwards — Expected: the key is clean
+
+## 4. Apps
+
+- [ ] Add a harmless app (e.g. `notepad.exe`) to a block and start a lock, then launch it — Expected: it closes within about 2 seconds of launching
+- [ ] While a block is active, launch a test install of any VPN app from the built-in VPN list — Expected: it is closed
+- [ ] When no block is active, launch the same VPN app — Expected: it stays open (VPN apps are closed only during a block)
+
+## 5. Frozen mode (rejected in this build) and the never-kill list
+
+Frozen mode is not available until sub-project 4 (Ruling 17): the helper rejects every `frozen` window. The real frozen-mode runtime checks (lock screen, IME, Store apps, Windows Security under an empty allow list) move to "after sub-project 4".
+
+- [ ] Push a window with `lock='frozen'` (copy the PushWindows example, change `lock`) — Expected: reply `Error` with code `frozen-unavailable`, and GetStatus shows no new window
+- [ ] Push an allow-mode window with no apps (`mode='allow'; apps=@()`) — Expected: `Error`, code `bad-window`, message `allow-needs-apps`
+- [ ] Push an allow-mode window with `apps=@('notepad.exe')` and start it (lock `none`), then use Explorer, the taskbar, Start, Win+L and unlock, the emoji panel (Win+.), Settings, Windows Security — Expected: all keep working; only non-listed ordinary apps are closed. The never-kill list (logonui, consent, credentialuibroker, userinit, lockapp, dllhost, wmiprvse, applicationframehost, textinputhost, securityhealthservice, msmpeng, nissrv, searchindexer, wudfhost, tiworker, trustedinstaller, sgrmbroker, dashost, smartscreen, backgroundtaskhost, Memory Compression, Secure System, sppsvc, searchapp, shellhost and the original system entries) is never touched
+- [ ] Do the same with a block list that names `explorer.exe` and `dllhost.exe` — Expected: they are NOT closed
+- [ ] Record anything that breaks or disappears: ______ (any breakage means CRITICAL_APPS must be widened)
+- [ ] Reboot the PC during an active (locked, block-mode) lock — Expected: the lock is still in force after login
+
+## 6. Partner unlock
+
+- [ ] With the network disabled, open `src/modules/focus/partner-unlock.html` in a browser — Expected: the page works fully offline
+- [ ] Create a key on the page and set it with SetPartner (`send`) — Expected: `Ok`
+- [ ] Push a 3-minute locked window (PushWindows example) and run RequestChallenge for `t1` — Expected: a `Challenge` reply with a `code`
+- [ ] Paste the challenge into the partner page and sign it — Expected: a token is produced
+- [ ] Submit the token with SubmitToken — Expected: `Ok`; only that one window ends; other windows stay locked
+- [ ] Right after, push the SAME window again (same PushWindows command) — Expected: `Ok`, but GetStatus shows 0 locks: the lock does not come back (unlock is remembered until the window's original end)
+- [ ] Submit the same token again — Expected: fails with `used`
+- [ ] Submit a token made for a different window — Expected: fails with `wrong-lock`
+- [ ] Sign a token, wait more than 10 minutes (the token's 10-minute life counts from when it is signed), then submit it — Expected: fails with `expired`
+- [ ] Optional: submit a token for a challenge requested more than 1 hour ago (the challenge itself is valid for 1 hour) — Expected: fails with `challenge-expired`
+- [ ] Try to set a new partner key while any locked/frozen window with a future end time exists, including a scheduled lock that has not started yet (Ruling 11) — Expected: refused
+- [ ] While a locked window exists, push a smaller set of windows (remove or shorten it) — Expected: refused; the locked window stays unchanged
+
+## 7. Clock
+
+- [ ] During a lock, set the system clock back 1 hour — Expected: the lock neither ends early nor gets longer
+- [ ] Before the clock tests turn off Windows time sync (Settings > Time & language > Date & time > "Set time automatically" off), and turn it back on afterwards — Expected: Windows does not undo your changes mid-test
+- [ ] During a lock, set the clock FORWARD past the end time (even while Windows is running) — Expected: the lock ends early (known limit: only backward moves are defeated). Record the result: ______
+- [ ] Set the clock a year forward with no lock pending, run GetStatus, set it back, then run ResetClock — Expected: `now_ms` stayed in the future until ResetClock returned `Ok`; afterwards it is real time. With a pending lock ResetClock returns `lock-active`
+- [ ] During a lock, shut down, set the clock forward past the end time, boot — Expected: the lock MAY end early (known limit). Record the result: ______
+
+## 8. Named pipe and permissions
+
+- [ ] As a NON-admin interactive user run GetStatus with `send`, and run MyBrain — Expected: both connect and show Status (the pipe ACL grants interactive users read/write without the create-instance right; the clients use explicit access rights)
+- [ ] Trust boundary (informational): any interactive local user can drive the helper through the pipe (push windows, request challenges). Hard mode is friction, not a security boundary against other local users
+- [ ] As a non-admin user, run a small test program that tries to create its own `\\.\pipe\mybrain-focus` instance — Expected: access denied
+- [ ] From another PC on the network, try to open `\\<pc-name>\pipe\mybrain-focus` — Expected: cannot connect
+- [ ] Open 20 connections to the pipe at once (script) and hang up abruptly — Expected: blocking continues; the app reconnects afterwards
+
+## 9. State directory
+
+- [ ] Run `dir /q C:\ProgramData` (or Security > Advanced > Owner) and `icacls C:\ProgramData\MyBrainFocus` — Expected: owner is SYSTEM; SYSTEM full control, Administrators read/execute only, no Users entry
+- [ ] Before first install (clean PC), as a standard user create `C:\ProgramData\MyBrainFocus`, then install — Expected: that folder is renamed aside (quarantined, named `MyBrainFocus.untrusted-<n>`) and a fresh protected one is created
+- [ ] (VM only, no lock active; needs a SYSTEM shell, e.g. `psexec -s cmd` from Sysinternals, because even Administrators cannot write there) Inside the state directory create a junction (`mklink /J`) to a harmless test folder with a file in it, then restart the service (reboot or after the lock) — Expected: the junction is removed as a link and the test folder and its file are untouched
+- [ ] As a standard user try to edit `state.json` — Expected: access denied
+- [ ] (VM only, take a snapshot first, NO lock active: this can corrupt persistence mid-lock; needs a SYSTEM shell as above) Make the state directory read-only for SYSTEM, then check Status — Expected: warnings contain `persist:`, and a request that changes state returns `persist-failed`
+- [ ] Corrupt `state.json` and `state.json.bak` (VM only, no lock, SYSTEM shell), restart the service, run GetStatus — Expected: warnings contain `state: unreadable, started empty` and name a `state.json.corrupt-<n>` file that still exists
+- [ ] Restore the directory permissions afterwards — Expected: Status warnings clear
+
+## 10. Installer, upgrade, uninstall
+
+- [ ] Uninstall via Settings > Apps while a locked/frozen window with a future end time exists — Expected: refused with the lock message (the GUI shows a message box and aborts; it does not show an exit code); services still present
+- [ ] Run `& "C:\Program Files\MyBrainFocus\focus-helper.exe" uninstall` from an elevated PowerShell while such a window exists, then check `$LASTEXITCODE` (PowerShell) or `%ERRORLEVEL%` (cmd) — Expected: 1
+- [ ] Check the refusal text from the uninstall command — Expected: the end time is shown as `YYYY-MM-DD HH:MM:SS UTC`
+- [ ] Uninstall when no such window exists — Expected: succeeds; plain uninstall leaves `C:\ProgramData\MyBrainFocus` in place (no `--purge-state`) and that is NOT a failure
+- [ ] Re-run the installer as Administrator over an existing install with no lock pending — Expected: succeeds
+- [ ] Re-run the installer while a lock is pending and the service is running — Expected: the helper refuses with a clear message (known: upgrades wait for locks, up to 30 days), the installer continues and shows "could not be installed or upgraded (exit code 1)"; details are in `%TEMP%\mybrain-focus-install.log`
+- [ ] Kill the installer midway (e.g. while it runs `sc config`), then run `& "C:\Program Files\MyBrainFocus\focus-helper.exe" install` in PowerShell as Administrator — Expected: both services end up with start=auto and running
+- [ ] Confirm the first installer build compiled (NSIS hook macro names and `$UpdateMode` were not verified offline) — Expected: the build-windows run is green and the installer launches
+- [ ] Install a newer app build over an older one (in-place update, no lock) — Expected: not blocked by the PREUNINSTALL Abort
+
+## 11. Logs
+
+- [ ] Open `%TEMP%\mybrain-focus-install.log` — Expected: every install/uninstall step and error from sections 1 and 10 is listed
+- [ ] Open `C:\ProgramData\MyBrainFocus\service.log` — Expected: it exists and is readable by SYSTEM/Administrators
+- [ ] After sections 8 and 9 tests, search the log — Expected: pipe and persist errors from those tests are recorded
+
+## 12. Focus Room screens (sub-project 2)
+
+- [ ] Open Focus Room, start a block from the UI on a list containing a site you can open (e.g. reddit.com), then reload that site in a browser — Expected: the site stops loading; after pressing Cancel on the block the site loads again
+- [ ] With no lock pending and no block running, stop the `MyBrainFocus` service (`sc stop MyBrainFocus`) and watch the Focus Room page — Expected: the red "helper isn't running" banner appears within 10 seconds; after `sc start MyBrainFocus` it returns to green within 10 seconds
+- [ ] Stop the `MyBrainFocus` service, start a block from the UI, then start the service — Expected: the listed site is blocked without touching the UI again
+- [ ] While a block is running, edit a list in it (add a site, remove another) and save — Expected: the new site is blocked and the removed one loads again
+- [ ] Block an app whose name contains spaces (e.g. a game launcher such as `League of Legends.exe`) and try to run it — Expected: it is closed while the block runs
+- [ ] On a fresh profile, click each starter on the first-run card (Social media, News, Games, Blank list) and save — Expected: each creates a list that you can edit and delete afterwards
+- [ ] Open Start a block and look at the Frozen/Locked option — Expected: it is greyed out ("Locked, coming soon") and clicking it does nothing
+
+## 13. Cleanup
+
+With no lock pending, uninstall MyBrain.
+
+- [ ] Run `sc query MyBrainFocus` and `sc query MyBrainFocusWatchdog` — Expected: both report "service does not exist"
+- [ ] Open the hosts file — Expected: no managed block and no BEGIN/END MYBRAIN-FOCUS markers
+- [ ] Check the Chrome/Edge/Firefox policy pages — Expected: DoH values written by the helper are gone
+- [ ] Search `C:\Windows\System32\drivers\etc` and `C:\Program Files\MyBrainFocus` for `.focus-tmp` and `.new` files — Expected: none left (and the Program Files folder is gone)
+
+## Report back
+
+If any check fails, send: the section and line number, what you saw instead, the contents of `C:\ProgramData\MyBrainFocus\service.log` and `%TEMP%\mybrain-focus-install.log`, the output of `sc qc` for both services, a screenshot of any error dialog, your Windows version (`winver`), and the exact names of any process that was wrongly closed.

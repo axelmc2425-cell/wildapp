@@ -15,7 +15,7 @@ test('migrate creates tables', async () => {
   const db = await fresh();
   await migrate(db);
   const names = (await db.all("SELECT name FROM sqlite_master WHERE type='table'")).map(r => r.name);
-  for (const t of ['notes', 'tags', 'links', 'settings', 'focus_sessions', 'pantry', 'recipes', 'scenarios', 'skills', 'practice', 'cards', 'albums', 'photos', 'journal']) assert.ok(names.includes(t), t);
+  for (const t of ['notes', 'tags', 'links', 'pantry', 'recipes', 'scenarios', 'skills', 'practice', 'cards', 'albums', 'photos', 'journal']) assert.ok(names.includes(t), t);
 });
 
 test('migrate is idempotent when run twice', async () => {

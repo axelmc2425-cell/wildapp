@@ -25,17 +25,7 @@ const V1 = [
 // Each step and its version bump are one transaction, so a crash can never leave a half-migrated database.
 // Module tables, one numbered step each (v3..v8). Every step and its version bump are one transaction.
 const MODULE_STEPS = [
-  [3, [ // focus
-    'CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
-    `CREATE TABLE focus_sessions (
-       id INTEGER PRIMARY KEY AUTOINCREMENT,
-       started INTEGER NOT NULL,
-       minutes INTEGER NOT NULL,
-       kind TEXT NOT NULL DEFAULT 'work',
-       task TEXT NOT NULL DEFAULT '',
-       completed INTEGER NOT NULL DEFAULT 1)`,
-    'CREATE INDEX focus_started ON focus_sessions(started)',
-  ]],
+  [3, []], // was Focus Room tables; the Focus Room module now creates and migrates its own tables (src/modules/focus/schema.js)
   [4, [ // cooking
     `CREATE TABLE pantry (
        id INTEGER PRIMARY KEY AUTOINCREMENT,

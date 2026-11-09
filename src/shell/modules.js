@@ -17,3 +17,30 @@ export function listModules() {
 export function getModule(id) {
   return registry.get(id) || null;
 }
+
+/**
+ * Runs every module's optional onStart(ctx) in module order; one failure never stops the rest.
+ * A hook still running after timeoutMs is left running in the background and the next one starts.
+ */
+export async function runStartHooks(ctx, { timeoutMs = 3000 } = {}) {
+  for (const m of listModules()) {
+    if (typeof m.onStart !== 'function') continue;
+    let timer;
+    try {
+      const hook = Promise.resolve().then(() => m.onStart(ctx));
+      const timedOut = new Promise((resolve) => {
+        timer = setTimeout(() => {
+          console.error('onStart for ' + m.id + ' is still running; continuing');
+          resolve();
+        }, timeoutMs);
+      });
+      // Late failures of an abandoned hook are logged here, never unhandled.
+      const guarded = hook.catch((e) => { console.error('module start hook failed: ' + m.id, e); });
+      await Promise.race([guarded, timedOut]);
+    } catch (e) {
+      console.error('module start hook failed: ' + m.id, e);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
