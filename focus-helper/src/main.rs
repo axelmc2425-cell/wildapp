@@ -98,8 +98,8 @@ fn windows_cmd(cmd: Cmd) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("focus-helper: {e}");
-            ExitCode::from(1)
+            eprintln!("focus-helper: {}", e.message());
+            ExitCode::from(e.exit_code())
         }
     }
 }

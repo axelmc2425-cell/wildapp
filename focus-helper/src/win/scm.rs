@@ -12,6 +12,7 @@ use crate::service_logic::Role;
 const ERROR_SERVICE_DOES_NOT_EXIST: i32 = 1060;
 const ERROR_SERVICE_ALREADY_RUNNING: i32 = 1056;
 const ERROR_SERVICE_NOT_ACTIVE: i32 = 1062;
+const ERROR_SERVICE_DISABLED: i32 = 1058;
 
 fn win32(e: &Error) -> Option<i32> {
     match e {
@@ -47,7 +48,8 @@ pub fn start_if_stopped(role: Role) -> io::Result<()> {
     if svc.query_status().map_err(to_io)?.current_state == ServiceState::Stopped {
         match svc.start::<&str>(&[]) {
             Ok(()) => {}
-            Err(e) if win32(&e) == Some(ERROR_SERVICE_ALREADY_RUNNING) => {}
+            // Disabled means an upgrade/uninstall is in progress: leave it alone.
+            Err(e) if matches!(win32(&e), Some(ERROR_SERVICE_ALREADY_RUNNING | ERROR_SERVICE_DISABLED)) => {}
             Err(e) => return Err(to_io(e)),
         }
     }
@@ -68,9 +70,15 @@ pub fn stop_and_wait(role: Role, timeout: Duration) -> io::Result<()> {
         Err(e) => return Err(to_io(e)),
     }
     let deadline = Instant::now() + timeout;
+    let mut last_stop = Instant::now();
     loop {
         if svc.query_status().map_err(to_io)?.current_state == ServiceState::Stopped {
             return Ok(());
+        }
+        // A service that has only just started ignores Stop until its first tick; ask again.
+        if last_stop.elapsed() >= Duration::from_secs(2) {
+            let _ = svc.stop();
+            last_stop = Instant::now();
         }
         if Instant::now() >= deadline {
             return Err(io::Error::other(format!(

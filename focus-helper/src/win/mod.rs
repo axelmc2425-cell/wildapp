@@ -4,6 +4,7 @@
 
 pub mod dns;
 pub mod install;
+pub mod log;
 pub mod paths;
 pub mod pipe;
 pub mod platform;

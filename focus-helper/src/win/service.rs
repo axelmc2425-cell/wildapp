@@ -1,7 +1,7 @@
 //! Service entry points: `service` (the enforcement daemon) and `watchdog`. Windows only.
 //!
 //! Control handler rules: Shutdown is always honored. Stop is honored only while no locked or
-//! frozen window is active; otherwise it is ignored and the service stays Running. The daemon
+//! frozen window is pending (active or scheduled, `ends > now`); otherwise it is ignored and the service stays Running. The daemon
 //! loop refreshes `Flags::stop_allowed` from the store and the effective clock every tick.
 //! Each service also checks the other every 5 s through the SCM and starts it if Stopped.
 
@@ -18,6 +18,7 @@ use windows_service::{define_windows_service, service_dispatcher};
 
 use crate::persist;
 use crate::service_logic::{self, Role};
+use crate::win::log::log;
 use crate::win::{paths, pipe, scm};
 
 pub const PEER_CHECK_INTERVAL: Duration = Duration::from_secs(5);
@@ -25,7 +26,7 @@ pub const PEER_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 /// State shared between the SCM control handler thread and the service loop.
 pub struct Flags {
     pub stop_requested: AtomicBool,
-    /// True while no locked/frozen window is active. Starts false so a Stop arriving before
+    /// True while no locked/frozen window is pending. Starts false so a Stop arriving before
     /// the first tick is ignored rather than honored blindly.
     pub stop_allowed: AtomicBool,
 }
@@ -49,7 +50,7 @@ pub fn run(role: Role) -> Result<(), windows_service::Error> {
 fn service_main(_args: Vec<OsString>) {
     let role = *ROLE.get().expect("role set before dispatch");
     if let Err(e) = run_service(role) {
-        eprintln!("focus-helper {}: {e}", role.arg());
+        log(&format!("{}: {e}", role.arg()));
     }
 }
 
@@ -94,7 +95,7 @@ fn run_service(role: Role) -> windows_service::Result<()> {
     let code = match &result {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("focus-helper {}: {e}", role.arg());
+            log(&format!("{}: {e}", role.arg()));
             1
         }
     };
@@ -103,7 +104,9 @@ fn run_service(role: Role) -> windows_service::Result<()> {
 }
 
 fn run_main(flags: &Arc<Flags>) -> std::io::Result<()> {
-    paths::ensure_state_dir()?;
+    if let Some(warning) = paths::ensure_state_dir()? {
+        log(&warning);
+    }
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, pipe::serve(paths::state_file(), flags.clone()))
@@ -128,7 +131,7 @@ fn run_watchdog(flags: &Arc<Flags>) -> std::io::Result<()> {
         let now = paths::wall_ms().max(store.high_water_ms);
         flags.stop_allowed.store(service_logic::stop_allowed(&store.windows, now), Ordering::SeqCst);
         if let Err(e) = scm::start_if_stopped(Role::Watchdog.other()) {
-            eprintln!("focus-helper watchdog: cannot check {}: {e}", Role::Main.service_name());
+            log(&format!("watchdog: cannot check {}: {e}", Role::Main.service_name()));
         }
         sleep_unless_stopped(flags, PEER_CHECK_INTERVAL);
     }

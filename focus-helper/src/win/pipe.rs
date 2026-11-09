@@ -16,14 +16,10 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use tokio::time::{interval, timeout, MissedTickBehavior};
-use windows_sys::Win32::Foundation::LocalFree;
-use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-};
-use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 
 use crate::daemon::Daemon;
-use crate::service_logic::{Role, PIPE_NAME, PIPE_SDDL};
+use crate::service_logic::{pipe_retry_delay_ms, Role, PIPE_NAME, PIPE_SDDL};
+use crate::win::log::log;
 use crate::win::platform::{os_nonce, WindowsPlatform};
 use crate::win::service::{Flags, PEER_CHECK_INTERVAL};
 use crate::win::{paths, scm};
@@ -45,40 +41,35 @@ impl Drop for CountGuard {
 }
 
 /// Create one pipe instance with the explicit DACL from `PIPE_SDDL` (the default DACL would give
-/// Everyone read-only access, so a normal user's app could not send requests).
+/// Everyone read-only access, so a normal user's app could not send requests; the explicit user
+/// ACE omits FILE_CREATE_PIPE_INSTANCE so users cannot create instances).
 fn create_server(first: bool) -> io::Result<NamedPipeServer> {
-    let sddl: Vec<u16> = PIPE_SDDL.encode_utf16().chain(std::iter::once(0)).collect();
-    let mut descriptor: *mut c_void = std::ptr::null_mut();
-    // SAFETY: `sddl` is NUL-terminated; `descriptor` receives a LocalAlloc'd buffer that we free
-    // below after the pipe has been created (the kernel copies the descriptor).
-    let ok = unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            SDDL_REVISION_1,
-            &mut descriptor,
-            std::ptr::null_mut(),
-        )
-    };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
+    paths::with_security_attributes(PIPE_SDDL, |attrs| {
+        // SAFETY: `attrs` is a valid SECURITY_ATTRIBUTES that outlives the call.
+        unsafe {
+            ServerOptions::new()
+                .first_pipe_instance(first)
+                .reject_remote_clients(true)
+                .create_with_security_attributes_raw(PIPE_NAME, attrs as *mut c_void)
+        }
+    })?
+}
+
+/// Try to (re)create the listening instance; on failure log and schedule a backoff retry. The
+/// daemon never stops because of this: the tick loop keeps enforcing.
+fn refill(server: &mut Option<NamedPipeServer>, attempt: &mut u32, retry_at: &mut tokio::time::Instant) {
+    match create_server(false) {
+        Ok(s) => {
+            *server = Some(s);
+            *attempt = 0;
+        }
+        Err(e) => {
+            let delay = pipe_retry_delay_ms(*attempt);
+            log(&format!("pipe: cannot create instance ({e}); retrying in {delay} ms"));
+            *attempt = attempt.saturating_add(1);
+            *retry_at = tokio::time::Instant::now() + Duration::from_millis(delay);
+        }
     }
-    let mut attrs = SECURITY_ATTRIBUTES {
-        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor,
-        bInheritHandle: 0,
-    };
-    // SAFETY: `attrs` is a valid SECURITY_ATTRIBUTES that outlives the call.
-    let server = unsafe {
-        ServerOptions::new()
-            .first_pipe_instance(first)
-            .reject_remote_clients(true)
-            .create_with_security_attributes_raw(PIPE_NAME, &mut attrs as *mut SECURITY_ATTRIBUTES as *mut c_void)
-    };
-    // SAFETY: `descriptor` came from the conversion call above and is not used afterwards.
-    unsafe {
-        LocalFree(descriptor);
-    }
-    server
 }
 
 fn mono_ms(start: Instant) -> i64 {
@@ -91,7 +82,11 @@ pub async fn serve(state_path: PathBuf, flags: Arc<Flags>) -> io::Result<()> {
     let shared = Rc::new(RefCell::new(Shared { daemon: Daemon::load(&state_path), platform: WindowsPlatform::new() }));
     let start = Instant::now();
     let clients = Rc::new(Cell::new(0usize));
-    let mut server = create_server(true)?;
+    // Only the very first instance may fail the service (someone else owns the name).
+    let mut server = Some(create_server(true)?);
+    let mut attempt = 0u32;
+    let mut retry_at = tokio::time::Instant::now();
+    let mut last_persist_warning: Option<String> = None;
 
     let mut tick = interval(Duration::from_secs(1));
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -100,13 +95,16 @@ pub async fn serve(state_path: PathBuf, flags: Arc<Flags>) -> io::Result<()> {
 
     loop {
         tokio::select! {
-            connected = server.connect() => {
-                let next = create_server(false)?;
-                let client = std::mem::replace(&mut server, next);
+            connected = async { server.as_mut().expect("guarded").connect().await }, if server.is_some() => {
+                let client = server.take().expect("guarded");
+                refill(&mut server, &mut attempt, &mut retry_at);
                 if connected.is_ok() && clients.get() < MAX_CLIENTS {
                     clients.set(clients.get() + 1);
                     tokio::task::spawn_local(handle_client(client, shared.clone(), start, flags.clone(), CountGuard(clients.clone())));
                 }
+            }
+            _ = tokio::time::sleep_until(retry_at), if server.is_none() => {
+                refill(&mut server, &mut attempt, &mut retry_at);
             }
             _ = tick.tick() => {
                 let mut s = shared.borrow_mut();
@@ -114,13 +112,20 @@ pub async fn serve(state_path: PathBuf, flags: Arc<Flags>) -> io::Result<()> {
                 let (wall, mono) = (paths::wall_ms(), mono_ms(start));
                 daemon.tick(wall, mono, platform);
                 flags.stop_allowed.store(daemon.stop_allowed(wall, mono), Ordering::SeqCst);
+                let persist_warning = daemon.warnings().into_iter().find(|w| w.starts_with("persist:"));
+                if persist_warning != last_persist_warning {
+                    if let Some(w) = &persist_warning {
+                        log(w);
+                    }
+                    last_persist_warning = persist_warning;
+                }
                 if flags.stop_requested.load(Ordering::SeqCst) {
                     return Ok(());
                 }
             }
             _ = peer.tick() => {
                 if let Err(e) = scm::start_if_stopped(Role::Main.other()) {
-                    eprintln!("focus-helper: cannot check {}: {e}", Role::Watchdog.service_name());
+                    log(&format!("cannot check {}: {e}", Role::Watchdog.service_name()));
                 }
             }
         }
@@ -158,7 +163,7 @@ async fn handle_client(client: NamedPipeServer, shared: Rc<RefCell<Shared>>, sta
                     reply
                 }
                 Err(e) => {
-                    eprintln!("focus-helper: {e}");
+                    log(&e.to_string());
                     RNG_ERROR.to_string()
                 }
             }

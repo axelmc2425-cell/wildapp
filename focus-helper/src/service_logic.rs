@@ -16,9 +16,99 @@ pub const DIR_NAME: &str = "MyBrainFocus";
 pub const EXE_NAME: &str = "focus-helper.exe";
 pub const STATE_FILE: &str = "state.json";
 
-/// Pipe DACL: SYSTEM and Administrators full control, authenticated users read+write (a normal
-/// user's MyBrain app must be able to send requests; the default DACL would give Everyone read only).
-pub const PIPE_SDDL: &str = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)";
+/// Pipe DACL: SYSTEM and Administrators full control. Authenticated users get explicit rights
+/// 0x12019b = SYNCHRONIZE | READ_CONTROL | FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES |
+/// FILE_WRITE_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES, i.e. read+write WITHOUT
+/// FILE_APPEND_DATA (0x4), which on a pipe means FILE_CREATE_PIPE_INSTANCE. Without that bit an
+/// ordinary user can talk to the pipe but cannot create instances of it (no hijacking, no
+/// exhausting the instance limit). The service itself creates instances as SYSTEM (GA).
+pub const PIPE_SDDL: &str = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;AU)";
+
+/// State directory DACL, protected (`P`, no inheritance from ProgramData): SYSTEM full control,
+/// Administrators read/execute only, inherited by children. Used at atomic creation so there is
+/// no window in which another user could own or write the directory.
+pub const STATE_DIR_SDDL: &str = "D:P(A;OICI;GA;;;SY)(A;OICI;GRGX;;;BA)";
+
+pub const SYSTEM_SID: &str = "S-1-5-18";
+pub const ADMINS_SID: &str = "S-1-5-32-544";
+
+/// Exit codes the NSIS hook relies on.
+pub const EXIT_LOCK_PENDING: u8 = 1;
+pub const EXIT_FAILURE: u8 = 3;
+
+/// Service log cap; rotated once to `service.log.old`.
+pub const LOG_MAX_BYTES: u64 = 1024 * 1024;
+pub const LOG_FILE: &str = "service.log";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CmdError {
+    /// Refused because a locked/frozen window is pending (exit code 1).
+    LockPending(String),
+    /// Anything else (exit code 3).
+    Failed(String),
+}
+
+impl CmdError {
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            CmdError::LockPending(_) => EXIT_LOCK_PENDING,
+            CmdError::Failed(_) => EXIT_FAILURE,
+        }
+    }
+    pub fn message(&self) -> &str {
+        match self {
+            CmdError::LockPending(m) | CmdError::Failed(m) => m,
+        }
+    }
+}
+
+/// What to do with the state directory at `%ProgramData%\MyBrainFocus`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateDirAction {
+    /// Does not exist: create it atomically with `STATE_DIR_SDDL`.
+    Create,
+    /// Exists, owned by SYSTEM/Administrators: re-assert owner and ACLs, reset children.
+    Adopt,
+    /// Exists with an untrusted owner (or is not a directory): rename aside, create fresh.
+    QuarantineAndRecreate,
+    /// Junction or symlink: fail closed.
+    RefuseReparsePoint,
+}
+
+pub fn state_dir_action(exists: bool, is_reparse: bool, owner_trusted: bool) -> StateDirAction {
+    if !exists {
+        StateDirAction::Create
+    } else if is_reparse {
+        StateDirAction::RefuseReparsePoint
+    } else if owner_trusted {
+        StateDirAction::Adopt
+    } else {
+        StateDirAction::QuarantineAndRecreate
+    }
+}
+
+pub fn is_trusted_owner(sid: &str) -> bool {
+    sid == SYSTEM_SID || sid == ADMINS_SID
+}
+
+pub fn quarantine_dir_name(unix_ms: i64) -> String {
+    format!("{DIR_NAME}.untrusted-{unix_ms}")
+}
+
+/// Delay before retrying a failed pipe-instance creation: 250 ms doubling, capped at 5 s.
+pub fn pipe_retry_delay_ms(attempt: u32) -> u64 {
+    250u64.saturating_mul(1u64 << attempt.min(10)).min(5_000)
+}
+
+/// One log line: timestamp, message with line breaks flattened.
+pub fn log_line(unix_ms: i64, msg: &str) -> String {
+    format!("{unix_ms} {}\n", msg.replace(['\r', '\n'], " "))
+}
+
+/// Join a directory and a file name with a backslash.
+pub fn dir_file(dir: &str, name: &str) -> String {
+    format!("{}\\{}", dir.trim_end_matches('\\'), name)
+}
 
 /// Service DACL: SYSTEM full control; Administrators may only query config/status, interrogate,
 /// enumerate dependents and read the descriptor (`CCLCSWLOCRRC`). Nobody else can start, stop,
@@ -139,6 +229,17 @@ pub fn sc_failure_args(role: Role) -> Vec<String> {
     ]
 }
 
+/// Also restart when the service exits with a non-zero code (not just on a crash).
+pub fn sc_failureflag_args(role: Role) -> Vec<String> {
+    vec!["failureflag".into(), role.service_name().into(), "1".into()]
+}
+
+/// `start` is `auto` or `disabled`. Disabling both services first stops the peer watchdog from
+/// reviving one while the other is being stopped for an upgrade or uninstall.
+pub fn sc_config_start_args(role: Role, start: &str) -> Vec<String> {
+    vec!["config".into(), role.service_name().into(), "start=".into(), start.into()]
+}
+
 pub fn sc_sdset_args(role: Role, sddl: &str) -> Vec<String> {
     vec!["sdset".into(), role.service_name().into(), sddl.into()]
 }
@@ -162,14 +263,27 @@ pub fn icacls_lockdown_args(dir: &str) -> Vec<String> {
 /// Temporarily lets Administrators write into a directory this module locked down, so an
 /// upgrade or uninstall run by an elevated Administrator can replace or delete the files. Only
 /// ever applied after the lock check passed; `icacls_lockdown_args` follows it.
+pub fn icacls_setowner_args(target: &str, sid: &str, recursive: bool) -> Vec<String> {
+    let mut v = vec![target.to_string(), "/setowner".into(), format!("*{sid}")];
+    if recursive {
+        v.push("/T".into());
+        v.push("/C".into());
+    }
+    v
+}
+
+/// Reset the ACL of everything inside `dir` to what it inherits (drops planted ACEs).
+pub fn icacls_reset_children_args(dir: &str) -> Vec<String> {
+    vec![dir_file(dir, "*"), "/reset".into(), "/T".into(), "/C".into()]
+}
+
 pub fn icacls_admin_write_args(dir: &str) -> Vec<String> {
     vec![dir.into(), "/grant:r".into(), "*S-1-5-32-544:(OI)(CI)F".into()]
 }
 
 // ---- lock predicates ----
 
-/// A locked or frozen window is in force right now. Gates the service Stop control: with an
-/// active lock the helper ignores Stop (Shutdown is always honored).
+/// A locked or frozen window is in force right now (informational; Stop uses `lock_pending`).
 pub fn lock_active(windows: &[Window], now_ms: i64) -> bool {
     windows.iter().any(|w| w.lock != Lock::None && w.starts <= now_ms && now_ms < w.ends)
 }
@@ -179,8 +293,11 @@ pub fn lock_pending(windows: &[Window], now_ms: i64) -> bool {
     windows.iter().any(|w| w.lock != Lock::None && w.ends > now_ms)
 }
 
+/// Gates the service Stop control: while any locked/frozen window is pending (active or still to
+/// come, `ends > now`) the helper ignores Stop; Shutdown is always honored. This matches the
+/// install/uninstall refusal, so a lock scheduled ahead cannot be dodged by stopping the services.
 pub fn stop_allowed(windows: &[Window], now_ms: i64) -> bool {
-    !lock_active(windows, now_ms)
+    !lock_pending(windows, now_ms)
 }
 
 /// Gate for `uninstall` and for an upgrade that would stop the services: refused while any
@@ -221,12 +338,13 @@ mod tests {
     }
 
     #[test]
-    fn stop_allowed_follows_active_locks() {
+    fn stop_allowed_follows_pending_locks() {
         assert!(stop_allowed(&[], 50));
         assert!(!stop_allowed(&[w(Lock::Locked, 0, 100)], 50));
         assert!(!stop_allowed(&[w(Lock::Frozen, 0, 100)], 99));
         assert!(stop_allowed(&[w(Lock::Locked, 0, 100)], 100));
-        assert!(stop_allowed(&[w(Lock::Locked, 200, 300)], 50), "not started yet");
+        assert!(!stop_allowed(&[w(Lock::Locked, 200, 300)], 50), "pending future lock also blocks Stop");
+        assert!(stop_allowed(&[w(Lock::Locked, 200, 300)], 300));
         assert!(stop_allowed(&[w(Lock::None, 0, 100)], 50));
     }
 
@@ -278,7 +396,9 @@ mod tests {
 
     #[test]
     fn sddls_and_icacls() {
-        assert_eq!(PIPE_SDDL, "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)");
+        assert_eq!(PIPE_SDDL, "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;AU)");
+        assert_eq!(0x12019b & 0x4, 0, "no FILE_APPEND_DATA / CREATE_PIPE_INSTANCE for users");
+        assert_eq!(STATE_DIR_SDDL, "D:P(A;OICI;GA;;;SY)(A;OICI;GRGX;;;BA)");
         assert_eq!(SERVICE_SDDL_ADMIN_MANAGE, "D:(A;;GA;;;SY)(A;;GA;;;BA)");
         assert_eq!(PIPE_NAME, r"\\.\pipe\mybrain-focus");
         assert_eq!(
@@ -293,6 +413,48 @@ mod tests {
             icacls_admin_write_args(r"C:\x"),
             [r"C:\x", "/grant:r", "*S-1-5-32-544:(OI)(CI)F"]
         );
+    }
+
+    #[test]
+    fn failureflag_and_start_type() {
+        assert_eq!(sc_failureflag_args(Role::Main), ["failureflag", "MyBrainFocus", "1"]);
+        assert_eq!(sc_config_start_args(Role::Watchdog, "disabled"), ["config", "MyBrainFocusWatchdog", "start=", "disabled"]);
+    }
+
+    #[test]
+    fn owner_and_reset_args() {
+        assert_eq!(icacls_setowner_args(r"C:\d", SYSTEM_SID, true), [r"C:\d", "/setowner", "*S-1-5-18", "/T", "/C"]);
+        assert_eq!(icacls_setowner_args(r"C:\d", ADMINS_SID, false), [r"C:\d", "/setowner", "*S-1-5-32-544"]);
+        assert_eq!(icacls_reset_children_args(r"C:\d"), [r"C:\d\*", "/reset", "/T", "/C"]);
+    }
+
+    #[test]
+    fn state_dir_decisions() {
+        use StateDirAction::*;
+        assert_eq!(state_dir_action(false, false, false), Create);
+        assert_eq!(state_dir_action(true, true, true), RefuseReparsePoint);
+        assert_eq!(state_dir_action(true, true, false), RefuseReparsePoint);
+        assert_eq!(state_dir_action(true, false, true), Adopt);
+        assert_eq!(state_dir_action(true, false, false), QuarantineAndRecreate);
+        assert!(is_trusted_owner("S-1-5-18") && is_trusted_owner("S-1-5-32-544"));
+        assert!(!is_trusted_owner("S-1-5-21-1-2-3-1001"));
+        assert_eq!(quarantine_dir_name(42), "MyBrainFocus.untrusted-42");
+    }
+
+    #[test]
+    fn retry_backoff_schedule() {
+        let d: Vec<u64> = (0..8).map(pipe_retry_delay_ms).collect();
+        assert_eq!(d, [250, 500, 1000, 2000, 4000, 5000, 5000, 5000]);
+        assert_eq!(pipe_retry_delay_ms(u32::MAX), 5000);
+    }
+
+    #[test]
+    fn cmd_error_codes_and_log_line() {
+        assert_eq!(CmdError::LockPending("x".into()).exit_code(), 1);
+        assert_eq!(CmdError::Failed("x".into()).exit_code(), 3);
+        assert_eq!(log_line(7, "a\nb\r"), "7 a b \n");
+        assert_eq!(dir_file(r"C:\Windows\System32", "sc.exe"), r"C:\Windows\System32\sc.exe");
+        assert_eq!(dir_file(r"C:\x\", "y"), r"C:\x\y");
     }
 
     #[test]

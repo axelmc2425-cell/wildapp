@@ -14,10 +14,9 @@ pub fn hosts_path() -> PathBuf {
     root.join("System32").join("drivers").join("etc").join("hosts")
 }
 
-/// Absolute `%SystemRoot%\System32\<exe>`, never a PATH lookup (the helper runs as SYSTEM).
+/// Absolute `<System directory>\<exe>` from `GetSystemDirectoryW`, never a PATH lookup.
 pub fn sys32(exe: &str) -> PathBuf {
-    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
-    PathBuf::from(crate::service_logic::system32_exe(&root, exe))
+    PathBuf::from(crate::win::paths::system32_exe(exe))
 }
 
 fn run(cmd: &mut Command) -> io::Result<()> {
