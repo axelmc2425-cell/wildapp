@@ -1,4 +1,6 @@
-import { DEFAULTS, initial, start, pause, tick, skip, reset, remaining, withSettings } from './timer.js';
+import { DEFAULTS, initial, start, pause, tick, skip, reset, remaining, elapsed, withSettings } from './timer.js';
+
+const MIN = 60000;
 import { logSession } from './repo.js';
 
 // Owns the running timer so it keeps going (and logs) even when the Focus screen is not open.
@@ -17,12 +19,22 @@ export function createController({ db, settings = DEFAULTS, now = Date.now }) {
     queued = null;
   }
 
+  // Takes an entry off the queue before writing it, so overlapping flushes never write the same one twice.
   async function flushUnsaved() {
     while (unsaved.length) {
-      try { await logSession(db, unsaved[0]); } catch { return; }
-      unsaved.shift();
+      const entry = unsaved.shift();
+      try { await logSession(db, entry); } catch { unsaved.unshift(entry); return; }
       emit({ type: 'saved' });
     }
+  }
+
+  // Stopping a focus phase early keeps the time as an unfinished session (shown in the log, not in the stats).
+  function keepPartial() {
+    if (state.phase !== 'work') return;
+    const minutes = Math.floor(elapsed(state, now()) / MIN);
+    if (minutes < 1) return;
+    unsaved.push({ started: phaseStartedAt ?? now(), minutes, task, completed: 0 });
+    void flushUnsaved();
   }
 
   return {
@@ -41,8 +53,8 @@ export function createController({ db, settings = DEFAULTS, now = Date.now }) {
       emit({ type: 'changed' });
     },
     pause() { state = pause(state, now()); emit({ type: 'changed' }); },
-    reset() { state = reset(state); phaseStartedAt = null; applyQueued(); emit({ type: 'changed' }); },
-    skip() { state = skip(state); phaseStartedAt = null; applyQueued(); emit({ type: 'changed' }); },
+    reset() { keepPartial(); state = reset(state); phaseStartedAt = null; applyQueued(); emit({ type: 'changed' }); },
+    skip() { keepPartial(); state = skip(state); phaseStartedAt = null; applyQueued(); emit({ type: 'changed' }); },
     async tick() {
       await flushUnsaved();
       const r = tick(state, now());

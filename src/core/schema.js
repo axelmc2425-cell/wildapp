@@ -114,6 +114,9 @@ const MODULE_STEPS = [
        tags TEXT NOT NULL DEFAULT '',
        updated INTEGER NOT NULL)`,
   ]],
+  [9, [ // focus: a session can be marked as finished
+    "ALTER TABLE focus_sessions ADD COLUMN done INTEGER NOT NULL DEFAULT 0",
+  ]],
 ];
 
 export async function migrate(db) {

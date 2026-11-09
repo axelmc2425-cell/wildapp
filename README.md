@@ -7,7 +7,7 @@ It has a shell (sidebar, Ctrl+K search across everything, settings, backup) and 
 | Module | What it does |
 | --- | --- |
 | 🧠 Second Brain | Linked Markdown notes, backlinks, graph, daily note, quick capture, import/export |
-| 🎯 Focus Room | Pomodoro timer, ambient noise, one-thing focus, session log and streaks |
+| 🎯 Focus Room | Pomodoro timer, ambient noise, one-thing focus, daily goal, keyboard shortcuts, done alerts, session log (finished marks, stopped-early sessions) and streaks |
 | 🍳 Cooking Coach | Pantry, recipes, "what can I cook tonight", scaling, timers from steps, macros and cost |
 | 💰 Money Sandbox | Monte Carlo what-if simulator (buy a house, change jobs, go part-time) with comparison |
 | 🌳 Skill Tree | Skills tree, practice log, levels, spaced-repetition flashcards (SM-2) |

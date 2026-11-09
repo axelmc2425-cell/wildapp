@@ -1,5 +1,5 @@
 // Pomodoro state machine driven by timestamps (ms), so it stays right across sleep and throttled timers.
-export const DEFAULTS = { work: 25, short: 5, long: 15, longEvery: 4 };
+export const DEFAULTS = { work: 25, short: 5, long: 15, longEvery: 4, goal: 120 }; // goal: focus minutes per day, 0 = off
 const MIN = 60000;
 
 export function phaseMinutes(phase, settings) {
@@ -16,6 +16,11 @@ export function initial(settings = DEFAULTS) {
 
 export function remaining(state, now) {
   return state.status === 'running' ? Math.max(0, state.endsAt - now) : state.remainingMs;
+}
+
+// Time spent in the current phase so far (ms), however many pauses it had.
+export function elapsed(state, now) {
+  return phaseMinutes(state.phase, state.settings) * MIN - remaining(state, now);
 }
 
 export function start(state, now) {

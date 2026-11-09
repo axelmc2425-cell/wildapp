@@ -8,6 +8,10 @@ export async function listSessions(db, { since = 0, limit = 500 } = {}) {
   return db.all('SELECT * FROM focus_sessions WHERE started >= ? ORDER BY started DESC, id DESC LIMIT ?', [since, limit]);
 }
 
+export async function setSessionDone(db, id, done) {
+  await db.run('UPDATE focus_sessions SET done = ? WHERE id = ?', [done ? 1 : 0, id]);
+}
+
 export async function deleteSession(db, id) {
   await db.run('DELETE FROM focus_sessions WHERE id = ?', [id]);
 }

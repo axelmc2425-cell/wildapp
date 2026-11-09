@@ -37,3 +37,31 @@ export function streak(sessions, now) {
   while (m.has(dayKey(shiftDays(now, -i)))) { n++; i++; }
   return n;
 }
+
+// Longest run of consecutive days with a completed work session, across the whole list.
+export function bestStreak(sessions) {
+  const days = [...new Set(sessions.filter(counts).map(s => dayKey(s.started)))].sort();
+  let best = 0;
+  let run = 0;
+  let prev = null;
+  for (const key of days) {
+    const [y, m, d] = key.split('-').map(Number);
+    const t = new Date(y, m - 1, d).getTime();
+    run = prev !== null && Math.round((t - prev) / 86400000) === 1 ? run + 1 : 1;
+    best = Math.max(best, run);
+    prev = t;
+  }
+  return best;
+}
+
+// Work sessions the owner marked as finished in the last n days.
+export function finishedCount(sessions, now, n = 7) {
+  const since = now - n * 86400000;
+  return sessions.filter(s => s.kind === 'work' && s.done && s.started >= since).length;
+}
+
+// Progress toward the daily goal, or null when the goal is off (0).
+export function goalProgress(minutes, goal) {
+  if (!goal) return null;
+  return { pct: Math.min(100, Math.round((minutes / goal) * 100)), reached: minutes >= goal };
+}

@@ -6,8 +6,8 @@ import { join } from 'node:path';
 import { openNodeDb } from '../src/core/db-node.js';
 import { migrate } from '../src/core/schema.js';
 import { DEFAULTS, initial, start, pause, tick, skip, remaining } from '../src/modules/focus/timer.js';
-import { dayKey, todayMinutes, lastDays, streak } from '../src/modules/focus/stats.js';
-import { logSession, listSessions, deleteSession, getSetting, setSetting, focusSearch } from '../src/modules/focus/repo.js';
+import { dayKey, todayMinutes, lastDays, streak, bestStreak, finishedCount, goalProgress } from '../src/modules/focus/stats.js';
+import { logSession, listSessions, deleteSession, setSessionDone, getSetting, setSetting, focusSearch } from '../src/modules/focus/repo.js';
 import { noiseSamples } from '../src/modules/focus/sound.js';
 import { createController } from '../src/modules/focus/controller.js';
 
@@ -207,4 +207,52 @@ test('a session that could not be saved is kept and logged on a later tick', asy
   const [s] = await listSessions(db);
   assert.equal(s.task, 'Report');
   assert.equal(s.minutes, 25);
+});
+
+// ---- goal, best streak, finished, stopped early
+test('bestStreak finds the longest run anywhere in the history', () => {
+  const list = [1, 2, 3, 10, 11, 12, 13, 20].map(d => sess(at(2026, 5, d), 25));
+  assert.equal(bestStreak(list), 4);
+  assert.equal(bestStreak([]), 0);
+  assert.equal(bestStreak([sess(at(2026, 5, 1), 25, { completed: 0 })]), 0);
+});
+
+test('goalProgress is null when off, capped at 100 and flags reached', () => {
+  assert.equal(goalProgress(50, 0), null);
+  assert.deepEqual(goalProgress(60, 120), { pct: 50, reached: false });
+  assert.deepEqual(goalProgress(300, 120), { pct: 100, reached: true });
+});
+
+test('finishedCount counts only done work sessions in the window', () => {
+  const now = at(2026, 5, 10);
+  const list = [sess(at(2026, 5, 9), 25, { done: 1 }), sess(at(2026, 5, 9), 25), sess(at(2026, 4, 1), 25, { done: 1 })];
+  assert.equal(finishedCount(list, now), 1);
+});
+
+test('a session can be marked finished and unmarked', async () => {
+  const db = await fresh();
+  const a = await logSession(db, { started: 1000, minutes: 25, task: 'x' });
+  await setSessionDone(db, a.id, true);
+  assert.equal((await listSessions(db))[0].done, 1);
+  await setSessionDone(db, a.id, false);
+  assert.equal((await listSessions(db))[0].done, 0);
+});
+
+test('stopping a focus session early logs the time as unfinished; under a minute logs nothing', async () => {
+  const db = await fresh();
+  let now = 5000;
+  const c = createController({ db, settings: DEFAULTS, now: () => now });
+  c.start('Draft');
+  now += 10 * MIN + 20000;
+  c.skip();
+  await c.tick();
+  const [s] = await listSessions(db);
+  assert.equal(s.minutes, 10);
+  assert.equal(s.completed, 0);
+  assert.equal(s.task, 'Draft');
+  assert.equal(s.started, 5000);
+  c.skip(); // break -> work, nothing to keep
+  c.start('Again'); now += 30000; c.reset();
+  await c.tick();
+  assert.equal((await listSessions(db)).length, 1);
 });
