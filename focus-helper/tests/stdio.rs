@@ -70,3 +70,55 @@ fn send_is_windows_only_elsewhere() {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("Windows only"));
 }
+
+fn spawn_stdio(tag: &str) -> (std::process::Child, std::process::ChildStdin, BufReader<std::process::ChildStdout>) {
+    let dir = std::env::temp_dir().join(format!("focus-stdio-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_focus-helper"))
+        .args(["stdio", "--state"])
+        .arg(dir.join("state.json"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdin = child.stdin.take().unwrap();
+    let out = BufReader::new(child.stdout.take().unwrap());
+    (child, stdin, out)
+}
+
+fn roundtrip(stdin: &mut std::process::ChildStdin, out: &mut BufReader<std::process::ChildStdout>, line: &str) -> Value {
+    writeln!(stdin, "{line}").unwrap();
+    stdin.flush().unwrap();
+    let mut reply = String::new();
+    out.read_line(&mut reply).unwrap();
+    serde_json::from_str(&reply).unwrap()
+}
+
+#[cfg(feature = "test-clock")]
+#[test]
+fn advance_clock_moves_effective_time() {
+    let (mut child, mut stdin, mut out) = spawn_stdio("clock");
+    let before = roundtrip(&mut stdin, &mut out, r#"{"type":"GetStatus"}"#)["now_ms"].as_i64().unwrap();
+    assert_eq!(roundtrip(&mut stdin, &mut out, r#"{"type":"AdvanceClock","ms":3600000}"#)["type"], "Ok");
+    assert_eq!(roundtrip(&mut stdin, &mut out, r#"{"type":"AdvanceClock","ms":1000}"#)["type"], "Ok");
+    let after = roundtrip(&mut stdin, &mut out, r#"{"type":"GetStatus"}"#)["now_ms"].as_i64().unwrap();
+    assert!(after - before >= 3_601_000, "before={before} after={after}");
+    for bad in [r#"{"type":"AdvanceClock","ms":-1}"#, r#"{"type":"AdvanceClock","ms":1.5}"#, r#"{"type":"AdvanceClock"}"#, r#"{"type":"AdvanceClock","ms":"5"}"#] {
+        let r = roundtrip(&mut stdin, &mut out, bad);
+        assert_eq!(r["type"], "Error", "{bad}");
+        assert_eq!(r["code"], "bad-request", "{bad}");
+    }
+    drop(stdin);
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+}
+
+#[cfg(not(feature = "test-clock"))]
+#[test]
+fn advance_clock_is_rejected_without_feature() {
+    let (mut child, mut stdin, mut out) = spawn_stdio("noclock");
+    let r = roundtrip(&mut stdin, &mut out, r#"{"type":"AdvanceClock","ms":1000}"#);
+    assert_eq!(r["type"], "Error");
+    assert_eq!(r["code"], "bad-request");
+    drop(stdin);
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+}

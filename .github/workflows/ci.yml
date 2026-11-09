@@ -14,9 +14,11 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
       - name: Build focus-helper (needed by tests/focus-stdio.test.js)
-        run: cargo build --manifest-path focus-helper/Cargo.toml
+        run: cargo build --manifest-path focus-helper/Cargo.toml --features test-clock
       - name: focus-helper unit tests
         run: cargo test --manifest-path focus-helper/Cargo.toml
+      - name: focus-helper unit tests (test-clock feature)
+        run: cargo test --manifest-path focus-helper/Cargo.toml --features test-clock
       - name: Regenerate shared vectors and partner page, fail on diff
         run: |
           node scripts/gen-decide-vectors.js
@@ -24,6 +26,8 @@ jobs:
           node scripts/build-partner-page.js
           git diff --exit-code -- tests/fixtures/decide-vectors.json tests/fixtures/item-vectors.json src/modules/focus/partner-unlock.html
       - name: Type-check Windows-only code
-        run: cargo check --manifest-path focus-helper/Cargo.toml --target x86_64-pc-windows-gnu --all-targets
+        run: |
+          cargo check --manifest-path focus-helper/Cargo.toml --target x86_64-pc-windows-gnu --all-targets
+          cargo check --manifest-path focus-helper/Cargo.toml --target x86_64-pc-windows-gnu --all-targets --features test-clock
       - name: JS tests
         run: npm test

@@ -58,6 +58,23 @@ fn nonce(counter: u64) -> [u8; 16] {
     out
 }
 
+/// Test-only: handles `{"type":"AdvanceClock","ms":N}` (N a non-negative integer, cumulative).
+/// Returns `None` for any other line so it falls through to the normal handler.
+#[cfg(feature = "test-clock")]
+fn advance_clock(line: &str, skew_ms: &mut i64) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("type")?.as_str()? != "AdvanceClock" {
+        return None;
+    }
+    match v.get("ms").and_then(|m| m.as_u64()).and_then(|m| i64::try_from(m).ok()) {
+        Some(ms) => {
+            *skew_ms = skew_ms.saturating_add(ms);
+            Some(r#"{"type":"Ok"}"#.to_string())
+        }
+        None => Some(r#"{"type":"Error","code":"bad-request","message":"AdvanceClock needs a non-negative integer ms"}"#.to_string()),
+    }
+}
+
 fn stdio(state: PathBuf) -> ExitCode {
     let mut daemon = Daemon::load(&state);
     let mut platform = NullPlatform;
@@ -65,14 +82,27 @@ fn stdio(state: PathBuf) -> ExitCode {
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     let mut counter = 0u64;
+    #[cfg(feature = "test-clock")]
+    let mut skew_ms = 0i64;
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
             continue;
         }
+        #[cfg(feature = "test-clock")]
+        if let Some(reply) = advance_clock(&line, &mut skew_ms) {
+            if writeln!(stdout, "{reply}").and_then(|_| stdout.flush()).is_err() {
+                break;
+            }
+            continue;
+        }
         counter += 1;
+        #[cfg(feature = "test-clock")]
+        let wall = wall_ms().saturating_add(skew_ms);
+        #[cfg(not(feature = "test-clock"))]
+        let wall = wall_ms();
         let mono = start.elapsed().as_millis() as i64;
-        let reply = daemon.handle_line(&line, wall_ms(), mono, nonce(counter), &mut platform);
+        let reply = daemon.handle_line(&line, wall, mono, nonce(counter), &mut platform);
         if writeln!(stdout, "{reply}").and_then(|_| stdout.flush()).is_err() {
             break;
         }

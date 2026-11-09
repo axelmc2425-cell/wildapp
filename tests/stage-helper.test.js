@@ -10,3 +10,9 @@ test('helperPaths names the staged exe and the cargo output per platform', () =>
     assert.equal(helperPaths(p).destination, join('src-tauri', 'resources', 'focus-helper.exe'));
   }
 });
+
+test('release build command has no test-clock feature', async () => {
+  const { readFileSync } = await import('node:fs');
+  const build = readFileSync(new URL('../.github/workflows/build.yml', import.meta.url), 'utf8');
+  assert.ok(!build.includes('test-clock'));
+});
