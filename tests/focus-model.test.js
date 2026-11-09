@@ -12,6 +12,11 @@ test('formatCountdown', () => {
   assert.equal(formatCountdown(839001), '14 min left');
   assert.equal(formatCountdown(59000), '59 s left');
   assert.equal(formatCountdown(60000), '1 min left');
+  assert.equal(formatCountdown(59001), '1 min left');
+  assert.equal(formatCountdown(59999), '1 min left');
+  assert.equal(formatCountdown(3599001), '1 h left');
+  assert.equal(formatCountdown(3599999), '1 h left');
+  assert.equal(formatCountdown(3600000), '1 h left');
   assert.equal(formatCountdown(0), 'Ending…');
   assert.equal(formatCountdown(-5), 'Ending…');
   assert.equal(formatCountdown(NaN), 'Ending…');
@@ -38,7 +43,7 @@ test('groupSessions groups, states, progress, sorting', () => {
   const run = b.find((x) => x.ends === 2000);
   assert.deepEqual(run.ids, [1, 2]);
   assert.deepEqual(run.listNames, ['Work', 'Study']);
-  assert.equal(run.key, '1000:2000');
+  assert.equal(run.key, '1000:2000:none');
   assert.equal(run.state, 'running');
   assert.equal(run.progress, 0.5);
   assert.equal(b.find((x) => x.ends === 4000).state, 'upcoming');
@@ -63,6 +68,7 @@ test('groupSessions starting exactly now is running; drops bad rows; deleted lis
 test('groupSessions separates different locks', () => {
   const b = groupSessions([S(1, 1, 0, 10, 'none'), S(2, 1, 0, 10, 'x')], lists, 5);
   assert.equal(b.length, 2);
+  assert.notEqual(b[0].key, b[1].key);
 });
 
 test('parseDuration', () => {
@@ -95,10 +101,10 @@ const okStatus = (w = []) => ({ decision: { blockSites: ['a'], blockApps: [], al
 test('bannerFor', () => {
   assert.equal(bannerFor({ kind: 'ok', status: okStatus() }).level, 'ok');
   assert.equal(bannerFor({ kind: 'ok', status: okStatus() }).title, 'Helper running.');
-  const w = bannerFor({ kind: 'ok', status: okStatus(['clock-skew']) });
+  const w = bannerFor({ kind: 'ok', status: okStatus(['dns: boom']) });
   assert.equal(w.level, 'warn');
   assert.equal(w.title, 'Helper running, with warnings.');
-  assert.ok(w.detail.length > 0);
+  assert.equal(w.detail, "The helper couldn't update DNS settings.");
   assert.equal(bannerFor({ kind: 'ok', status: { warnings: undefined } }).level, 'ok');
   const n = bannerFor({ kind: 'not-running' });
   assert.equal(n.level, 'error');
@@ -113,6 +119,28 @@ test('bannerFor', () => {
   const u = bannerFor({ kind: 'unknown', message: 'boom' });
   assert.equal(u.level, 'error');
   assert.equal(u.detail, 'boom');
+});
+
+test('bannerFor warnings use real strings and severity order', () => {
+  const P = 'persist: disk full', H = 'hosts: denied', D = 'dns: x', O = 'doh: y';
+  const L = "HKLM\\SOFTWARE\\Policies\\Google\\Chrome\\DnsOverHttpsMode (existing value 'automatic' left in place)";
+  const B = 'state: loaded from backup';
+  const U = 'state: unreadable, started empty — previous state kept as C:\\x';
+  const b = (...w) => bannerFor({ kind: 'ok', status: okStatus(w) });
+  const hidden = b(B, P);
+  assert.equal(hidden.level, 'error');
+  assert.equal(hidden.title, 'A change is active but will be lost on restart.');
+  assert.equal(hidden.detail, "Your changes couldn't be saved to disk and will be lost on restart.");
+  assert.equal(b(U, L, O, D, H).detail, "The helper couldn't update the Windows hosts file, so some websites may not be blocked. (+4 more)");
+  assert.equal(b(U, L, O, D).detail, "The helper couldn't update DNS settings. (+3 more)");
+  assert.equal(b(U, L, O).detail, "The helper couldn't turn off secure-DNS bypass in the browser. (+2 more)");
+  assert.equal(b(U, L).detail, 'A browser setting that could bypass blocking was left unchanged. (+1 more)');
+  assert.equal(b(U, B).detail, "The helper's saved state was unreadable, so it started empty. (+1 more)");
+  assert.equal(b(B).detail, 'The helper restored your last saved state from a backup.');
+  assert.equal(b(U).detail, "The helper's saved state was unreadable, so it started empty.");
+  assert.equal(b('something odd').detail, 'something odd');
+  assert.equal(b(L).level, 'warn');
+  assert.equal(bannerFor({ kind: 'ok', status: okStatus([]) }).level, 'ok');
 });
 
 test('describePushProblem', () => {

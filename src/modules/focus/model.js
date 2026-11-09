@@ -20,15 +20,14 @@
  */
 
 const SEC = 1000;
-const MIN = 60 * SEC;
-const HOUR = 60 * MIN;
 
 /** @param {number} msLeft */
 export function formatCountdown(msLeft) {
   if (typeof msLeft !== 'number' || !Number.isFinite(msLeft) || msLeft <= 0) return 'Ending…';
-  if (msLeft < MIN) return `${Math.ceil(msLeft / SEC)} s left`;
-  if (msLeft < HOUR) return `${Math.ceil(msLeft / MIN)} min left`;
-  const totalMin = Math.ceil(msLeft / MIN);
+  const sec = Math.ceil(msLeft / SEC);
+  if (sec < 60) return `${sec} s left`;
+  const totalMin = Math.ceil(sec / 60);
+  if (totalMin < 60) return `${totalMin} min left`;
   const h = Math.floor(totalMin / 60);
   const m = totalMin % 60;
   return m === 0 ? `${h} h left` : `${h} h ${m} min left`;
@@ -50,7 +49,7 @@ export function groupSessions(sessions, lists, nowMs) {
     const gk = `${s.starts}:${s.ends}:${s.lock ?? 'none'}`;
     let g = groups.get(gk);
     if (!g) {
-      g = { key: `${s.starts}:${s.ends}`, ids: [], listIds: [], listNames: [], starts: s.starts, ends: s.ends };
+      g = { key: `${s.starts}:${s.ends}:${s.lock ?? 'none'}`, ids: [], listIds: [], listNames: [], starts: s.starts, ends: s.ends };
       groups.set(gk, g);
     }
     g.ids.push(s.id);
@@ -103,13 +102,17 @@ export function classifyHelperFailure(err) {
   return { kind: 'unknown', message: message || 'Unknown error' };
 }
 
-function wordsFor(warning) {
-  const w = String(warning ?? '').trim();
-  if (/^[a-z0-9]+([-_][a-z0-9]+)+$/i.test(w)) {
-    const s = w.replace(/[-_]+/g, ' ');
-    return s.charAt(0).toUpperCase() + s.slice(1) + '.';
-  }
-  return w;
+// Real daemon warnings -> plain English, ranked most severe first.
+function classifyWarning(w) {
+  const t = String(w ?? '').trim();
+  if (t.startsWith('persist:')) return { rank: 0, text: "Your changes couldn't be saved to disk and will be lost on restart." };
+  if (t.startsWith('hosts:')) return { rank: 1, text: "The helper couldn't update the Windows hosts file, so some websites may not be blocked." };
+  if (t.startsWith('dns:')) return { rank: 2, text: "The helper couldn't update DNS settings." };
+  if (t.startsWith('doh:')) return { rank: 3, text: "The helper couldn't turn off secure-DNS bypass in the browser." };
+  if (t.includes('left in place')) return { rank: 4, text: 'A browser setting that could bypass blocking was left unchanged.' };
+  if (t.startsWith('state: loaded from backup')) return { rank: 5, text: 'The helper restored your last saved state from a backup.' };
+  if (t.startsWith('state: unreadable')) return { rank: 5, text: "The helper's saved state was unreadable, so it started empty." };
+  return { rank: 6, text: t };
 }
 
 /** @param {HelperState} h */
@@ -118,7 +121,17 @@ export function bannerFor(h) {
     case 'ok': {
       const warnings = h.status && Array.isArray(h.status.warnings) ? h.status.warnings : [];
       if (warnings.length) {
-        return { level: 'warn', title: 'Helper running, with warnings.', detail: wordsFor(warnings[0]) };
+        const ranked = warnings.map(classifyWarning).sort((x, y) => x.rank - y.rank);
+        const top = ranked[0];
+        if (top.rank === 0) {
+          return { level: 'error', title: 'A change is active but will be lost on restart.', detail: top.text };
+        }
+        const more = ranked.length - 1;
+        return {
+          level: 'warn',
+          title: 'Helper running, with warnings.',
+          detail: more > 0 ? `${top.text} (+${more} more)` : top.text,
+        };
       }
       return { level: 'ok', title: 'Helper running.', detail: '' };
     }
