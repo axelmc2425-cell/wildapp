@@ -607,12 +607,10 @@ fn delay_bounds_are_inclusive() {
 }
 
 #[test]
-fn frozen_window_with_delay_is_rejected_by_validation() {
-    // Frozen pushes are refused earlier (FrozenUnavailable); a delay on a frozen window would be BadDelay.
+fn frozen_window_with_delay_is_rejected() {
     let mut w = win("f", Lock::Frozen, NOW, NOW + H);
     w.unlock_delay_ms = Some(86_400_000);
-    let r = push_one(w);
-    assert!(matches!(r, Err(PushError::FrozenUnavailable) | Err(PushError::Invalid(Invalid::BadDelay))), "{r:?}");
+    assert_eq!(push_one(w), Err(PushError::FrozenUnavailable));
 }
 
 const DAY: i64 = 86_400_000;
@@ -694,4 +692,48 @@ fn partner_token_clears_pending() {
     unlock(&mut s, &sk, "a", NOW + H);
     assert!(s.pending_unlocks.is_empty());
     assert!(s.windows[0].ends <= NOW + H + 1000);
+}
+
+#[test]
+fn token_for_earlier_challenge_after_expiry_keeps_tombstone() {
+    let (mut s, sk) = locked_store();
+    let at = s.request_delayed_unlock("a", NOW).unwrap();
+    // challenge issued just before expiry, still open when the token arrives after it
+    let n = nonce_of(&s.request_challenge("a", at - 1000, [7; 16]).unwrap());
+    assert!(s.expire_pending(at));
+    let t = token(&sk, &n, "a", at + 600_000);
+    assert_eq!(s.submit_token(&t, at + 1000), Err(UnlockError::WrongLock));
+    assert_eq!(s.ended_early, vec![Tombstone { id: "a".into(), ends: NOW + 2 * DAY }]);
+    let r = s.push(vec![win("a", Lock::Locked, NOW - H, NOW + 2 * DAY)], at + 2000).unwrap();
+    assert_eq!((r.tombstoned, r.added), (1, 0));
+    assert!(s.windows.iter().all(|w| w.ends <= at + 2000), "no live lock");
+}
+
+#[test]
+fn extending_a_pending_window_keeps_pending_and_tombstone_records_extended_end() {
+    let (mut s, _) = locked_store();
+    let at = s.request_delayed_unlock("a", NOW).unwrap();
+    s.push(vec![win("a", Lock::Locked, NOW - H, NOW + 3 * DAY)], NOW + 1000).unwrap();
+    assert_eq!(s.pending_unlocks, vec![PendingUnlock { window_id: "a".into(), unlock_at: at }]);
+    assert!(s.expire_pending(at));
+    assert_eq!(s.ended_early, vec![Tombstone { id: "a".into(), ends: NOW + 3 * DAY }]);
+}
+
+#[test]
+fn pending_for_an_already_ended_window_is_dropped() {
+    let (mut s, _) = locked_store();
+    s.pending_unlocks.push(PendingUnlock { window_id: "a".into(), unlock_at: NOW + 5 * DAY });
+    s.pending_unlocks.push(PendingUnlock { window_id: "gone".into(), unlock_at: NOW + 5 * DAY });
+    assert!(s.expire_pending(NOW + 3 * DAY)); // window a ended at NOW + 2 days
+    assert!(s.pending_unlocks.is_empty());
+    assert!(s.ended_early.is_empty());
+}
+
+#[test]
+fn request_near_i64_max_saturates() {
+    let mut s = LockStore::default();
+    let mut w = win("a", Lock::Locked, 0, i64::MAX);
+    w.unlock_delay_ms = Some(MAX_UNLOCK_DELAY_MS);
+    s.windows.push(w);
+    assert_eq!(s.request_delayed_unlock("a", i64::MAX - 10), Ok(i64::MAX));
 }

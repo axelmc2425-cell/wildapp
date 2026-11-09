@@ -350,9 +350,10 @@ impl LockStore {
 
     /// Ends a locking window now (`ends = min(ends, now)`), remembers its original end so a
     /// re-push cannot bring it back, and drops any pending delayed unlock for it.
-    /// Returns false (changing nothing) when there is no such locking window.
+    /// Returns false (changing nothing) when there is no such locking window that is still
+    /// active: an already-ended window keeps its existing tombstone.
     fn end_early(&mut self, window_id: &str, now_ms: i64) -> bool {
-        let Some(w) = self.windows.iter_mut().find(|w| w.id == window_id && is_locking(w)) else {
+        let Some(w) = self.windows.iter_mut().find(|w| w.id == window_id && is_locking(w) && is_active(w, now_ms)) else {
             return false;
         };
         let original_ends = w.ends;

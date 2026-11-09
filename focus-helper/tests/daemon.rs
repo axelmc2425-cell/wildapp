@@ -451,5 +451,5 @@ fn tick_expires_pending_and_saves() {
     assert!(loaded.windows[0].ends <= NOW + 2000);
     assert_eq!(loaded.ended_early.len(), 1);
     // enforcement is lifted
-    assert!(p.hosts.last().map(|h| h.is_empty()).unwrap_or(true));
+    assert_eq!(p.hosts.last(), Some(&Vec::<String>::new()));
 }

@@ -58,8 +58,20 @@ pub fn handle(
     mono_ms: i64,
     nonce: [u8; 16],
 ) -> Response {
+    handle_changed(store, clock, req, wall_ms, mono_ms, nonce).0
+}
+
+/// Like `handle`; the flag is true when processing due delayed unlocks changed the store.
+pub fn handle_changed(
+    store: &mut LockStore,
+    clock: &mut EffectiveClock,
+    req: Request,
+    wall_ms: i64,
+    mono_ms: i64,
+    nonce: [u8; 16],
+) -> (Response, bool) {
     let now = clock.now(wall_ms, mono_ms);
-    store.expire_pending(now);
+    let expired = store.expire_pending(now);
     let resp = match req {
         Request::PushWindows { windows } => match store.push(windows, now) {
             Ok(_) => Response::Ok,
@@ -122,7 +134,7 @@ pub fn handle(
     if clock.high_water_ms() > store.high_water_ms {
         store.high_water_ms = clock.high_water_ms();
     }
-    resp
+    (resp, expired)
 }
 
 pub fn handle_line(
