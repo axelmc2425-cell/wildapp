@@ -66,3 +66,45 @@ test('a throwing onStart is logged and does not stop later hooks', async () => {
   assert.deepEqual(ran, [mods[2].id]);
   assert.equal(logged.length, 2);
 });
+
+function patchHooks(hooks) {
+  const mods = listModules();
+  const saved = mods.map(m => m.onStart);
+  mods.forEach((m, i) => { if (hooks[i]) m.onStart = hooks[i]; else delete m.onStart; });
+  return () => mods.forEach((m, i) => { if (saved[i]) m.onStart = saved[i]; else delete m.onStart; });
+}
+
+test('a hook that never settles does not block later hooks or the result', async () => {
+  const ran = [];
+  const restore = patchHooks([() => new Promise(() => {}), () => { ran.push('second'); }]);
+  const orig = console.error; const logged = [];
+  console.error = (...a) => logged.push(a.join(' '));
+  try { await runStartHooks({}, { timeoutMs: 20 }); } finally { console.error = orig; restore(); }
+  assert.deepEqual(ran, ['second']);
+  assert.ok(logged.some(l => /still running; continuing/.test(l)));
+});
+
+test('a slow hook within the timeout finishes before the next one starts', async () => {
+  const order = [];
+  const restore = patchHooks([
+    async () => { await new Promise(r => setTimeout(r, 30)); order.push('first-done'); },
+    () => { order.push('second-start'); },
+  ]);
+  try { await runStartHooks({}, { timeoutMs: 2000 }); } finally { restore(); }
+  assert.deepEqual(order, ['first-done', 'second-start']);
+});
+
+test('a hook rejecting after being abandoned causes no unhandled rejection', async () => {
+  let unhandled = 0;
+  const onUnhandled = () => { unhandled++; };
+  process.on('unhandledRejection', onUnhandled);
+  const restore = patchHooks([() => new Promise((_, rej) => setTimeout(() => rej(new Error('late')), 60))]);
+  const orig = console.error; const logged = [];
+  console.error = (...a) => logged.push(a.join(' '));
+  try {
+    await runStartHooks({}, { timeoutMs: 10 });
+    await new Promise(r => setTimeout(r, 120));
+  } finally { console.error = orig; restore(); process.off('unhandledRejection', onUnhandled); }
+  assert.equal(unhandled, 0);
+  assert.ok(logged.some(l => /module start hook failed/.test(l)));
+});

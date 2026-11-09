@@ -41,7 +41,9 @@ registerModule({
   icon: '🎯',
   ready: true,
   async onStart(ctx) {
-    await getController(ctx).load();
+    // Start loading but never await it: a slow or hung helper must not block app start.
+    // The controller never throws; its onChange updates the UI when load settles.
+    Promise.resolve(getController(ctx).load()).catch(() => {});
   },
   render(root, ctx) {
     root.innerHTML = '';
