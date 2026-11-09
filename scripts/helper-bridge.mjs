@@ -17,7 +17,8 @@ export function createStdioCall(binPath, statePath) {
     if (waiter) { const w = waiter; waiter = null; w.resolve(line); }
   });
   child.on('error', (e) => fail(new Error('helper failed: ' + e.message)));
-  child.on('exit', (code, sig) => fail(new Error(`helper exited (${sig || code})`)));
+  // 'close' fires after stdout is drained, so a last reply is never lost to an early 'exit'.
+  child.on('close', (code, sig) => fail(new Error(`helper exited (${sig || code})`)));
   child.stdin.on('error', (e) => fail(new Error('helper stdin closed: ' + e.message)));
 
   let chain = Promise.resolve();
@@ -28,6 +29,7 @@ export function createStdioCall(binPath, statePath) {
   });
 
   return {
+    get pid() { return child.pid; },
     call(requestLine) {
       const p = chain.then(() => callOne(requestLine));
       chain = p.catch(() => {});

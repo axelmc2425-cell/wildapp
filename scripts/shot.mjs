@@ -80,7 +80,7 @@ writeFileSync(join(importDir, 'Welcome.md'), 'duplicate of an existing note');
 writeFileSync(join(importDir, 'broken.md'), Buffer.from([0xff, 0xfe, 0x80]));
 const exportDir = join(dir, 'exported');
 mkdirSync(exportDir);
-const bridge = helperBin ? createStdioCall(helperBin, join(dir, 'helper-state.json')) : null;
+let bridge = null;
 const calls = [];
 await page.exposeFunction('__calls', () => calls);
 await page.exposeFunction('__db', async (cmd, a) => {
@@ -91,8 +91,8 @@ await page.exposeFunction('__db', async (cmd, a) => {
   if (cmd === 'read_folder_md') return readdirSync(a.dir).map(f => ({ path: f, bytes: [...readFileSync(join(a.dir, f))] }));
   if (cmd === 'write_files') { for (const f of a.files) writeFileSync(join(exportDir, f.path), Buffer.from(f.bytes)); return null; }
   if (cmd === 'focus_helper_call') {
-    if (!bridge) throw new Error('Focus Room blocking is only available on Windows');
     if (helperDown) throw new Error('The Focus Room helper service is not running');
+    if (!bridge) throw new Error('Focus Room blocking is only available on Windows');
     return bridge.call(a.request);
   }
   if (cmd === 'db_all') return db.all(a.sql, a.params);
@@ -109,6 +109,7 @@ await page.addInitScript(() => {
 
 const shot = async (name) => { await page.screenshot({ path: join(outDir, name + '.png') }); console.log('shot', name); };
 try {
+  if (helperBin) bridge = createStdioCall(helperBin, join(dir, 'helper-state.json'));
   await page.goto(url);
   await page.waitForSelector('#modlist .navitem');
   if (stepsFile) {
