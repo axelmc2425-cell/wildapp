@@ -5,6 +5,8 @@ on:
 jobs:
   windows:
     runs-on: windows-latest
+    permissions:
+      contents: write # lets the last step commit the installer to main
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -28,3 +30,20 @@ jobs:
           name: MyBrain-windows-installer
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
+      # On main only: keep the newest installer in the repo so it can be downloaded without opening Actions.
+      - name: Publish installer to downloads/ on main
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force downloads | Out-Null
+          $exe = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
+          Copy-Item $exe.FullName downloads/MyBrain-setup.exe -Force
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add downloads/MyBrain-setup.exe
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "chore: update installer [skip ci]"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          }
