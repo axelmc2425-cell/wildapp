@@ -3,7 +3,7 @@
 use std::io;
 use std::time::{Duration, Instant};
 
-use windows_service::service::{ServiceAccess, ServiceState};
+use windows_service::service::{ServiceAccess, ServiceStartType, ServiceState};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use windows_service::Error;
 
@@ -87,5 +87,15 @@ pub fn stop_and_wait(role: Role, timeout: Duration) -> io::Result<()> {
             )));
         }
         std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Whether the service is installed with start type Disabled (`Ok(None)` when not installed).
+pub fn is_disabled(role: Role) -> io::Result<Option<bool>> {
+    let mgr = manager().map_err(to_io)?;
+    match mgr.open_service(role.service_name(), ServiceAccess::QUERY_CONFIG) {
+        Ok(svc) => Ok(Some(svc.query_config().map_err(to_io)?.start_type == ServiceStartType::Disabled)),
+        Err(e) if win32(&e) == Some(ERROR_SERVICE_DOES_NOT_EXIST) => Ok(None),
+        Err(e) => Err(to_io(e)),
     }
 }

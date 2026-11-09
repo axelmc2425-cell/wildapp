@@ -68,39 +68,52 @@ fn disable_and_stop(existing: &[(Role, ServiceState)]) -> Result<(), String> {
     Ok(())
 }
 
-/// Best-effort return to the protected state after a failure: services auto-start again and
-/// running, restrictive descriptor re-applied, install and state directories locked down.
+/// Best-effort return of ONE service to the protected state. Every step is attempted regardless
+/// of earlier failures (including a transient SCM query error): widen, `start= auto`, start,
+/// restrictive descriptor.
+fn restore_service(role: Role) {
+    sc_widen(role);
+    if let Err(e) = paths::sc(&logic::sc_config_start_args(role, "auto")) {
+        log(&format!("restore: {e}"));
+    }
+    if let Err(e) = scm::start_if_stopped(role) {
+        log(&format!("restore: cannot start {}: {e}", role.service_name()));
+    }
+    if let Err(e) = paths::sc(&logic::sc_sdset_args(role, SERVICE_SDDL)) {
+        log(&format!("restore: {e}"));
+    }
+}
+
+/// Best-effort return to the protected state after a failure: BOTH services are set to auto-start,
+/// started and given the restrictive descriptor (unconditionally), and the install directory is
+/// locked down again. The state directory is NOT touched: as an Administrator we cannot re-ACL a
+/// SYSTEM-owned directory, and the service re-asserts it at every start.
+///
+/// Known limit: if this process is killed between `start= disabled` and `start= auto`,
+/// enforcement stays off until the next `install` (which recovers, see `install`).
 fn restore() {
     for role in [Role::Main, Role::Watchdog] {
-        if matches!(scm::state_of(role), Ok(Some(_))) {
-            sc_widen(role);
-            if let Err(e) = paths::sc(&logic::sc_config_start_args(role, "auto")) {
-                log(&format!("restore: {e}"));
-            }
-            if let Err(e) = scm::start_if_stopped(role) {
-                log(&format!("restore: cannot start {}: {e}", role.service_name()));
-            }
-            if let Err(e) = paths::sc(&logic::sc_sdset_args(role, SERVICE_SDDL)) {
-                log(&format!("restore: {e}"));
-            }
-        }
+        restore_service(role);
     }
     let dir = paths::install_dir();
     if Path::new(&dir).exists() {
         let _ = paths::lock_down_dir(&dir);
     }
-    let _ = paths::ensure_state_dir();
 }
 
 pub fn install() -> Result<(), CmdError> {
-    match paths::ensure_state_dir() {
-        Ok(Some(w)) => log(&w),
-        Ok(None) => {}
-        Err(e) => return Err(failed(format!("cannot prepare state directory: {e}"))),
+    if let Err(e) = paths::ensure_state_dir_for_install() {
+        return Err(failed(format!("cannot prepare state directory: {e}")));
     }
     let (store, now) = load_store_and_now();
     let lock = logic::uninstall_decision(&store.windows, now);
     let existing = existing_services()?;
+    for (role, st) in &existing {
+        if *st == ServiceState::Stopped && matches!(scm::is_disabled(*role), Ok(Some(true))) {
+            // Left over from an interrupted install/uninstall: proceeding re-enables it.
+            log(&format!("install: recovering {} (disabled and stopped)", role.service_name()));
+        }
+    }
 
     // Upgrade safety: never stop running services while a lock is pending.
     if let Err(why) = &lock {
@@ -137,7 +150,7 @@ fn mutate(existing: &[(Role, ServiceState)]) -> Result<(), String> {
     admin_write(&target_dir); // an earlier install left it SYSTEM-write-only
     let me = std::env::current_exe().map_err(|e| format!("cannot find own exe: {e}"))?;
     if !same_file(&me, Path::new(&target_exe)) {
-        std::fs::copy(&me, &target_exe).map_err(|e| format!("cannot copy to {target_exe}: {e}"))?;
+        copy_atomically(&me, &target_exe)?;
     }
     paths::lock_down_dir(&target_dir).map_err(|e| format!("cannot restrict {target_dir}: {e}"))?;
 
@@ -159,6 +172,32 @@ fn mutate(existing: &[(Role, ServiceState)]) -> Result<(), String> {
         paths::sc(&logic::sc_sdset_args(role, SERVICE_SDDL)).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Copy to `<exe>.new`, verify the size, then rename over the installed exe. On any failure the
+/// `.new` file is removed and the old exe is left untouched, so a truncated binary is never
+/// registered. The temp file lives in the install dir (admin-only writable, locked down after).
+fn copy_atomically(src: &Path, target_exe: &str) -> Result<(), String> {
+    let tmp = logic::temp_exe_path(target_exe);
+    let result = (|| -> Result<(), String> {
+        let _ = std::fs::remove_file(&tmp);
+        std::fs::copy(src, &tmp).map_err(|e| format!("cannot copy to {tmp}: {e}"))?;
+        let want = std::fs::metadata(src).map_err(|e| e.to_string())?.len();
+        let got = std::fs::metadata(&tmp).map_err(|e| e.to_string())?.len();
+        if want != got {
+            return Err(format!("copy verification failed: {got} bytes written, expected {want}"));
+        }
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&tmp)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| format!("cannot flush {tmp}: {e}"))?;
+        std::fs::rename(&tmp, target_exe).map_err(|e| format!("cannot replace {target_exe}: {e}"))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {
@@ -192,6 +231,8 @@ pub fn uninstall(purge_state: bool) -> Result<(), CmdError> {
     for (role, _) in &existing {
         if let Err(e) = paths::sc(&logic::sc_delete_args(*role)) {
             problems.push(e.to_string());
+            // Still installed: put it back to auto-start and running rather than leave it disabled.
+            restore_service(*role);
         }
     }
 
@@ -202,8 +243,14 @@ pub fn uninstall(purge_state: bool) -> Result<(), CmdError> {
 
     if purge_state {
         let dir: PathBuf = paths::state_dir();
-        admin_write(&dir.to_string_lossy());
-        if let Err(e) = std::fs::remove_dir_all(&dir) {
+        let removed = if paths::state_dir_is_reparse() {
+            // A junction/symlink: remove the link itself, never its target.
+            std::fs::remove_dir(&dir)
+        } else {
+            admin_write(&dir.to_string_lossy());
+            std::fs::remove_dir_all(&dir)
+        };
+        if let Err(e) = removed {
             if e.kind() != std::io::ErrorKind::NotFound {
                 problems.push(format!("cannot remove {}: {e}", dir.display()));
             }

@@ -87,6 +87,74 @@ pub fn state_dir_action(exists: bool, is_reparse: bool, owner_trusted: bool) -> 
     }
 }
 
+/// What `install`/`uninstall` (run as Administrator) do with the state directory. The SYSTEM
+/// service owns and re-asserts its ACL at every start; an Administrator holds only read/execute
+/// on an existing one (no WRITE_DAC), so install must never try to change an existing directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallStateDirAction {
+    /// Does not exist: create it atomically with `STATE_DIR_SDDL`.
+    Create,
+    /// Exists: touch nothing (ACL, owner, contents); the service fixes it at next start.
+    LeaveAlone,
+    RefuseReparsePoint,
+}
+
+pub fn install_state_dir_action(exists: bool, is_reparse: bool) -> InstallStateDirAction {
+    if !exists {
+        InstallStateDirAction::Create
+    } else if is_reparse {
+        InstallStateDirAction::RefuseReparsePoint
+    } else {
+        InstallStateDirAction::LeaveAlone
+    }
+}
+
+/// Files the helper itself keeps in the state directory.
+pub const EXPECTED_STATE_FILES: [&str; 5] =
+    ["state.json", "state.json.bak", "state.json.tmp", "service.log", "service.log.old"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildAction {
+    /// Reserved: leave untouched.
+    Keep,
+    /// Expected regular file: `icacls <file> /reset` (per file, no recursion).
+    ResetAcl,
+    /// Junction or symlink: delete the link itself, never its target.
+    RemoveLink,
+    /// Unexpected regular file: delete.
+    RemoveFile,
+    /// Unexpected subdirectory: remove non-recursively, else quarantine the whole state dir.
+    QuarantineDir,
+}
+
+/// Decide what to do with one immediate child of an adopted state directory. Reparse points are
+/// checked first so a junction named like an expected file is still removed, never followed.
+pub fn classify_child(name: &str, is_dir: bool, is_reparse: bool) -> ChildAction {
+    if is_reparse {
+        ChildAction::RemoveLink
+    } else if is_dir {
+        ChildAction::QuarantineDir
+    } else if EXPECTED_STATE_FILES.iter().any(|f| f.eq_ignore_ascii_case(name)) {
+        ChildAction::ResetAcl
+    } else {
+        ChildAction::RemoveFile
+    }
+}
+
+/// Temporary name the new exe is copied to before being renamed over the installed one.
+pub fn temp_exe_path(exe: &str) -> String {
+    format!("{exe}.new")
+}
+
+/// `sc config <svc> start= auto` for every service, used unconditionally by recovery paths.
+pub fn restore_start_auto_args() -> Vec<Vec<String>> {
+    [Role::Main, Role::Watchdog].iter().map(|r| sc_config_start_args(*r, "auto")).collect()
+}
+
+pub fn icacls_reset_file_args(file: &str) -> Vec<String> {
+    vec![file.into(), "/reset".into()]
+}
+
 pub fn is_trusted_owner(sid: &str) -> bool {
     sid == SYSTEM_SID || sid == ADMINS_SID
 }
@@ -272,11 +340,6 @@ pub fn icacls_setowner_args(target: &str, sid: &str, recursive: bool) -> Vec<Str
     v
 }
 
-/// Reset the ACL of everything inside `dir` to what it inherits (drops planted ACEs).
-pub fn icacls_reset_children_args(dir: &str) -> Vec<String> {
-    vec![dir_file(dir, "*"), "/reset".into(), "/T".into(), "/C".into()]
-}
-
 pub fn icacls_admin_write_args(dir: &str) -> Vec<String> {
     vec![dir.into(), "/grant:r".into(), "*S-1-5-32-544:(OI)(CI)F".into()]
 }
@@ -425,7 +488,7 @@ mod tests {
     fn owner_and_reset_args() {
         assert_eq!(icacls_setowner_args(r"C:\d", SYSTEM_SID, true), [r"C:\d", "/setowner", "*S-1-5-18", "/T", "/C"]);
         assert_eq!(icacls_setowner_args(r"C:\d", ADMINS_SID, false), [r"C:\d", "/setowner", "*S-1-5-32-544"]);
-        assert_eq!(icacls_reset_children_args(r"C:\d"), [r"C:\d\*", "/reset", "/T", "/C"]);
+        assert_eq!(icacls_reset_file_args(r"C:\d\state.json"), [r"C:\d\state.json", "/reset"]);
     }
 
     #[test]
@@ -439,6 +502,42 @@ mod tests {
         assert!(is_trusted_owner("S-1-5-18") && is_trusted_owner("S-1-5-32-544"));
         assert!(!is_trusted_owner("S-1-5-21-1-2-3-1001"));
         assert_eq!(quarantine_dir_name(42), "MyBrainFocus.untrusted-42");
+    }
+
+    #[test]
+    fn child_classification() {
+        use ChildAction::*;
+        assert_eq!(classify_child("state.json", false, true), RemoveLink, "junction named like a file");
+        assert_eq!(classify_child("state.json", true, true), RemoveLink);
+        assert_eq!(classify_child("evil.txt", false, false), RemoveFile);
+        assert_eq!(classify_child("state.json", false, false), ResetAcl);
+        assert_eq!(classify_child("STATE.JSON.BAK", false, false), ResetAcl);
+        assert_eq!(classify_child("service.log.old", false, false), ResetAcl);
+        assert_eq!(classify_child("sub", true, false), QuarantineDir);
+        assert_eq!(classify_child("state.json", true, false), QuarantineDir);
+    }
+
+    #[test]
+    fn install_leaves_existing_state_dir_alone() {
+        use InstallStateDirAction::*;
+        assert_eq!(install_state_dir_action(false, false), Create);
+        assert_eq!(install_state_dir_action(true, false), LeaveAlone);
+        assert_eq!(install_state_dir_action(true, true), RefuseReparsePoint);
+    }
+
+    #[test]
+    fn recovery_arg_vectors() {
+        assert_eq!(
+            restore_start_auto_args(),
+            vec![
+                vec!["config", "MyBrainFocus", "start=", "auto"],
+                vec!["config", "MyBrainFocusWatchdog", "start=", "auto"],
+            ]
+        );
+        assert_eq!(
+            temp_exe_path(r"C:\Program Files\MyBrainFocus\focus-helper.exe"),
+            r"C:\Program Files\MyBrainFocus\focus-helper.exe.new"
+        );
     }
 
     #[test]

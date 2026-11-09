@@ -218,11 +218,61 @@ fn create_dir_secure(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Create or re-assert the state directory so only SYSTEM can write it. A non-admin can pre-create
-/// `%ProgramData%\MyBrainFocus` and would own it (an owner keeps WRITE_DAC), so an existing
-/// directory is trusted only if SYSTEM/Administrators own it and it is not a reparse point;
-/// otherwise it is renamed aside and recreated. Returns a warning when something was quarantined.
-/// Run at install and at every service start.
+fn quarantine_and_recreate(dir: &Path) -> io::Result<Option<String>> {
+    let parent = dir.parent().ok_or_else(|| io::Error::other("state dir has no parent"))?;
+    let aside = parent.join(service_logic::quarantine_dir_name(wall_ms()));
+    std::fs::rename(dir, &aside)?;
+    create_dir_secure(dir)?;
+    Ok(Some(format!(
+        "state directory was not trustworthy; moved to {} and recreated empty",
+        aside.display()
+    )))
+}
+
+/// Clean the immediate children of a trusted-owner state directory WITHOUT recursing or following
+/// reparse points (a recursive icacls as SYSTEM would follow a planted junction into e.g.
+/// C:\Windows). Returns the files to ACL-reset after the directory lockdown, or `Ok(None)` when a
+/// child could not be handled and the whole directory must be quarantined instead.
+fn clean_children(dir: &Path) -> io::Result<Option<Vec<PathBuf>>> {
+    let mut reset = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        // GetFileAttributesW describes a reparse point itself, it does not follow it.
+        let Some(attrs) = file_attributes(&path) else { return Ok(None) };
+        let is_reparse = attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+        let is_dir = attrs & FILE_ATTRIBUTE_DIRECTORY != 0;
+        let removed = match service_logic::classify_child(&name, is_dir, is_reparse) {
+            service_logic::ChildAction::Keep => Ok(()),
+            service_logic::ChildAction::ResetAcl => {
+                reset.push(path.clone());
+                Ok(())
+            }
+            // remove_dir / remove_file delete the link itself, never its target.
+            service_logic::ChildAction::RemoveLink => {
+                crate::win::log::log(&format!("removing reparse point {}", path.display()));
+                if is_dir { std::fs::remove_dir(&path) } else { std::fs::remove_file(&path) }
+            }
+            service_logic::ChildAction::RemoveFile => {
+                crate::win::log::log(&format!("removing unexpected file {}", path.display()));
+                std::fs::remove_file(&path)
+            }
+            // Non-recursive: fails when non-empty.
+            service_logic::ChildAction::QuarantineDir => std::fs::remove_dir(&path),
+        };
+        if removed.is_err() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(reset))
+}
+
+/// Create or re-assert the state directory so only SYSTEM can write it. Called by the SYSTEM
+/// SERVICE at every start; `install`/`uninstall` use `ensure_state_dir_for_install` instead.
+/// A non-admin can pre-create `%ProgramData%\MyBrainFocus` and would own it (an owner keeps
+/// WRITE_DAC), so an existing directory is trusted only if SYSTEM/Administrators own it and it is
+/// not a reparse point; otherwise it is renamed aside and recreated. Returns a warning when
+/// something was quarantined.
 pub fn ensure_state_dir() -> io::Result<Option<String>> {
     let dir = state_dir();
     let attrs = file_attributes(&dir);
@@ -240,26 +290,43 @@ pub fn ensure_state_dir() -> io::Result<Option<String>> {
         StateDirAction::RefuseReparsePoint => Err(io::Error::other(format!(
             "{dir_s} is a reparse point (junction or symlink); refusing to use it"
         ))),
-        StateDirAction::Adopt => {
-            // The owner is already SYSTEM/Administrators (checked above); re-asserting it for
-            // children is best effort, since assigning SYSTEM needs SeRestorePrivilege.
-            let _ = icacls(&service_logic::icacls_setowner_args(&dir_s, service_logic::SYSTEM_SID, true));
-            lock_down_dir(&dir_s)?;
-            // Children may carry planted ACEs; best effort (an empty directory makes `*` fail).
-            let _ = icacls(&service_logic::icacls_reset_children_args(&dir_s));
-            Ok(None)
-        }
-        StateDirAction::QuarantineAndRecreate => {
-            let parent = dir.parent().ok_or_else(|| io::Error::other("state dir has no parent"))?;
-            let aside = parent.join(service_logic::quarantine_dir_name(wall_ms()));
-            std::fs::rename(&dir, &aside)?;
-            create_dir_secure(&dir)?;
-            Ok(Some(format!(
-                "state directory had an untrusted owner; moved to {} and recreated empty",
-                aside.display()
-            )))
-        }
+        StateDirAction::Adopt => match clean_children(&dir)? {
+            None => quarantine_and_recreate(&dir),
+            Some(reset) => {
+                // Non-recursive, protected lockdown of the directory itself; inheritable ACEs
+                // reach the (already vetted) children, then each file is reset individually.
+                lock_down_dir(&dir_s)?;
+                for f in reset {
+                    let _ = icacls(&service_logic::icacls_reset_file_args(&f.to_string_lossy()));
+                }
+                Ok(None)
+            }
+        },
+        StateDirAction::QuarantineAndRecreate => quarantine_and_recreate(&dir),
     }
+}
+
+/// For `install`/`uninstall` (run as an Administrator): create the directory atomically if it is
+/// missing; if it exists, change nothing (an Administrator has only read/execute on a
+/// SYSTEM-owned directory and could not re-ACL it anyway) except refusing a reparse point. The
+/// service re-asserts ownership and ACLs at its next start.
+pub fn ensure_state_dir_for_install() -> io::Result<()> {
+    use service_logic::InstallStateDirAction as A;
+    let dir = state_dir();
+    let attrs = file_attributes(&dir);
+    let is_reparse = attrs.is_some_and(|a| a & FILE_ATTRIBUTE_REPARSE_POINT != 0);
+    match service_logic::install_state_dir_action(attrs.is_some(), is_reparse) {
+        A::Create => create_dir_secure(&dir),
+        A::LeaveAlone => Ok(()),
+        A::RefuseReparsePoint => Err(io::Error::other(format!(
+            "{} is a reparse point (junction or symlink); refusing to use it",
+            dir.display()
+        ))),
+    }
+}
+
+pub fn state_dir_is_reparse() -> bool {
+    file_attributes(&state_dir()).is_some_and(|a| a & FILE_ATTRIBUTE_REPARSE_POINT != 0)
 }
 
 /// Wall-clock milliseconds since the Unix epoch.
