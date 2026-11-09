@@ -1,5 +1,5 @@
 // Push the next 30 days of focus windows (sessions + expanded schedules) to the helper.
-import { sessionToWindow, expandSchedule } from './expand.js';
+import { sessionToWindow, lockedBlockToWindow, expandSchedule } from './expand.js';
 import { validateForPush, MAX_WINDOWS } from './limits.js';
 
 const HORIZON_MS = 30 * 86400000;
@@ -18,7 +18,7 @@ export async function syncWindows(db, client, nowMs, tzOffsetAt) {
   const [lists, items, sessions, schedules] = await Promise.all([
     db.all('SELECT id, mode FROM focus_lists'),
     db.all('SELECT list_id, kind, value FROM focus_items'),
-    db.all('SELECT id, list_id, starts, ends, lock FROM focus_sessions'),
+    db.all('SELECT id, list_id, starts, ends, lock, unlock_delay_ms FROM focus_sessions'),
     db.all('SELECT id, list_id, weekdays, start_time, end_time, lock FROM focus_schedules'),
   ]);
   const byId = new Map(lists.map((l) => [l.id, { id: l.id, mode: l.mode, items: [] }]));
@@ -26,11 +26,21 @@ export async function syncWindows(db, client, nowMs, tzOffsetAt) {
 
   const windows = [];
   let skipped = 0;
+  // Locked sessions sharing starts, ends and unlock delay are one block: one helper window.
+  const blocks = new Map();
   for (const s of sessions) {
     const list = byId.get(s.list_id);
     if (!list) { skipped++; continue; }
-    windows.push(sessionToWindow(s, list));
+    if (s.lock === 'locked') {
+      const delay = s.unlock_delay_ms ?? null;
+      const key = `${s.starts}:${s.ends}:${delay}`;
+      if (!blocks.has(key)) blocks.set(key, []);
+      blocks.get(key).push({ listId: s.list_id, starts: s.starts, ends: s.ends, unlockDelayMs: delay });
+    } else {
+      windows.push(sessionToWindow(s, list));
+    }
   }
+  for (const group of blocks.values()) windows.push(lockedBlockToWindow(group, byId));
   for (const s of schedules) {
     const list = byId.get(s.list_id);
     const sched = validSchedule(s, list);

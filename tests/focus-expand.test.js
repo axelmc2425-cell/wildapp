@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sessionToWindow, expandSchedule } from '../src/modules/focus/expand.js';
+import { sessionToWindow, expandSchedule, lockedBlockToWindow } from '../src/modules/focus/expand.js';
 
 const fmt = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/New_York', hourCycle: 'h23',
@@ -85,4 +85,35 @@ test('fall back 2026-11-01 01:30-02:30 yields one window (ambiguous start = firs
   assert.equal(ws.length, 1);
   assert.equal(iso(ws[0].starts), '2026-11-01T05:30:00.000Z'); // 01:30 EDT
   assert.equal(iso(ws[0].ends), '2026-11-01T07:30:00.000Z'); // 02:30 EST
+});
+
+const DELAY = 3600000;
+const lsess = (id, listId, o = {}) => ({ id, listId, starts: 1000, ends: 5000, lock: 'locked', unlockDelayMs: DELAY, ...o });
+
+test('two lists in one locked block become one window with the union of items', () => {
+  const listsById = new Map([
+    [1, { id: 1, mode: 'block', items: [{ kind: 'site', value: 'x.com' }, { kind: 'app', value: 'Slack' }] }],
+    [2, { id: 2, mode: 'block', items: [{ kind: 'site', value: 'https://www.X.com/' }, { kind: 'site', value: 'y.com' }, { kind: 'app', value: 'slack.exe' }] }],
+  ]);
+  const w = lockedBlockToWindow([lsess(1, 1), lsess(2, 2)], listsById);
+  assert.equal(w.id, 'b1000-5000-1.2');
+  assert.deepEqual(w.sites.sort(), ['x.com', 'y.com']);
+  assert.deepEqual(w.apps, ['slack.exe']);
+  assert.equal(w.lock, 'locked');
+  assert.equal(w.mode, 'block');
+  assert.equal(w.starts, 1000);
+  assert.equal(w.ends, 5000);
+});
+
+test('locked windows carry unlock_delay_ms', () => {
+  const listsById = new Map([[1, list]]);
+  assert.equal(lockedBlockToWindow([lsess(1, 1, { unlockDelayMs: 7200000 })], listsById).unlock_delay_ms, 7200000);
+});
+
+test('window id is stable across calls and independent of row order', () => {
+  const listsById = new Map([[3, list], [10, list], [2, list]]);
+  const a = lockedBlockToWindow([lsess(1, 3), lsess(2, 10), lsess(3, 2)], listsById);
+  const b = lockedBlockToWindow([lsess(3, 2), lsess(1, 3), lsess(2, 10)], listsById);
+  assert.equal(a.id, b.id);
+  assert.equal(a.id, 'b1000-5000-2.3.10');
 });
