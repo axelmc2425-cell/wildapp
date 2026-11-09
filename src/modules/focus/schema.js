@@ -30,12 +30,25 @@ const V1 = [
      name TEXT NOT NULL)`,
 ];
 
+const V2 = [
+  'ALTER TABLE focus_sessions ADD COLUMN unlock_delay_ms INTEGER',
+];
+
 export async function migrateFocus(db) {
   await db.run('CREATE TABLE IF NOT EXISTS focus_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
   const rows = await db.all("SELECT value FROM focus_meta WHERE key = 'schema_version'");
-  if (rows.length && Number(rows[0].value) >= 1) return;
-  await db.batch([
-    ...V1.map(sql => ({ sql })),
-    { sql: "INSERT OR REPLACE INTO focus_meta(key, value) VALUES ('schema_version', '1')" },
-  ]);
+  let version = rows.length ? Number(rows[0].value) : 0;
+  if (!(version >= 1)) {
+    await db.batch([
+      ...V1.map(sql => ({ sql })),
+      { sql: "INSERT OR REPLACE INTO focus_meta(key, value) VALUES ('schema_version', '1')" },
+    ]);
+    version = 1;
+  }
+  if (version < 2) {
+    await db.batch([
+      ...V2.map(sql => ({ sql })),
+      { sql: "INSERT OR REPLACE INTO focus_meta(key, value) VALUES ('schema_version', '2')" },
+    ]);
+  }
 }

@@ -2,6 +2,7 @@ import { h } from './dom.js';
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 let seq = 0;
+const stack = []; // open dialogs, topmost last: only the top one reacts to keys
 
 /** Modal dialog. Focus moves in and is trapped; Esc and overlay click close (unless `canClose()` is false); the returned close() always works. */
 export function openDialog({ title, body, onClose, canClose } = {}) {
@@ -11,17 +12,20 @@ export function openDialog({ title, body, onClose, canClose } = {}) {
     h('h3', { id: titleId, class: 'fr-dialog-title' }, String(title ?? '')), body);
   const overlay = h('div', { class: 'fr-overlay' }, box);
   let closed = false;
+  const self = {};
 
   const allowed = () => { try { return canClose ? canClose() !== false : true; } catch { return true; } };
   function close() {
     if (closed) return;
     closed = true;
+    const at = stack.indexOf(self); if (at >= 0) stack.splice(at, 1);
     document.removeEventListener('keydown', onKey, true);
     overlay.remove();
     try { if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus(); } catch { /* ignore */ }
     try { onClose?.(); } catch { /* ignore */ }
   }
   function onKey(e) {
+    if (stack[stack.length - 1] !== self) return;
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (allowed()) close(); return; }
     if (e.key !== 'Tab') return;
     const items = [...box.querySelectorAll(FOCUSABLE)].filter(el => !el.hidden && el.offsetParent !== null);
@@ -32,7 +36,8 @@ export function openDialog({ title, body, onClose, canClose } = {}) {
     else if (e.shiftKey && (active === first || active === box)) { e.preventDefault(); last.focus(); }
     else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
   }
-  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay && allowed()) close(); });
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay && stack[stack.length - 1] === self && allowed()) close(); });
+  stack.push(self);
   document.addEventListener('keydown', onKey, true);
   document.body.append(overlay);
   const first = box.querySelector('[autofocus], input, select, textarea, button');

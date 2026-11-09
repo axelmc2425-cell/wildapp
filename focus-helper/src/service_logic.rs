@@ -408,7 +408,7 @@ mod tests {
     use crate::model::Mode;
 
     fn w(lock: Lock, starts: i64, ends: i64) -> Window {
-        Window { id: "w".into(), starts, ends, lock, mode: Mode::Block, sites: vec![], apps: vec![] }
+        Window { id: "w".into(), starts, ends, lock, mode: Mode::Block, sites: vec![], apps: vec![], unlock_delay_ms: None }
     }
 
     #[test]

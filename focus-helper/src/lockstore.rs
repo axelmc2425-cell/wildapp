@@ -8,6 +8,9 @@ use crate::model::{Lock, Mode, Window};
 use crate::unlock::{self, Challenge, UnlockError, CHALLENGE_TTL_MS};
 
 pub const MAX_LOCKED_MS: i64 = 604_800_000;
+/// Bounds of a Locked window's unlock delay.
+pub const MIN_UNLOCK_DELAY_MS: i64 = 3_600_000;
+pub const MAX_UNLOCK_DELAY_MS: i64 = 604_800_000;
 pub const MAX_FROZEN_MS: i64 = 86_400_000;
 /// Most windows accepted in one push, and most stored.
 pub const MAX_WINDOWS: usize = 1024;
@@ -16,13 +19,14 @@ pub const MAX_ITEMS_PER_WINDOW: usize = 512;
 /// Most open (unexpired) unlock challenges.
 pub const MAX_CHALLENGES: usize = 32;
 /// Current persisted-state format version.
-pub const STORE_VERSION: u32 = 1;
+pub const STORE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Invalid {
     BadTimes,
     BadLock,
     TooLong,
+    BadDelay,
 }
 
 impl Invalid {
@@ -32,6 +36,7 @@ impl Invalid {
             Invalid::BadTimes => "bad-times",
             Invalid::BadLock => "bad-lock",
             Invalid::TooLong => "too-long",
+            Invalid::BadDelay => "bad-delay",
         }
     }
 }
@@ -88,6 +93,21 @@ pub struct Tombstone {
     pub ends: i64,
 }
 
+/// A requested delayed unlock: the window ends early once `unlock_at` (effective ms) passes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingUnlock {
+    pub window_id: String,
+    pub unlock_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DelayError {
+    /// No active locked window with that id.
+    NoSuchLock,
+    /// The window is not a Locked window carrying an unlock delay.
+    NotDelayable,
+}
+
 fn current_version() -> u32 {
     STORE_VERSION
 }
@@ -103,6 +123,7 @@ pub struct LockStore {
     pub challenges: Vec<Challenge>,
     pub high_water_ms: i64,
     pub ended_early: Vec<Tombstone>,
+    pub pending_unlocks: Vec<PendingUnlock>,
 }
 
 impl Default for LockStore {
@@ -114,6 +135,7 @@ impl Default for LockStore {
             challenges: Vec::new(),
             high_water_ms: 0,
             ended_early: Vec::new(),
+            pending_unlocks: Vec::new(),
         }
     }
 }
@@ -131,9 +153,15 @@ fn validate_window(w: &Window) -> Result<(), Invalid> {
         return Err(Invalid::BadTimes);
     }
     match cap_for(w.lock) {
-        Some(cap) if w.ends.saturating_sub(w.starts) > cap => Err(Invalid::TooLong),
-        _ => Ok(()),
+        Some(cap) if w.ends.saturating_sub(w.starts) > cap => return Err(Invalid::TooLong),
+        _ => {}
     }
+    let delay_ok = match (w.lock, w.unlock_delay_ms) {
+        (Lock::Locked, Some(d)) => (MIN_UNLOCK_DELAY_MS..=MAX_UNLOCK_DELAY_MS).contains(&d),
+        (Lock::Locked, None) => false,
+        (_, d) => d.is_none(),
+    };
+    if delay_ok { Ok(()) } else { Err(Invalid::BadDelay) }
 }
 
 /// Sites are plain host names: no whitespace, control characters, `#`, `/` or `\`.
@@ -312,18 +340,76 @@ impl LockStore {
         unlock::verify(key, token, &self.challenges[idx], now_ms)?;
 
         let window_id = self.challenges[idx].window_id.clone();
-        let w = self
-            .windows
-            .iter_mut()
-            .find(|w| w.id == window_id && is_locking(w))
-            .ok_or(UnlockError::WrongLock)?;
+        if !self.end_early(&window_id, now_ms) {
+            return Err(UnlockError::WrongLock);
+        }
         self.challenges[idx].used = true;
-        let original_ends = w.ends;
-        w.ends = w.ends.min(now_ms);
-        // Remember the original end so the app's next re-push cannot bring the lock back.
-        self.ended_early.retain(|t| t.id != window_id);
-        self.ended_early.push(Tombstone { id: window_id.clone(), ends: original_ends });
         self.high_water_ms = now_ms;
         Ok(window_id)
+    }
+
+    /// Ends a locking window now (`ends = min(ends, now)`), remembers its original end so a
+    /// re-push cannot bring it back, and drops any pending delayed unlock for it.
+    /// Returns false (changing nothing) when there is no such locking window that is still
+    /// active: an already-ended window keeps its existing tombstone.
+    fn end_early(&mut self, window_id: &str, now_ms: i64) -> bool {
+        let Some(w) = self.windows.iter_mut().find(|w| w.id == window_id && is_locking(w) && is_active(w, now_ms)) else {
+            return false;
+        };
+        let original_ends = w.ends;
+        w.ends = w.ends.min(now_ms);
+        self.ended_early.retain(|t| t.id != window_id);
+        self.ended_early.push(Tombstone { id: window_id.to_string(), ends: original_ends });
+        self.pending_unlocks.retain(|p| p.window_id != window_id);
+        true
+    }
+
+    /// Starts the waiting period of a Locked window; returns when it ends. A repeat request
+    /// returns the existing time rather than restarting the wait.
+    pub fn request_delayed_unlock(&mut self, window_id: &str, now_ms: i64) -> Result<i64, DelayError> {
+        let now_ms = now_ms.max(self.high_water_ms);
+        self.high_water_ms = now_ms;
+        let w = self
+            .windows
+            .iter()
+            .find(|w| w.id == window_id && is_active(w, now_ms))
+            .ok_or(DelayError::NoSuchLock)?;
+        let delay = match (w.lock, w.unlock_delay_ms) {
+            (Lock::Locked, Some(d)) => d,
+            _ => return Err(DelayError::NotDelayable),
+        };
+        if let Some(p) = self.pending_unlocks.iter().find(|p| p.window_id == window_id) {
+            return Ok(p.unlock_at);
+        }
+        let unlock_at = now_ms.saturating_add(delay);
+        self.pending_unlocks.push(PendingUnlock { window_id: window_id.to_string(), unlock_at });
+        Ok(unlock_at)
+    }
+
+    /// Abandons a pending delayed unlock; false when there was none.
+    pub fn cancel_delayed_unlock(&mut self, window_id: &str) -> bool {
+        let before = self.pending_unlocks.len();
+        self.pending_unlocks.retain(|p| p.window_id != window_id);
+        self.pending_unlocks.len() != before
+    }
+
+    /// Applies pending unlocks that are due: the window ends now. A pending entry whose window
+    /// is gone or already over is just dropped. Returns true when anything changed.
+    pub fn expire_pending(&mut self, now_ms: i64) -> bool {
+        let now_ms = now_ms.max(self.high_water_ms);
+        let pending = std::mem::take(&mut self.pending_unlocks);
+        let mut changed = false;
+        for p in pending {
+            let live = self.windows.iter().any(|w| w.id == p.window_id && is_locking(w) && w.ends > now_ms);
+            if !live {
+                changed = true;
+            } else if p.unlock_at <= now_ms {
+                self.end_early(&p.window_id, now_ms);
+                changed = true;
+            } else {
+                self.pending_unlocks.push(p);
+            }
+        }
+        changed
     }
 }

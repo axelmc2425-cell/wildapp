@@ -13,7 +13,7 @@ fn vector() -> Value {
 }
 
 fn win(id: &str, lock: Lock, starts: i64, ends: i64) -> Window {
-    Window { id: id.into(), starts, ends, lock, mode: Mode::Block, sites: vec!["x.com".into()], apps: vec![] }
+    Window { id: id.into(), starts, ends, lock, mode: Mode::Block, sites: vec!["x.com".into()], apps: vec![], unlock_delay_ms: if lock == Lock::Locked { Some(86_400_000) } else { None } }
 }
 
 fn run(s: &mut LockStore, c: &mut EffectiveClock, r: Request) -> Response {
@@ -46,6 +46,8 @@ fn request_json_round_trip() {
         Request::RequestChallenge { window_id: "a".into() },
         Request::SubmitToken { token: "t".into() },
         Request::SetPartner { public_key: "k".into() },
+        Request::RequestDelayedUnlock { window_id: "a".into() },
+        Request::CancelDelayedUnlock { window_id: "a".into() },
     ];
     for r in reqs {
         let s = serde_json::to_string(&r).unwrap();
@@ -166,7 +168,7 @@ fn full_conversation() {
         serde_json::from_str(&out).unwrap()
     };
     assert_eq!(call(json!({"type":"SetPartner","public_key":v["publicKey"]})), json!({"type":"Ok"}));
-    let w = json!({"id":id,"starts":NOW-1000,"ends":NOW+3_600_000,"lock":"locked","mode":"block","sites":["news.com"],"apps":[]});
+    let w = json!({"id":id,"starts":NOW-1000,"ends":NOW+3_600_000,"lock":"locked","mode":"block","sites":["news.com"],"apps":[],"unlock_delay_ms":86400000});
     assert_eq!(call(json!({"type":"PushWindows","windows":[w.clone()]})), json!({"type":"Ok"}));
     let ch = call(json!({"type":"RequestChallenge","window_id":id}));
     assert_eq!(ch["type"], "Challenge");
@@ -207,4 +209,77 @@ fn final_wave_error_codes() {
         assert!(matches!(run(&mut s, &mut c, Request::RequestChallenge { window_id: "l".into() }), Response::Challenge { .. }));
     }
     assert_eq!(code_of(run(&mut s, &mut c, Request::RequestChallenge { window_id: "l".into() })), "too-many");
+}
+
+const DAY: i64 = 86_400_000;
+
+fn locked_with_pending() -> (LockStore, EffectiveClock) {
+    let (mut s, mut c) = with_partner();
+    assert_eq!(run(&mut s, &mut c, Request::PushWindows { windows: vec![win("a", Lock::Locked, NOW - 1, NOW + 2 * DAY)] }), Response::Ok);
+    (s, c)
+}
+
+#[test]
+fn delayed_unlock_json_shapes() {
+    assert_eq!(
+        serde_json::to_value(Request::RequestDelayedUnlock { window_id: "a".into() }).unwrap(),
+        json!({"type":"RequestDelayedUnlock","window_id":"a"})
+    );
+    assert_eq!(
+        serde_json::to_value(Request::CancelDelayedUnlock { window_id: "a".into() }).unwrap(),
+        json!({"type":"CancelDelayedUnlock","window_id":"a"})
+    );
+    let r = Response::UnlockPending { unlock_at: 5 };
+    assert_eq!(serde_json::to_value(&r).unwrap(), json!({"type":"UnlockPending","unlock_at":5}));
+    assert_eq!(serde_json::from_value::<Response>(json!({"type":"UnlockPending","unlock_at":5})).unwrap(), r);
+}
+
+#[test]
+fn request_cancel_and_status_carry_pending() {
+    let (mut s, mut c) = locked_with_pending();
+    assert_eq!(run(&mut s, &mut c, Request::RequestDelayedUnlock { window_id: "a".into() }), Response::UnlockPending { unlock_at: NOW + DAY });
+    match run(&mut s, &mut c, Request::GetStatus) {
+        Response::Status { pending_unlocks, .. } => {
+            assert_eq!(pending_unlocks.len(), 1);
+            assert_eq!((pending_unlocks[0].window_id.as_str(), pending_unlocks[0].unlock_at), ("a", NOW + DAY));
+        }
+        o => panic!("{o:?}"),
+    }
+    assert_eq!(run(&mut s, &mut c, Request::CancelDelayedUnlock { window_id: "a".into() }), Response::Ok);
+    assert_eq!(code_of(run(&mut s, &mut c, Request::CancelDelayedUnlock { window_id: "a".into() })), "no-pending-unlock");
+    assert_eq!(code_of(run(&mut s, &mut c, Request::RequestDelayedUnlock { window_id: "zz".into() })), "no-such-lock");
+    run(&mut s, &mut c, Request::PushWindows { windows: vec![win("n", Lock::None, NOW - 1, NOW + 1000)] });
+    assert_eq!(code_of(run(&mut s, &mut c, Request::RequestDelayedUnlock { window_id: "n".into() })), "not-delayable");
+}
+
+#[test]
+fn wall_clock_moved_back_does_not_shorten_wait() {
+    let (mut s, mut c) = locked_with_pending();
+    handle(&mut s, &mut c, Request::RequestDelayedUnlock { window_id: "a".into() }, NOW, 0, [0; 16]);
+    // wall clock set back two days; only an hour of monotonic time has passed
+    handle(&mut s, &mut c, Request::GetStatus, NOW - 2 * DAY, 3_600_000, [0; 16]);
+    assert_eq!(s.pending_unlocks.len(), 1);
+    assert_eq!(s.windows[0].ends, NOW + 2 * DAY);
+    // after a full day of monotonic time the wait is over even with the wall clock still back
+    handle(&mut s, &mut c, Request::GetStatus, NOW - 2 * DAY, DAY + 1000, [0; 16]);
+    assert!(s.pending_unlocks.is_empty());
+    assert!(s.windows[0].ends <= NOW + DAY + 1000);
+}
+
+#[test]
+fn reset_clock_clears_pending() {
+    let (mut s, mut c) = locked_with_pending();
+    run(&mut s, &mut c, Request::RequestDelayedUnlock { window_id: "a".into() });
+    s.windows[0].ends = NOW - 1; // window over, so a reset is allowed
+    assert_eq!(run(&mut s, &mut c, Request::ResetClock), Response::Ok);
+    assert!(s.pending_unlocks.is_empty());
+}
+
+#[test]
+fn push_with_bad_delay_reports_bad_window_through_handle_line() {
+    let (mut s, mut c) = with_partner();
+    let w = json!({"id":"a","starts":NOW-1000,"ends":NOW+3_600_000,"lock":"locked","mode":"block","sites":["x.com"],"apps":[],"unlock_delay_ms":1000});
+    let out = handle_line(&mut s, &mut c, &json!({"type":"PushWindows","windows":[w]}).to_string(), NOW, 0, [0; 16]);
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v, json!({"type":"Error","code":"bad-window","message":"bad-delay"}));
 }

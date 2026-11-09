@@ -2,6 +2,7 @@
 import { h } from './dom.js';
 import { openDialog } from './dialog.js';
 import { splitPaste, addEntries, canSave, removeLast } from './editor-logic.js';
+import { formatClock } from './util.js';
 
 let seq = 0;
 
@@ -104,7 +105,7 @@ export function openListEditor({ controller, list, preset, onDone } = {}) {
     saving = false;
     if (res && res.ok) { dlg.close(); onDone?.(); return; }
     const errors = (res && res.errors) || {};
-    show(nameErr, errors.name);
+    show(nameErr, Number.isFinite(res?.lockedUntil) ? `That list is part of a locked block until ${formatClock(res.lockedUntil)}.` : errors.name);
     show(itemsErr, errors.items);
     const lines = [...(errors.sites || []), ...(errors.apps || [])].map(e => `${e.value}: ${e.message}`);
     saveErrs.replaceChildren(...lines.map(l => h('li', {}, l)));

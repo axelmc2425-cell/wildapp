@@ -17,6 +17,7 @@ fn win(id: &str, lock: Lock, starts: i64, ends: i64) -> Window {
         mode: Mode::Block,
         sites: vec!["example.com".into()],
         apps: vec!["game.exe".into()],
+        unlock_delay_ms: if lock == Lock::Locked { Some(86_400_000) } else { None },
     }
 }
 
@@ -540,4 +541,199 @@ fn tombstones_survive_serde_and_old_state_loads() {
     assert_eq!((old.version, old.high_water_ms, old.ended_early.len()), (STORE_VERSION, 7, 0));
     let empty: LockStore = serde_json::from_str("{}").unwrap();
     assert_eq!(empty.version, STORE_VERSION);
+}
+
+fn push_one(w: Window) -> Result<PushReport, PushError> {
+    let (mut s, _) = with_partner();
+    s.push(vec![w], NOW)
+}
+
+#[test]
+fn locked_window_requires_delay() {
+    let mut w = win("a", Lock::Locked, NOW, NOW + H);
+    w.unlock_delay_ms = None;
+    assert_eq!(push_one(w), Err(PushError::Invalid(Invalid::BadDelay)));
+}
+
+#[test]
+fn delay_below_one_hour_rejected() {
+    let mut w = win("a", Lock::Locked, NOW, NOW + H);
+    w.unlock_delay_ms = Some(MIN_UNLOCK_DELAY_MS - 1);
+    assert_eq!(push_one(w), Err(PushError::Invalid(Invalid::BadDelay)));
+}
+
+#[test]
+fn delay_above_seven_days_rejected() {
+    let mut w = win("a", Lock::Locked, NOW, NOW + H);
+    w.unlock_delay_ms = Some(MAX_UNLOCK_DELAY_MS + 1);
+    assert_eq!(push_one(w), Err(PushError::Invalid(Invalid::BadDelay)));
+}
+
+#[test]
+fn delay_on_none_window_rejected() {
+    let mut w = win("a", Lock::None, NOW, NOW + H);
+    w.unlock_delay_ms = Some(86_400_000);
+    assert_eq!(push_one(w), Err(PushError::Invalid(Invalid::BadDelay)));
+    assert_eq!(Invalid::BadDelay.reason(), "bad-delay");
+}
+
+#[test]
+fn valid_delay_accepted_and_stored() {
+    let (mut s, _) = with_partner();
+    s.push(vec![win("a", Lock::Locked, NOW, NOW + H)], NOW).unwrap();
+    assert_eq!(s.windows[0].unlock_delay_ms, Some(86_400_000));
+}
+
+#[test]
+fn existing_locked_window_ignores_pushed_item_and_delay_changes() {
+    let (mut s, _) = with_partner();
+    s.push(vec![win("a", Lock::Locked, NOW, NOW + H)], NOW).unwrap();
+    let before = s.windows[0].clone();
+    let mut w = win("a", Lock::Locked, NOW, NOW + H);
+    w.sites = vec!["other.com".into()];
+    w.apps = vec!["other.exe".into()];
+    w.unlock_delay_ms = Some(MIN_UNLOCK_DELAY_MS);
+    s.push(vec![w], NOW).unwrap();
+    assert_eq!(s.windows[0], before);
+}
+
+#[test]
+fn delay_bounds_are_inclusive() {
+    for d in [MIN_UNLOCK_DELAY_MS, MAX_UNLOCK_DELAY_MS] {
+        let mut w = win("a", Lock::Locked, NOW, NOW + H);
+        w.unlock_delay_ms = Some(d);
+        assert!(push_one(w).is_ok(), "delay {d}");
+    }
+}
+
+#[test]
+fn frozen_window_with_delay_is_rejected() {
+    let mut w = win("f", Lock::Frozen, NOW, NOW + H);
+    w.unlock_delay_ms = Some(86_400_000);
+    assert_eq!(push_one(w), Err(PushError::FrozenUnavailable));
+}
+
+const DAY: i64 = 86_400_000;
+
+fn locked_store() -> (LockStore, SigningKey) {
+    let (mut s, sk) = with_partner();
+    s.push(vec![win("a", Lock::Locked, NOW - H, NOW + 2 * DAY)], NOW).unwrap();
+    (s, sk)
+}
+
+#[test]
+fn request_sets_unlock_at_now_plus_delay() {
+    let (mut s, _) = locked_store();
+    assert_eq!(s.request_delayed_unlock("a", NOW), Ok(NOW + DAY));
+    assert_eq!(s.pending_unlocks, vec![PendingUnlock { window_id: "a".into(), unlock_at: NOW + DAY }]);
+}
+
+#[test]
+fn second_request_returns_same_time() {
+    let (mut s, _) = locked_store();
+    s.request_delayed_unlock("a", NOW).unwrap();
+    assert_eq!(s.request_delayed_unlock("a", NOW + H), Ok(NOW + DAY));
+    assert_eq!(s.pending_unlocks.len(), 1);
+}
+
+#[test]
+fn request_on_unknown_or_none_window_errors() {
+    let (mut s, _) = locked_store();
+    s.push(vec![win("n", Lock::None, NOW - H, NOW + H)], NOW).unwrap();
+    assert_eq!(s.request_delayed_unlock("zz", NOW), Err(DelayError::NoSuchLock));
+    assert_eq!(s.request_delayed_unlock("n", NOW), Err(DelayError::NotDelayable));
+    s.windows[0].unlock_delay_ms = None;
+    assert_eq!(s.request_delayed_unlock("a", NOW), Err(DelayError::NotDelayable));
+    assert!(s.pending_unlocks.is_empty());
+}
+
+#[test]
+fn expiry_ends_window_and_writes_tombstone() {
+    let (mut s, _) = locked_store();
+    let at = s.request_delayed_unlock("a", NOW).unwrap();
+    assert!(!s.expire_pending(at - 1));
+    assert_eq!(s.windows[0].ends, NOW + 2 * DAY);
+    assert!(s.expire_pending(at));
+    assert!(s.windows[0].ends <= at);
+    assert!(s.pending_unlocks.is_empty());
+    assert_eq!(s.ended_early, vec![Tombstone { id: "a".into(), ends: NOW + 2 * DAY }]);
+    let r = s.push(vec![win("a", Lock::Locked, NOW - H, NOW + 2 * DAY)], at + 1000).unwrap();
+    assert_eq!((r.tombstoned, r.added), (1, 0));
+    assert!(s.windows.iter().all(|w| w.ends <= at + 1000));
+    assert!(!s.expire_pending(at + 2000));
+}
+
+#[test]
+fn expiry_when_window_ends_first_just_ends_normally() {
+    let (mut s, _) = with_partner();
+    s.push(vec![win("a", Lock::Locked, NOW - H, NOW + 2 * H)], NOW).unwrap();
+    // delay of one day, but the window ends in two hours
+    s.request_delayed_unlock("a", NOW).unwrap();
+    assert!(s.expire_pending(NOW + DAY));
+    assert!(s.pending_unlocks.is_empty());
+    assert_eq!(s.windows[0].ends, NOW + 2 * H);
+    assert!(s.ended_early.is_empty());
+}
+
+#[test]
+fn cancel_removes_pending_and_second_cancel_returns_false() {
+    let (mut s, _) = locked_store();
+    s.request_delayed_unlock("a", NOW).unwrap();
+    assert!(s.cancel_delayed_unlock("a"));
+    assert!(!s.cancel_delayed_unlock("a"));
+    assert!(s.pending_unlocks.is_empty());
+    assert!(!s.expire_pending(NOW + 5 * DAY));
+}
+
+#[test]
+fn partner_token_clears_pending() {
+    let (mut s, sk) = locked_store();
+    s.request_delayed_unlock("a", NOW).unwrap();
+    unlock(&mut s, &sk, "a", NOW + H);
+    assert!(s.pending_unlocks.is_empty());
+    assert!(s.windows[0].ends <= NOW + H + 1000);
+}
+
+#[test]
+fn token_for_earlier_challenge_after_expiry_keeps_tombstone() {
+    let (mut s, sk) = locked_store();
+    let at = s.request_delayed_unlock("a", NOW).unwrap();
+    // challenge issued just before expiry, still open when the token arrives after it
+    let n = nonce_of(&s.request_challenge("a", at - 1000, [7; 16]).unwrap());
+    assert!(s.expire_pending(at));
+    let t = token(&sk, &n, "a", at + 600_000);
+    assert_eq!(s.submit_token(&t, at + 1000), Err(UnlockError::WrongLock));
+    assert_eq!(s.ended_early, vec![Tombstone { id: "a".into(), ends: NOW + 2 * DAY }]);
+    let r = s.push(vec![win("a", Lock::Locked, NOW - H, NOW + 2 * DAY)], at + 2000).unwrap();
+    assert_eq!((r.tombstoned, r.added), (1, 0));
+    assert!(s.windows.iter().all(|w| w.ends <= at + 2000), "no live lock");
+}
+
+#[test]
+fn extending_a_pending_window_keeps_pending_and_tombstone_records_extended_end() {
+    let (mut s, _) = locked_store();
+    let at = s.request_delayed_unlock("a", NOW).unwrap();
+    s.push(vec![win("a", Lock::Locked, NOW - H, NOW + 3 * DAY)], NOW + 1000).unwrap();
+    assert_eq!(s.pending_unlocks, vec![PendingUnlock { window_id: "a".into(), unlock_at: at }]);
+    assert!(s.expire_pending(at));
+    assert_eq!(s.ended_early, vec![Tombstone { id: "a".into(), ends: NOW + 3 * DAY }]);
+}
+
+#[test]
+fn pending_for_an_already_ended_window_is_dropped() {
+    let (mut s, _) = locked_store();
+    s.pending_unlocks.push(PendingUnlock { window_id: "a".into(), unlock_at: NOW + 5 * DAY });
+    s.pending_unlocks.push(PendingUnlock { window_id: "gone".into(), unlock_at: NOW + 5 * DAY });
+    assert!(s.expire_pending(NOW + 3 * DAY)); // window a ended at NOW + 2 days
+    assert!(s.pending_unlocks.is_empty());
+    assert!(s.ended_early.is_empty());
+}
+
+#[test]
+fn request_near_i64_max_saturates() {
+    let mut s = LockStore::default();
+    let mut w = win("a", Lock::Locked, 0, i64::MAX);
+    w.unlock_delay_ms = Some(MAX_UNLOCK_DELAY_MS);
+    s.windows.push(w);
+    assert_eq!(s.request_delayed_unlock("a", i64::MAX - 10), Ok(i64::MAX));
 }

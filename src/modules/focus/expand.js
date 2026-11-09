@@ -27,6 +27,29 @@ export function sessionToWindow(session, list) {
   return { id: 's' + session.id, starts: session.starts, ends: session.ends, lock: session.lock, mode: list.mode, sites, apps };
 }
 
+/**
+ * One window for a locked block: sessions sharing starts, ends, lock and unlockDelayMs, one per list.
+ * The id depends only on the block (times and the sorted list ids), never on row order.
+ * @param {{ listId: number, starts: number, ends: number, unlockDelayMs: number|null }[]} sessions
+ * @param {Map<number, List>} listsById
+ * @returns {import('./limits.js').Window}
+ */
+export function lockedBlockToWindow(sessions, listsById) {
+  const { starts, ends, unlockDelayMs } = sessions[0];
+  const listIds = [...new Set(sessions.map((s) => s.listId))].sort((a, b) => a - b);
+  const sites = new Set();
+  const apps = new Set();
+  for (const id of listIds) {
+    const t = listTargets(listsById.get(id));
+    t.sites.forEach((x) => sites.add(x));
+    t.apps.forEach((x) => apps.add(x));
+  }
+  return {
+    id: 'b' + starts + '-' + listIds.join('.'), starts, ends, lock: 'locked', mode: 'block',
+    sites: [...sites], apps: [...apps], unlock_delay_ms: unlockDelayMs,
+  };
+}
+
 // Convert wall-clock time (expressed as if it were UTC ms) to a UTC instant.
 // Ambiguous (fall-back) times resolve to the first occurrence; times in a
 // spring-forward gap resolve to the first instant after the gap.

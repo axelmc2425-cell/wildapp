@@ -118,8 +118,8 @@ test('createSessions writes one row per list and rejects ends <= starts', async 
   assert.equal(ids.length, 2);
   const s = await listSessions(db);
   assert.deepEqual(s, [
-    { id: ids[0], listId: a.id, starts: 10, ends: 20, lock: 'none' },
-    { id: ids[1], listId: b.id, starts: 10, ends: 20, lock: 'none' },
+    { id: ids[0], listId: a.id, starts: 10, ends: 20, lock: 'none', unlockDelayMs: null },
+    { id: ids[1], listId: b.id, starts: 10, ends: 20, lock: 'none', unlockDelayMs: null },
   ]);
   await assert.rejects(createSessions(db, { listIds: [a.id], starts: 5, ends: 5 }), /bad times/);
   await assert.rejects(createSessions(db, { listIds: [a.id], starts: 6, ends: 5 }), /bad times/);
@@ -151,4 +151,80 @@ test('purgeFinished removes only sessions older than keepMs', async () => {
   assert.deepEqual((await listSessions(db)).map(s => s.id), [recent, running]);
   assert.equal(await purgeFinished(db, now, 1000), 1);
   assert.deepEqual((await listSessions(db)).map(s => s.id), [running]);
+});
+
+// ---- locked sessions ----
+import { endLockedSessions } from '../src/modules/focus/store.js';
+
+const HOUR = 3600000;
+
+test('creates a locked session with its delay and reads it back', async () => {
+  const db = await fresh();
+  const { id } = await saveList(db, { name: 'L', sites: ['a.com'], apps: [] });
+  const [sid] = await createSessions(db, { listIds: [id], starts: 100, ends: 100 + 2 * HOUR, lock: 'locked', unlockDelayMs: HOUR });
+  assert.deepEqual(await listSessions(db), [{ id: sid, listId: id, starts: 100, ends: 100 + 2 * HOUR, lock: 'locked', unlockDelayMs: HOUR }]);
+  const [n] = await createSessions(db, { listIds: [id], starts: 1, ends: 2 });
+  assert.deepEqual((await listSessions(db)).find(s => s.id === n), { id: n, listId: id, starts: 1, ends: 2, lock: 'none', unlockDelayMs: null });
+});
+
+test('createSessions rejects invalid locked input and writes nothing', async () => {
+  const db = await fresh();
+  const { id } = await saveList(db, { name: 'L', sites: [], apps: [] });
+  await assert.rejects(createSessions(db, { listIds: [id], starts: 0, ends: HOUR, lock: 'locked' }));
+  await assert.rejects(createSessions(db, { listIds: [id], starts: 0, ends: HOUR, lock: 'locked', unlockDelayMs: 5 }));
+  await assert.rejects(createSessions(db, { listIds: [id], starts: 0, ends: 8 * 24 * HOUR, lock: 'locked', unlockDelayMs: HOUR }));
+  await assert.rejects(createSessions(db, { listIds: [id], starts: 0, ends: HOUR, lock: 'none', unlockDelayMs: HOUR }));
+  assert.deepEqual(await listSessions(db), []);
+});
+
+test('deleteSessions refuses locked rows and deletes none rows', async () => {
+  const db = await fresh();
+  const { id } = await saveList(db, { name: 'L', sites: [], apps: [] });
+  const [n] = await createSessions(db, { listIds: [id], starts: 1, ends: 2 });
+  const [l] = await createSessions(db, { listIds: [id], starts: 1, ends: HOUR, lock: 'locked', unlockDelayMs: HOUR });
+  await assert.rejects(deleteSessions(db, [n, l]), /locked/);
+  assert.equal((await listSessions(db)).length, 2);
+  await deleteSessions(db, [n]);
+  assert.deepEqual((await listSessions(db)).map(s => s.id), [l]);
+});
+
+test('endLockedSessions removes locked rows', async () => {
+  const db = await fresh();
+  const { id } = await saveList(db, { name: 'L', sites: [], apps: [] });
+  const [l] = await createSessions(db, { listIds: [id], starts: 1, ends: HOUR, lock: 'locked', unlockDelayMs: HOUR });
+  await endLockedSessions(db, [l]);
+  assert.deepEqual(await listSessions(db), []);
+});
+
+test('saveList refuses editing a list in a running locked block', async () => {
+  const db = await fresh();
+  const { id } = await saveList(db, { name: 'L', sites: ['a.com'], apps: [] });
+  await createSessions(db, { listIds: [id], starts: 100, ends: 100 + 2 * HOUR, lock: 'locked', unlockDelayMs: HOUR });
+  const r = await saveList(db, { id, name: 'L', sites: ['b.com'], apps: [] }, 200);
+  assert.equal(r.ok, false);
+  assert.equal(r.errors.name, 'That list is part of a locked block.');
+  assert.equal(r.lockedUntil, 100 + 2 * HOUR);
+  assert.deepEqual((await listLists(db))[0].sites, ['a.com']);
+});
+
+test('saveList allows editing after the locked block ended', async () => {
+  const db = await fresh();
+  const { id } = await saveList(db, { name: 'L', sites: ['a.com'], apps: [] });
+  await createSessions(db, { listIds: [id], starts: 100, ends: 100 + 2 * HOUR, lock: 'locked', unlockDelayMs: HOUR });
+  const r = await saveList(db, { id, name: 'L', sites: ['b.com'], apps: [] }, 100 + 2 * HOUR);
+  assert.equal(r.ok, true);
+});
+
+test('a normal running block does not block editing', async () => {
+  const db = await fresh();
+  const { id } = await saveList(db, { name: 'L', sites: ['a.com'], apps: [] });
+  await createSessions(db, { listIds: [id], starts: 100, ends: 1000 });
+  assert.equal((await saveList(db, { id, name: 'L', sites: ['b.com'], apps: [] }, 200)).ok, true);
+});
+
+test('deleteList refuses while a locked block is running', async () => {
+  const db = await fresh();
+  const { id } = await saveList(db, { name: 'L', sites: [], apps: [] });
+  await createSessions(db, { listIds: [id], starts: 100, ends: 1000, lock: 'locked', unlockDelayMs: HOUR });
+  assert.deepEqual(await deleteList(db, id, 200), { ok: false, reason: 'running' });
 });

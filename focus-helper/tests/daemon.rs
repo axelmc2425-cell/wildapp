@@ -65,7 +65,7 @@ fn tmp(name: &str) -> PathBuf {
 }
 
 fn window(id: &str, lock: Lock, starts: i64, ends: i64) -> Window {
-    Window { id: id.into(), starts, ends, lock, mode: Mode::Block, sites: vec!["x.com".into(), "a.com".into()], apps: vec![] }
+    Window { id: id.into(), starts, ends, lock, mode: Mode::Block, sites: vec!["x.com".into(), "a.com".into()], apps: vec![], unlock_delay_ms: if lock == Lock::Locked { Some(86_400_000) } else { None } }
 }
 
 fn seed(path: &PathBuf, windows: Vec<Window>, high_water: i64) {
@@ -423,4 +423,33 @@ fn reset_clock_refused_with_pending_lock_allowed_otherwise() {
 
 fn tmp_same(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("focus-daemon-{}-{name}", std::process::id())).join("state.json")
+}
+
+#[test]
+fn tick_expires_pending_and_saves() {
+    use focus_helper::lockstore::PendingUnlock;
+    let path = tmp("expire");
+    let day = 86_400_000;
+    let mut w = window("w", Lock::Locked, NOW - 10, NOW + 2 * day);
+    w.unlock_delay_ms = Some(day);
+    let store = LockStore {
+        windows: vec![w],
+        partner_key: Some("k".into()),
+        high_water_ms: NOW,
+        pending_unlocks: vec![PendingUnlock { window_id: "w".into(), unlock_at: NOW + 1000 }],
+        ..LockStore::default()
+    };
+    persist::save(&path, &store).unwrap();
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    d.tick(NOW, 0, &mut p);
+    assert_eq!(d.store().pending_unlocks.len(), 1);
+    d.tick(NOW + 2000, 2000, &mut p);
+    assert!(d.store().pending_unlocks.is_empty());
+    let loaded = persist::load(&path);
+    assert!(loaded.pending_unlocks.is_empty());
+    assert!(loaded.windows[0].ends <= NOW + 2000);
+    assert_eq!(loaded.ended_early.len(), 1);
+    // enforcement is lifted
+    assert_eq!(p.hosts.last(), Some(&Vec::<String>::new()));
 }

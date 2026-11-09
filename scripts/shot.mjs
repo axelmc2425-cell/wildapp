@@ -21,6 +21,7 @@ const stepsFile = stepsIdx >= 0 ? resolve(args[stepsIdx + 1]) : null;
 const helperIdx = args.indexOf('--helper');
 const helperBin = helperIdx >= 0 ? resolve(args[helperIdx + 1]) : null;
 let helperDown = args.includes('--helper-down');
+let persistFail = false; // steps can make SetPartner answer persist-failed (after the helper applied it)
 let helperDelay = 0; // steps can set this to stall every helper call
 let warningsOverride = null; // steps can set this to rewrite Status.warnings in helper replies
 const root = join(fileURLToPath(import.meta.url), '..', '..', 'src');
@@ -110,6 +111,7 @@ await page.exposeFunction('__db', async (cmd, a) => {
     if (!bridge) throw new Error('Focus Room blocking is only available on Windows');
     if (helperDelay > 0) await new Promise(r => setTimeout(r, helperDelay));
     const reply = await bridge.call(a.request);
+    if (persistFail && a.request.includes('"SetPartner"')) return JSON.stringify({ type: 'Error', code: 'persist-failed', message: 'disk full' });
     if (warningsOverride) {
       try {
         const j = JSON.parse(reply);
@@ -137,7 +139,7 @@ try {
   await page.waitForSelector('#modlist .navitem');
   if (stepsFile) {
     const steps = await import(pathToFileURL(stepsFile).href);
-    await steps.default(page, shot, { db, importDir, exportDir, bridge, setHelperDown: (v) => { helperDown = !!v; }, setHelperDelay: (ms) => { helperDelay = Number(ms) || 0; }, setWarnings: (arr) => { warningsOverride = Array.isArray(arr) ? arr : null; } });
+    await steps.default(page, shot, { db, importDir, exportDir, bridge, setHelperDown: (v) => { helperDown = !!v; }, setPersistFail: (v) => { persistFail = !!v; }, setHelperDelay: (ms) => { helperDelay = Number(ms) || 0; }, advanceHelperClock: async (ms) => { const r = JSON.parse(await bridge.call(JSON.stringify({ type: 'AdvanceClock', ms }))); if (r.type !== 'Ok') throw new Error('AdvanceClock failed: ' + JSON.stringify(r)); }, helperCall: async (req) => JSON.parse(await bridge.call(JSON.stringify(req))), setWarnings: (arr) => { warningsOverride = Array.isArray(arr) ? arr : null; } });
   } else {
     await shot('home');
     await page.goto(url + '#/settings');

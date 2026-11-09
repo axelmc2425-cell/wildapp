@@ -152,6 +152,11 @@ test('describePushProblem', () => {
   assert.equal(typeof describePushProblem(null, 0, []), 'string');
 });
 
+test('detailRows Windows held excludes early-ended windows', () => {
+  const r = detailRows({ decision: { blockSites: [], blockApps: [], allow: null, frozen: false, locks: [] }, windows: [{ id: 'a', ends: 100 }, { id: 'b', ends: 50 }, { id: 'c', ends: 500 }], partner_set: true, now_ms: 100, warnings: [] });
+  assert.equal(Object.fromEntries(r.map((x) => [x.label, x.value]))['Windows held'], '1');
+});
+
 test('detailRows', () => {
   const r = detailRows({ decision: { blockSites: ['a', 'b'], blockApps: ['x', 'y', 'z'], allow: null, frozen: false, locks: [] }, windows: [1, 2], partner_set: true, now_ms: 0, warnings: ['w1', 'w2'] });
   const m = Object.fromEntries(r.map((x) => [x.label, x.value]));
@@ -174,4 +179,36 @@ test('detailRows lines carry each warning verbatim', () => {
   assert.equal(detailRows({ ...st, warnings: [] }).find((x) => x.label === 'Warnings').lines, undefined);
   assert.equal(detailRows({ ...st, warnings: [] }).find((x) => x.label === 'Warnings').value, 'None');
   assert.equal(detailRows(null).find((x) => x.label === 'Warnings').lines, undefined);
+});
+
+test('groupSessions: locked blocks carry lock and delay; delay splits the group', () => {
+  const lists = [{ id: 1, name: 'A' }, { id: 2, name: 'B' }];
+  const b = groupSessions([
+    { id: 1, listId: 1, starts: 0, ends: 100, lock: 'locked', unlockDelayMs: 3600000 },
+    { id: 2, listId: 2, starts: 0, ends: 100, lock: 'locked', unlockDelayMs: 3600000 },
+    { id: 3, listId: 2, starts: 0, ends: 100, lock: 'locked', unlockDelayMs: 7200000 },
+    { id: 4, listId: 1, starts: 0, ends: 100 },
+  ], lists, 50);
+  assert.equal(b.length, 3);
+  const same = b.find((x) => x.ids.length === 2);
+  assert.equal(same.lock, 'locked');
+  assert.equal(same.unlockDelayMs, 3600000);
+  assert.deepEqual(same.listIds, [1, 2]);
+  assert.ok(b.some((x) => x.lock === 'locked' && x.unlockDelayMs === 7200000));
+  const normal = b.find((x) => x.key === '0:100:none');
+  assert.ok(normal);
+  assert.equal(normal.lock, 'none');
+  assert.equal(normal.unlockDelayMs, null);
+});
+
+test('detailRows shows the partner name and each pending unlock', () => {
+  const st = { decision: {}, windows: [], partner_set: true, now_ms: 0, warnings: [], pending_unlocks: [{ window_id: 'w1', unlock_at: 5000 }] };
+  const rows = detailRows(st, { partnerName: 'Sam', formatTime: (ms) => `t${ms}`, labelFor: (id) => (id === 'w1' ? 'Games' : '') });
+  const m = Object.fromEntries(rows.map((x) => [x.label, x]));
+  assert.equal(m['Partner key'].value, 'Sam (key set)');
+  assert.deepEqual(m['Pending unlocks'].lines, ['Games unlocks at t5000']);
+  const plain = detailRows({ ...st, pending_unlocks: [] });
+  assert.equal(plain.find((x) => x.label === 'Pending unlocks'), undefined);
+  assert.equal(plain.find((x) => x.label === 'Partner key').value, 'set');
+  assert.equal(detailRows({ ...st, partner_set: false }, { partnerName: 'Sam' }).find((x) => x.label === 'Partner key').value, 'not set');
 });

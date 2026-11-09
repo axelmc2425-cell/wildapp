@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_DURATION_MS, validateWindow, extendWindow } from "../src/modules/focus/limits.js";
+import { MAX_DURATION_MS, MIN_UNLOCK_DELAY_MS, MAX_UNLOCK_DELAY_MS, validateUnlockDelay, validateForPush, validateWindow, extendWindow } from "../src/modules/focus/limits.js";
 
 const DAY = 86400000;
 const win = (over = {}) => ({ id: "w1", starts: 1000, ends: 2000, lock: "none", mode: "block", sites: [], apps: [], ...over });
@@ -49,4 +49,39 @@ test("extendWindow enforces cap from starts", () => {
   const w = win({ lock: "frozen" });
   assert.equal(extendWindow(w, 1000 + DAY).ends, 1000 + DAY);
   assert.throws(() => extendWindow(w, 1000 + DAY + 1), /exceeds maximum duration/);
+});
+
+test("unlock delay constants", () => {
+  assert.equal(MIN_UNLOCK_DELAY_MS, 3600000);
+  assert.equal(MAX_UNLOCK_DELAY_MS, 604800000);
+});
+
+test("validateUnlockDelay boundaries", () => {
+  const bad = { ok: false, reason: "bad-delay" };
+  assert.deepEqual(validateUnlockDelay("locked", 3599999), bad);
+  assert.deepEqual(validateUnlockDelay("locked", 3600000), { ok: true });
+  assert.deepEqual(validateUnlockDelay("locked", 604800000), { ok: true });
+  assert.deepEqual(validateUnlockDelay("locked", 604800001), bad);
+  assert.deepEqual(validateUnlockDelay("locked", undefined), bad);
+  assert.deepEqual(validateUnlockDelay("locked", null), bad);
+  assert.deepEqual(validateUnlockDelay("locked", NaN), bad);
+  assert.deepEqual(validateUnlockDelay("none", 3600000), bad);
+  assert.deepEqual(validateUnlockDelay("none", null), { ok: true });
+  assert.deepEqual(validateUnlockDelay("none", undefined), { ok: true });
+  assert.deepEqual(validateUnlockDelay("frozen", 3600000), bad);
+});
+
+test("validateForPush checks unlock_delay_ms", () => {
+  assert.deepEqual(validateForPush(win({ lock: "locked", unlock_delay_ms: DAY })), { ok: true });
+  assert.deepEqual(validateForPush(win({ lock: "locked" })), { ok: false, reason: "bad-delay" });
+  assert.deepEqual(validateForPush(win({ lock: "locked", unlock_delay_ms: 1000 })), { ok: false, reason: "bad-delay" });
+  assert.deepEqual(validateForPush(win({ lock: "none", unlock_delay_ms: DAY })), { ok: false, reason: "bad-delay" });
+  assert.deepEqual(validateForPush(win({ lock: "none", unlock_delay_ms: null })), { ok: true });
+});
+
+test("validateUnlockDelay requires an integer number", () => {
+  const bad = { ok: false, reason: "bad-delay" };
+  for (const v of [3600000.5, "86400000", -1, NaN, Infinity, -Infinity]) {
+    assert.deepEqual(validateUnlockDelay("locked", v), bad, String(v));
+  }
 });

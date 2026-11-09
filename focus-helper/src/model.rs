@@ -24,6 +24,9 @@ pub struct Window {
     pub mode: Mode,
     pub sites: Vec<String>,
     pub apps: Vec<String>,
+    /// Waiting period (ms) before a Locked window can be unlocked without the partner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unlock_delay_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

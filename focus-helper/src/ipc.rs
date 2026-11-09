@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::clock::EffectiveClock;
 use crate::decide::decide;
-use crate::lockstore::{ChallengeError, LockStore, PartnerError, PushError};
+use crate::lockstore::{ChallengeError, DelayError, LockStore, PendingUnlock, PartnerError, PushError};
 use crate::model::{Decision, Window};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +14,9 @@ pub enum Request {
     GetStatus,
     RequestChallenge { window_id: String },
     SubmitToken { token: String },
+    /// Starts the waiting period of a Locked window; answered with `UnlockPending`.
+    RequestDelayedUnlock { window_id: String },
+    CancelDelayedUnlock { window_id: String },
     SetPartner { public_key: String },
     /// Recovery from a bogus far-future clock: refused while any lock is pending.
     ResetClock,
@@ -28,10 +31,16 @@ pub enum Response {
         /// Enforcement problems reported by the daemon (always present, possibly empty).
         #[serde(default)]
         warnings: Vec<String>,
+        /// Delayed unlocks waiting to expire.
+        #[serde(default)]
+        pending_unlocks: Vec<PendingUnlock>,
     },
     Challenge { code: String },
+    /// The window ends early at `unlock_at` (effective ms) unless cancelled.
+    UnlockPending { unlock_at: i64 },
     /// Codes: bad-request, no-partner, bad-window (bad-times, bad-lock, too-long, bad-item, allow-needs-apps,
-    /// too-many, duplicate id), frozen-unavailable, too-many, no-such-lock, bad-key, lock-active (also ResetClock), the unlock
+    /// too-many, duplicate id, bad-delay), frozen-unavailable, too-many, no-such-lock, not-delayable,
+    /// no-pending-unlock, bad-key, lock-active (also ResetClock), the unlock
     /// reasons, and `persist-failed` (daemon only: applied in memory but the state file could not
     /// be written, so the change is lost on restart; retried every tick).
     Error { code: String, message: String },
@@ -49,7 +58,20 @@ pub fn handle(
     mono_ms: i64,
     nonce: [u8; 16],
 ) -> Response {
+    handle_changed(store, clock, req, wall_ms, mono_ms, nonce).0
+}
+
+/// Like `handle`; the flag is true when processing due delayed unlocks changed the store.
+pub fn handle_changed(
+    store: &mut LockStore,
+    clock: &mut EffectiveClock,
+    req: Request,
+    wall_ms: i64,
+    mono_ms: i64,
+    nonce: [u8; 16],
+) -> (Response, bool) {
     let now = clock.now(wall_ms, mono_ms);
+    let expired = store.expire_pending(now);
     let resp = match req {
         Request::PushWindows { windows } => match store.push(windows, now) {
             Ok(_) => Response::Ok,
@@ -69,6 +91,7 @@ pub fn handle(
             partner_set: store.partner_key.is_some(),
             now_ms: now,
             warnings: Vec::new(),
+            pending_unlocks: store.pending_unlocks.clone(),
         },
         Request::RequestChallenge { window_id } => match store.request_challenge(&window_id, now, nonce) {
             Ok(code) => Response::Challenge { code },
@@ -79,6 +102,18 @@ pub fn handle(
             Ok(_) => Response::Ok,
             Err(e) => err(e.reason(), e.reason()),
         },
+        Request::RequestDelayedUnlock { window_id } => match store.request_delayed_unlock(&window_id, now) {
+            Ok(unlock_at) => Response::UnlockPending { unlock_at },
+            Err(DelayError::NoSuchLock) => err("no-such-lock", "no active locked window with that id"),
+            Err(DelayError::NotDelayable) => err("not-delayable", "that window has no unlock delay"),
+        },
+        Request::CancelDelayedUnlock { window_id } => {
+            if store.cancel_delayed_unlock(&window_id) {
+                Response::Ok
+            } else {
+                err("no-pending-unlock", "no delayed unlock is pending for that window")
+            }
+        }
         Request::ResetClock => {
             if store.windows.iter().any(|w| w.lock != crate::model::Lock::None && w.ends > now) {
                 err("lock-active", "cannot reset the clock while a lock is active or scheduled")
@@ -86,6 +121,7 @@ pub fn handle(
                 clock.reset(wall_ms, mono_ms);
                 store.high_water_ms = wall_ms;
                 store.challenges.clear();
+                store.pending_unlocks.clear();
                 Response::Ok
             }
         }
@@ -98,7 +134,7 @@ pub fn handle(
     if clock.high_water_ms() > store.high_water_ms {
         store.high_water_ms = clock.high_water_ms();
     }
-    resp
+    (resp, expired)
 }
 
 pub fn handle_line(

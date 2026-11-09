@@ -21,7 +21,7 @@ test('JS client and Rust helper agree on the wire format', { skip: exe ? false :
 
   assert.deepEqual(await client.setPartner(valid.publicKey), { type: 'Ok' });
   const now = Date.now();
-  const w = { id: 'w-e2e', starts: now - 3600000, ends: now + 3600000, lock: 'locked', mode: 'block', sites: ['example.com'], apps: [] };
+  const w = { id: 'w-e2e', starts: now - 3600000, ends: now + 3600000, lock: 'locked', mode: 'block', sites: ['example.com'], apps: [], unlock_delay_ms: 86400000 };
   assert.deepEqual(await client.pushWindows([w]), { type: 'Ok' });
   let s = await client.status();
   assert.equal(s.type, 'Status');

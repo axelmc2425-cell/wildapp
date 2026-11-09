@@ -3,6 +3,7 @@ import { openDialog, confirmDialog } from './dialog.js';
 import { chipSummary, formatClock, minutesLeft } from './util.js';
 import { bannerFor, formatCountdown } from '../model.js';
 import { STARTERS } from '../starters.js';
+import { windowIdForBlock, pendingUnlockFor, lockedBlockHolding } from '../lock-logic.js';
 
 const SOON = 'Coming in the next step';
 const RUNNING_MSG = 'This list is in a running block. Stop the block first.';
@@ -10,7 +11,7 @@ const FINISHED = 'That block has already finished.';
 
 /**
  * Renders the Focus Room home view. Returns a cleanup that unsubscribes and stops every timer.
- * deps = { subscribe, openListEditor?, openStartDialog?, mountHelperDetails? }
+ * deps = { subscribe, openListEditor?, openStartDialog?, openPartnerSetup?, openUnlockDialog?, mountHelperDetails? }
  */
 export function mountHome(root, controller, ctx, deps = {}) {
   const now = () => Date.now();
@@ -89,6 +90,12 @@ export function mountHome(root, controller, ctx, deps = {}) {
     render();
   }
 
+  // A started block's own message (e.g. "couldn't confirm the lock") shows in the notes area.
+  function afterStarted(res) {
+    if (res && typeof res.message === 'string' && res.message) local = { text: res.message };
+    afterAction();
+  }
+
   function handleResult(res, ok) {
     if (res && res.ok === false) {
       local = res.message === FINISHED ? null : { text: res.message || 'That did not work.' };
@@ -119,6 +126,7 @@ export function mountHome(root, controller, ctx, deps = {}) {
     };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); custom(); } });
     const body = h('div', {},
+      block.lock === 'locked' ? h('p', { class: 'fr-muted fr-dialog-text' }, 'This block is locked, so extending can only make the lock longer.') : null,
       h('div', { class: 'fr-choices' },
         h('button', { type: 'button', onclick: () => go(15) }, '+15 min'),
         h('button', { type: 'button', onclick: () => go(60) }, '+1 hour')),
@@ -127,6 +135,23 @@ export function mountHome(root, controller, ctx, deps = {}) {
         h('button', { type: 'button', onclick: custom }, 'Extend')),
       err);
     dlg = openD({ title: 'Extend this block', body });
+  }
+
+  function unlockDialog(block) {
+    if (typeof deps.openUnlockDialog !== 'function') return;
+    let d = null;
+    d = deps.openUnlockDialog({
+      controller, block, subscribe: deps.subscribe,
+      onDone: (res) => {
+        afterAction();
+        if (alive && (document.activeElement === document.body || !document.activeElement)) {
+          root.querySelector('[data-fk="start"]:not([disabled])')?.focus();
+        }
+        return res;
+      },
+      onClose: () => { if (d) dialogs.delete(d); },
+    });
+    dialogs.add(d);
   }
 
   function cancelDialog(block) {
@@ -150,20 +175,30 @@ export function mountHome(root, controller, ctx, deps = {}) {
     const t = now();
     const names = block.listNames.join(' + ');
     const running = block.state === 'running';
+    const isLocked = block.lock === 'locked';
+    const helper = state.helper;
+    const pendingAt = isLocked && helper && helper.kind === 'ok' ? pendingUnlockFor(helper.status, windowIdForBlock(block)) : null;
     const cd = h('div', { class: 'fr-big', 'aria-hidden': 'true' });
     const sr = h('div', { class: 'fr-sr', 'aria-live': 'polite' });
     const bar = h('i', {});
     const card = h('div', { class: 'fr-card fr-block' },
       h('div', { class: 'fr-card-top' },
-        h('h3', { class: 'fr-card-title' }, running ? 'Blocking now' : 'Starting soon'),
+        h('span', { class: 'fr-card-heading' },
+          h('h3', { class: 'fr-card-title' }, running ? 'Blocking now' : 'Starting soon'),
+          isLocked ? h('span', { class: 'fr-lock' }, h('span', { 'aria-hidden': 'true' }, '🔒 '), 'Locked') : null),
         h('span', { class: 'fr-pill' }, names)),
       cd, sr,
       h('div', { class: 'fr-bar', role: 'progressbar', 'aria-label': 'Block progress', 'aria-valuemin': '0', 'aria-valuemax': '100' }, bar),
       h('div', { class: 'fr-card-bottom' },
-        h('span', { class: 'fr-muted' }, running ? `ends at ${formatClock(block.ends)}` : `starts at ${formatClock(block.starts)}, ends at ${formatClock(block.ends)}`),
+        h('span', { class: 'fr-muted fr-card-when' }, isLocked
+          ? (running ? `Locked until ${formatClock(block.ends)}` : `starts at ${formatClock(block.starts)}, locked until ${formatClock(block.ends)}`)
+          : (running ? `ends at ${formatClock(block.ends)}` : `starts at ${formatClock(block.starts)}, ends at ${formatClock(block.ends)}`)),
         h('span', { class: 'fr-actions' },
+          isLocked && typeof deps.openUnlockDialog === 'function'
+            ? h('button', { type: 'button', 'data-fk': `unlock-${idx}`, onclick: () => unlockDialog(block) }, 'Unlock early') : null,
           h('button', { type: 'button', 'data-fk': `extend-${idx}`, onclick: () => extendDialog(block) }, 'Extend'),
-          h('button', { type: 'button', class: 'danger', 'data-fk': `cancel-${idx}`, onclick: () => cancelDialog(block) }, 'Cancel'))),
+          isLocked ? null : h('button', { type: 'button', class: 'danger', 'data-fk': `cancel-${idx}`, onclick: () => cancelDialog(block) }, 'Cancel'))),
+      pendingAt != null ? h('p', { class: 'fr-pending', role: 'status' }, `Unlocks at ${formatClock(pendingAt)} unless you cancel`) : null,
       state.syncPending && state.helper.kind !== 'ok' && state.helper.kind !== 'persist-failed' ? h('p', { class: 'fr-muted fr-small' }, 'Saved, not yet enforced.') : null);
     const entry = { block, state: block.state, cd, sr, bar, lastMin: -1 };
     live.push(entry);
@@ -201,7 +236,10 @@ export function mountHome(root, controller, ctx, deps = {}) {
     const title = typeof deps.openStartDialog !== 'function' ? SOON : state.lists.length === 0 ? 'Create a list first' : null;
     return h('button', {
       type: 'button', class: 'primary', 'data-fk': 'start', disabled: !can, title,
-      onclick: () => deps.openStartDialog({ controller, onDone: afterAction }),
+      onclick: () => deps.openStartDialog({
+        controller, onDone: afterStarted, subscribe: deps.subscribe,
+        openPartnerSetup: typeof deps.openPartnerSetup === 'function' ? (o) => deps.openPartnerSetup({ ...o, onDone: (res) => { o.onDone?.(res); afterStarted(res); } }) : undefined,
+      }),
     }, 'Start a block');
   }
 
@@ -213,6 +251,8 @@ export function mountHome(root, controller, ctx, deps = {}) {
 
   function listRow(state, list) {
     const locked = state.blocks.some(b => b.state === 'running' && b.listIds.includes(list.id));
+    const lockedBlock = lockedBlockHolding(state.blocks, list.id);
+    const lockMsg = lockedBlock ? `In a locked block until ${formatClock(lockedBlock.ends)}` : null;
     const items = [...list.sites.map(v => ({ v, app: false })), ...list.apps.map(v => ({ v, app: true }))];
     const { shown, more } = chipSummary(items, 6);
     const editOk = typeof deps.openListEditor === 'function';
@@ -222,15 +262,16 @@ export function mountHome(root, controller, ctx, deps = {}) {
         h('div', { class: 'fr-chips' },
           shown.map(i => chip(i.v, i.app)),
           more > 0 ? h('span', { class: 'fr-chip fr-more' }, `+${more}`) : null,
-          items.length === 0 ? h('span', { class: 'fr-muted fr-small' }, 'Empty list') : null)),
+          items.length === 0 ? h('span', { class: 'fr-muted fr-small' }, 'Empty list') : null),
+        lockMsg ? h('p', { class: 'fr-muted fr-small fr-list-lock' }, h('span', { 'aria-hidden': 'true' }, '🔒 '), lockMsg) : null),
       h('div', { class: 'fr-actions' },
         h('button', {
-          type: 'button', 'data-fk': `edit-${list.id}`, disabled: !editOk, title: editOk ? null : SOON,
+          type: 'button', 'data-fk': `edit-${list.id}`, disabled: !editOk || !!lockedBlock, title: lockMsg || (editOk ? null : SOON),
           'aria-label': `Edit ${list.name}`,
           onclick: () => deps.openListEditor({ controller, list, onDone: afterAction }),
         }, 'Edit'),
         h('button', {
-          type: 'button', class: 'danger', 'data-fk': `delete-${list.id}`, disabled: locked, title: locked ? RUNNING_MSG : null,
+          type: 'button', class: 'danger', 'data-fk': `delete-${list.id}`, disabled: locked, title: lockMsg || (locked ? RUNNING_MSG : null),
           'aria-label': `Delete ${list.name}`,
           onclick: () => confirmD({
             title: 'Delete this list?',
@@ -286,8 +327,8 @@ export function mountHome(root, controller, ctx, deps = {}) {
     const blocks = state.blocks.filter(b => b.state !== 'finished' && b.ends > t);
     const sig = JSON.stringify([
       bannerFor(state.helper), state.syncPending, state.notice, local, listMsg,
-      state.loaded, state.lists, blocks.map(b => [b.key, b.state, b.listNames]),
-      typeof deps.openListEditor, typeof deps.openStartDialog,
+      state.loaded, state.lists, blocks.map(b => [b.key, b.state, b.listNames, b.lock, b.lock === 'locked' && state.helper?.kind === 'ok' ? pendingUnlockFor(state.helper.status, windowIdForBlock(b)) : null]),
+      typeof deps.openListEditor, typeof deps.openStartDialog, typeof deps.openPartnerSetup, typeof deps.openUnlockDialog,
     ]);
     renderBanner(state);
     mountDetails();

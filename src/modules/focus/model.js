@@ -46,10 +46,12 @@ export function groupSessions(sessions, lists, nowMs) {
   for (const s of Array.isArray(sessions) ? sessions : []) {
     if (!s || typeof s.starts !== 'number' || typeof s.ends !== 'number') continue;
     if (!Number.isFinite(s.starts) || !Number.isFinite(s.ends) || s.ends <= s.starts) continue;
-    const gk = `${s.starts}:${s.ends}:${s.lock ?? 'none'}`;
+    const locked = s.lock === 'locked';
+    const delay = locked && Number.isFinite(s.unlockDelayMs) ? s.unlockDelayMs : null;
+    const gk = `${s.starts}:${s.ends}:${s.lock ?? 'none'}` + (locked ? `:${delay}` : '');
     let g = groups.get(gk);
     if (!g) {
-      g = { key: `${s.starts}:${s.ends}:${s.lock ?? 'none'}`, ids: [], listIds: [], listNames: [], starts: s.starts, ends: s.ends };
+      g = { key: gk, lock: s.lock ?? 'none', unlockDelayMs: delay, ids: [], listIds: [], listNames: [], starts: s.starts, ends: s.ends };
       groups.set(gk, g);
     }
     g.ids.push(s.id);
@@ -180,8 +182,12 @@ export function describePushProblem(err, skipped, listNames) {
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
-/** @param {Status | null} status */
-export function detailRows(status) {
+/**
+ * @param {Status | null} status
+ * @param {{ partnerName?: string|null, formatTime?: (ms: number) => string, labelFor?: (windowId: string) => string }} [opts]
+ *   partnerName: shown in the Partner key row; formatTime and labelFor turn a pending unlock into a line.
+ */
+export function detailRows(status, opts) {
   if (!status) {
     return [
       { label: 'Helper', value: 'Not reachable' },
@@ -201,11 +207,21 @@ export function detailRows(status) {
     const dt = new Date(status.now_ms);
     if (!Number.isNaN(dt.getTime())) clock = dt.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
   }
+  const o = opts || {};
+  const name = typeof o.partnerName === 'string' ? o.partnerName.trim() : '';
+  const fmt = typeof o.formatTime === 'function' ? o.formatTime : (ms) => new Date(ms).toISOString();
+  const pending = (Array.isArray(status.pending_unlocks) ? status.pending_unlocks : [])
+    .filter((p) => p && typeof p.window_id === 'string' && Number.isFinite(p.unlock_at));
+  const pendingLines = pending.map((p) => {
+    const label = typeof o.labelFor === 'function' ? o.labelFor(p.window_id) : '';
+    return `${label || p.window_id} unlocks at ${fmt(p.unlock_at)}`;
+  });
   return [
     { label: 'Helper', value: 'Running' },
-    { label: 'Partner key', value: status.partner_set ? 'set' : 'not set' },
+    { label: 'Partner key', value: status.partner_set ? (name ? `${name} (key set)` : 'set') : 'not set' },
     { label: 'Blocking now', value: `${plural(sites, 'site', 'sites')}, ${plural(apps, 'app', 'apps')}` },
-    { label: 'Windows held', value: String(Array.isArray(status.windows) ? status.windows.length : 0) },
+    { label: 'Windows held', value: String(Array.isArray(status.windows) ? status.windows.filter((w) => !(w && Number.isFinite(w.ends) && Number.isFinite(status.now_ms) && w.ends <= status.now_ms)).length : 0) },
+    ...(pendingLines.length ? [{ label: 'Pending unlocks', value: pendingLines.join('; '), lines: pendingLines }] : []),
     { label: 'Warnings', value: warnings.length ? warnings.join('; ') : 'None', ...(warnings.length ? { lines: warnings.map((w) => String(w)) } : {}) },
     { label: 'Helper clock', value: clock },
   ];
