@@ -46,10 +46,12 @@ export function groupSessions(sessions, lists, nowMs) {
   for (const s of Array.isArray(sessions) ? sessions : []) {
     if (!s || typeof s.starts !== 'number' || typeof s.ends !== 'number') continue;
     if (!Number.isFinite(s.starts) || !Number.isFinite(s.ends) || s.ends <= s.starts) continue;
-    const gk = `${s.starts}:${s.ends}:${s.lock ?? 'none'}`;
+    const locked = s.lock === 'locked';
+    const delay = locked && Number.isFinite(s.unlockDelayMs) ? s.unlockDelayMs : null;
+    const gk = `${s.starts}:${s.ends}:${s.lock ?? 'none'}` + (locked ? `:${delay}` : '');
     let g = groups.get(gk);
     if (!g) {
-      g = { key: `${s.starts}:${s.ends}:${s.lock ?? 'none'}`, ids: [], listIds: [], listNames: [], starts: s.starts, ends: s.ends };
+      g = { key: gk, lock: s.lock ?? 'none', unlockDelayMs: delay, ids: [], listIds: [], listNames: [], starts: s.starts, ends: s.ends };
       groups.set(gk, g);
     }
     g.ids.push(s.id);

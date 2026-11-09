@@ -175,3 +175,23 @@ test('detailRows lines carry each warning verbatim', () => {
   assert.equal(detailRows({ ...st, warnings: [] }).find((x) => x.label === 'Warnings').value, 'None');
   assert.equal(detailRows(null).find((x) => x.label === 'Warnings').lines, undefined);
 });
+
+test('groupSessions: locked blocks carry lock and delay; delay splits the group', () => {
+  const lists = [{ id: 1, name: 'A' }, { id: 2, name: 'B' }];
+  const b = groupSessions([
+    { id: 1, listId: 1, starts: 0, ends: 100, lock: 'locked', unlockDelayMs: 3600000 },
+    { id: 2, listId: 2, starts: 0, ends: 100, lock: 'locked', unlockDelayMs: 3600000 },
+    { id: 3, listId: 2, starts: 0, ends: 100, lock: 'locked', unlockDelayMs: 7200000 },
+    { id: 4, listId: 1, starts: 0, ends: 100 },
+  ], lists, 50);
+  assert.equal(b.length, 3);
+  const same = b.find((x) => x.ids.length === 2);
+  assert.equal(same.lock, 'locked');
+  assert.equal(same.unlockDelayMs, 3600000);
+  assert.deepEqual(same.listIds, [1, 2]);
+  assert.ok(b.some((x) => x.lock === 'locked' && x.unlockDelayMs === 7200000));
+  const normal = b.find((x) => x.key === '0:100:none');
+  assert.ok(normal);
+  assert.equal(normal.lock, 'none');
+  assert.equal(normal.unlockDelayMs, null);
+});

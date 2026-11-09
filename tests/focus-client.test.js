@@ -65,3 +65,14 @@ test('resetClock sends ResetClock', async () => {
   const e = fake('{"type":"Error","code":"lock-active","message":"nope"}');
   await assert.rejects(e.client.resetClock(), (x) => x.code === 'lock-active');
 });
+
+test('delayed unlock methods send exact JSON', async () => {
+  let f = fake('{"type":"UnlockPending","unlock_at":99}');
+  assert.deepEqual(await f.client.requestDelayedUnlock('w1'), { type: 'UnlockPending', unlock_at: 99 });
+  assert.equal(f.sent[0], '{"type":"RequestDelayedUnlock","window_id":"w1"}');
+  f = fake('{"type":"Ok"}');
+  assert.deepEqual(await f.client.cancelDelayedUnlock('w1'), { type: 'Ok' });
+  assert.equal(f.sent[0], '{"type":"CancelDelayedUnlock","window_id":"w1"}');
+  f = fake('{"type":"Error","code":"not-delayable","message":"nope"}');
+  await assert.rejects(f.client.requestDelayedUnlock('w1'), (e) => e.code === 'not-delayable');
+});
