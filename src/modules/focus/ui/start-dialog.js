@@ -44,7 +44,7 @@ export function openStartDialog({ controller, onDone } = {}) {
     refresh();
   }
 
-  customInput.addEventListener('input', () => { if (customInput.value.trim() !== '') preset = null; refresh(); });
+  customInput.addEventListener('input', () => { refresh(); });
   customInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if (!startBtn.disabled) go(); } });
   cancelBtn.addEventListener('click', () => dlg.close());
 
@@ -94,5 +94,5 @@ export function openStartDialog({ controller, onDone } = {}) {
     summary, startErr,
     h('div', { class: 'fr-dialog-actions' }, cancelBtn, startBtn));
   refresh();
-  dlg = openDialog({ title: 'Start a block', body });
+  dlg = openDialog({ title: 'Start a block', body, canClose: () => !busy });
 }

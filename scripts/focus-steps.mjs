@@ -296,6 +296,14 @@ async function startScenarios(page, shot, h) {
   await page.fill(custom, '90');
   ok(await page.evaluate(() => !document.querySelector('.fr-durchip[aria-pressed=true]')), 'typing custom unpresses the chips');
   ok((await summary()) !== s25, `summary tracks custom (${s25} -> ${await summary()})`);
+  // dead-end regression: chip, custom, clear custom -> the chip is pressed again
+  await page.click('.fr-durchip:has-text("1 h")');
+  const s60 = await summary();
+  await page.fill(custom, '9');
+  ok(await page.evaluate(() => !document.querySelector('.fr-durchip[aria-pressed=true]')) && (await summary()) !== s60, `custom 9 un-presses chips and updates summary (${await summary()})`);
+  await page.focus(custom); await page.keyboard.press('Control+a'); await page.keyboard.press('Backspace');
+  ok(await page.evaluate(() => document.querySelector('.fr-durchip[aria-pressed=true]')?.textContent) === '1 h', '1 h chip pressed again after clearing custom');
+  ok((await summary()) === s60 && !(await startDisabled()), `summary back (${await summary()}) and Start enabled`);
   await page.click('.fr-durchip:has-text("25 min")');
   await shot('focus-11-start-dialog');
 
@@ -385,6 +393,73 @@ async function startScenarios(page, shot, h) {
   ok(true, 'stop note gone after Retry');
   ok((await windowsOf(page)).length === 0, 'helper no longer lists the window');
 
+  await pendingScenarios(page, shot, h);
+
   // clean up
   await h.db.run('DELETE FROM focus_items'); await h.db.run('DELETE FROM focus_sessions'); await h.db.run('DELETE FROM focus_lists');
+}
+
+// ---- fix round 1: Esc/overlay are inert while a request is pending ----
+async function pendingScenarios(page, shot, h) {
+  const closed = () => page.waitForFunction(() => !document.querySelector('.fr-dialog'));
+  const open = () => page.evaluate(() => !!document.querySelector('.fr-dialog'));
+  await h.db.run('DELETE FROM focus_sessions');
+  await page.reload();
+  await page.waitForSelector('.fr-banner.fr-ok', { timeout: 8000 });
+  await page.waitForFunction(() => document.querySelectorAll('.fr-block').length === 0);
+
+  // (a) Esc while Start is pending
+  h.setHelperDelay(700);
+  await page.click('button:has-text("Start a block")');
+  await page.waitForSelector('.fr-dialog .fr-start');
+  await page.locator('.fr-dialog .fr-checkrow:has-text("Beta") input').check();
+  await page.click('.fr-dialog button.primary');
+  await page.keyboard.press('Escape');
+  await page.mouse.click(5, 5); // overlay click
+  ok(await open(), 'Esc and overlay click are inert while Start is pending');
+  await closed();
+  await page.waitForSelector('.fr-block');
+  ok(true, 'dialog closed after the request settled and the block card is shown');
+  h.setHelperDelay(0);
+  await page.click('.fr-block button:has-text("Cancel")');
+  await page.click('.fr-dialog button:has-text("Stop blocking")');
+  await closed();
+  await page.waitForFunction(() => document.querySelectorAll('.fr-block').length === 0);
+
+  // (b) failure while pending: the message lands in the still-open dialog
+  await page.click('button:has-text("Start a block")');
+  await page.waitForSelector('.fr-dialog .fr-start');
+  await page.locator('.fr-dialog .fr-checkrow:has-text("Beta") input').check();
+  await h.db.run("DELETE FROM focus_items WHERE list_id = (SELECT id FROM focus_lists WHERE name = 'Beta')");
+  await h.db.run("DELETE FROM focus_lists WHERE name = 'Beta'");
+  await page.evaluate(() => {
+    document.querySelector('.fr-dialog button.primary').click();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  });
+  await page.waitForFunction(() => document.querySelector('.fr-dialog')?.innerText.includes('One of those lists no longer exists.'));
+  ok(await open(), 'failure message "One of those lists no longer exists." is visible in the still-open dialog');
+  ok(await page.evaluate(() => !document.querySelector('.fr-dialog button.primary').disabled), 'inputs re-enabled after the failure');
+  await page.keyboard.press('Escape');
+  await closed();
+  ok(true, 'Esc closes the dialog once idle');
+
+  // (c) list editor: Esc while a save is pending
+  const before = (await h.db.all('SELECT id FROM focus_lists')).length;
+  h.setHelperDelay(700);
+  await page.click('button:has-text("New list")');
+  await page.waitForSelector('.fr-dialog .fr-editor');
+  await page.fill('.fr-dialog input[id^="fr-ed-name-"]', 'Gamma');
+  await page.fill('.fr-dialog input[id^="fr-ed-site-"]', 'gamma.com'); await page.keyboard.press('Enter');
+  await page.click('.fr-dialog button.primary');
+  await page.keyboard.press('Escape');
+  ok(await open(), 'Esc is inert while the list save is pending');
+  await closed();
+  h.setHelperDelay(0);
+  await page.waitForSelector('.fr-list:has-text("Gamma")');
+  ok((await h.db.all('SELECT id FROM focus_lists')).length === before + 1, 'the list was saved exactly once');
+  await page.click('button:has-text("New list")');
+  await page.waitForSelector('.fr-dialog .fr-editor');
+  await page.keyboard.press('Escape');
+  await closed();
+  ok(true, 'plain Esc still closes an idle editor');
 }

@@ -21,6 +21,7 @@ const stepsFile = stepsIdx >= 0 ? resolve(args[stepsIdx + 1]) : null;
 const helperIdx = args.indexOf('--helper');
 const helperBin = helperIdx >= 0 ? resolve(args[helperIdx + 1]) : null;
 let helperDown = args.includes('--helper-down');
+let helperDelay = 0; // steps can set this to stall every helper call
 let warningsOverride = null; // steps can set this to rewrite Status.warnings in helper replies
 const root = join(fileURLToPath(import.meta.url), '..', '..', 'src');
 
@@ -94,6 +95,7 @@ await page.exposeFunction('__db', async (cmd, a) => {
   if (cmd === 'focus_helper_call') {
     if (helperDown) throw new Error('The Focus Room helper service is not running');
     if (!bridge) throw new Error('Focus Room blocking is only available on Windows');
+    if (helperDelay > 0) await new Promise(r => setTimeout(r, helperDelay));
     const reply = await bridge.call(a.request);
     if (warningsOverride) {
       try {
@@ -122,7 +124,7 @@ try {
   await page.waitForSelector('#modlist .navitem');
   if (stepsFile) {
     const steps = await import(pathToFileURL(stepsFile).href);
-    await steps.default(page, shot, { db, importDir, exportDir, bridge, setHelperDown: (v) => { helperDown = !!v; }, setWarnings: (arr) => { warningsOverride = Array.isArray(arr) ? arr : null; } });
+    await steps.default(page, shot, { db, importDir, exportDir, bridge, setHelperDown: (v) => { helperDown = !!v; }, setHelperDelay: (ms) => { helperDelay = Number(ms) || 0; }, setWarnings: (arr) => { warningsOverride = Array.isArray(arr) ? arr : null; } });
   } else {
     await shot('home');
     await page.goto(url + '#/settings');

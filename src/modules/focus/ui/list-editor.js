@@ -118,5 +118,5 @@ export function openListEditor({ controller, list, preset, onDone } = {}) {
     sites.field, apps.field, itemsErr, saveErrs,
     h('div', { class: 'fr-dialog-actions' }, cancelBtn, saveBtn));
   renderAll();
-  dlg = openDialog({ title: list ? 'Edit list' : 'New list', body });
+  dlg = openDialog({ title: list ? 'Edit list' : 'New list', body, canClose: () => !saving });
 }
