@@ -98,6 +98,8 @@ export default async function steps(page, shot, h) {
   await page.waitForSelector('.fr-block');
   ok((await page.locator('.fr-banner').count()) === 1, 'exactly one banner after navigating back');
   await page.waitForTimeout(1500);
+
+  await startScenarios(page, shot, h);
 }
 
 // ---- Task 8: list editor scenarios (start from the first-run state, leave no lists behind) ----
@@ -243,4 +245,146 @@ async function editorScenarios(page, shot, h) {
   await h.db.run('DELETE FROM focus_items'); await h.db.run('DELETE FROM focus_sessions'); await h.db.run('DELETE FROM focus_lists');
   await page.reload();
   await page.waitForSelector('.fr-welcome');
+}
+
+// ---- Task 9: start dialog and block actions (fresh state, leaves nothing behind) ----
+const getStatus = (page) => page.evaluate(async () => JSON.parse(await window.__TAURI__.core.invoke('focus_helper_call', { request: JSON.stringify({ type: 'GetStatus' }) })));
+const blockedSites = async (page) => { const s = await getStatus(page); return s.decision?.blockSites ?? []; };
+const windowsOf = async (page) => { const s = await getStatus(page); return s.windows ?? []; };
+
+async function startScenarios(page, shot, h) {
+  const closed = () => page.waitForFunction(() => !document.querySelector('.fr-dialog'));
+  const startDisabled = () => page.evaluate(() => document.querySelector('.fr-dialog button.primary').disabled);
+  const summary = () => text(page, '.fr-st-summary');
+  const derr = () => page.evaluate(() => { const e = document.querySelector('.fr-dialog .fr-err:not([hidden])'); return e ? e.textContent : ''; });
+  const MSG = 'Enter a whole number of minutes from 1 to 1440.';
+  const custom = '.fr-dialog input[id^="fr-st-custom-"]';
+
+  // fresh state: no lists, no sessions; wait until the helper agrees nothing is blocked
+  await h.db.run('DELETE FROM focus_items'); await h.db.run('DELETE FROM focus_sessions'); await h.db.run('DELETE FROM focus_lists');
+  const la = await saveList(h.db, { name: 'Alpha <b>list</b>', sites: ['alpha-one.com', 'alpha-two.com'], apps: ['alpha.exe'] });
+  const lb = await saveList(h.db, { name: 'Beta', sites: ['beta-one.com'], apps: [] });
+  ok(la.ok && lb.ok, 'two lists seeded');
+  await page.reload();
+  await page.waitForSelector('.fr-list');
+  await page.waitForSelector('.fr-banner.fr-ok', { timeout: 8000 });
+  await page.click('button:has-text("Start a block")');
+  await page.waitForSelector('.fr-dialog .fr-start');
+  ok(await page.evaluate(() => document.querySelector('.fr-dialog-title').textContent) === 'Start a block', 'dialog title');
+  ok((await page.locator('.fr-dialog input[type=checkbox]').count()) === 2, 'one checkbox per list');
+  ok((await page.locator('.fr-dialog input[type=checkbox]:checked').count()) === 0, 'no list pre-checked');
+  ok(await startDisabled(), 'Start disabled with nothing checked');
+  ok(await page.evaluate(() => !document.querySelector('.fr-dialog b') && document.querySelector('.fr-checkname').textContent.includes('<b>')), 'hostile list name is text');
+  const t0 = await text(page, '.fr-dialog');
+  ok(t0.includes('2 sites, 1 app') && t0.includes('1 site'), 'list summaries shown');
+  ok(t0.includes('Normal: you can cancel any time.') && t0.includes('🔒 Locked, coming soon') && !t0.includes('Frozen'), 'normal + locked-coming-soon, no Frozen');
+  ok(await page.evaluate(() => document.querySelector('.fr-locked').getAttribute('aria-disabled') === 'true' && document.querySelector('.fr-locked').tabIndex === -1), 'locked option is aria-disabled and not focusable');
+  await page.locator('.fr-dialog input[type=checkbox]').first().check();
+  ok(!(await startDisabled()), 'Start enabled after checking a list');
+  ok((await summary()).includes('Ends at'), `summary says Ends at (got "${await summary()}")`);
+  for (const bad of ['abc', '1441', '0']) {
+    await page.fill(custom, bad);
+    ok((await derr()) === MSG && (await startDisabled()), `custom "${bad}" -> inline error and Start disabled`);
+  }
+  await page.fill(custom, 'abc');
+  await shot('focus-11-start-dialog-error');
+  await page.click('.fr-durchip:has-text("25 min")');
+  ok((await page.inputValue(custom)) === '' && (await derr()) === '', '25 min chip clears the custom input and the error');
+  ok(await page.evaluate(() => document.querySelector('.fr-durchip[aria-pressed=true]').textContent) === '25 min', '25 min chip pressed');
+  const s25 = await summary();
+  ok(s25.includes('Ends at'), `summary after 25 min chip: ${s25}`);
+  await page.fill(custom, '90');
+  ok(await page.evaluate(() => !document.querySelector('.fr-durchip[aria-pressed=true]')), 'typing custom unpresses the chips');
+  ok((await summary()) !== s25, `summary tracks custom (${s25} -> ${await summary()})`);
+  await page.click('.fr-durchip:has-text("25 min")');
+  await shot('focus-11-start-dialog');
+
+  // double click Start: exactly one block
+  await page.evaluate(() => { const b = document.querySelector('.fr-dialog button.primary'); b.click(); b.click(); });
+  await closed();
+  await page.waitForSelector('.fr-block');
+  ok((await page.locator('.fr-block').count()) === 1, 'double click created exactly one block card');
+  const cd = await page.evaluate(() => document.querySelector('.fr-big').textContent);
+  ok(/^(24|25) min left$/.test(cd), `countdown reads 24/25 min left (got "${cd}")`);
+  let bs = await blockedSites(page);
+  ok(bs.includes('alpha-one.com') && bs.includes('alpha-two.com') && !bs.includes('beta-one.com'), `helper blocks Alpha's sites (${bs.join(',')})`);
+  ok(await page.evaluate(() => document.activeElement !== document.body), 'focus is not lost to <body> after the dialog closes');
+  await shot('focus-11b-running');
+
+  // (b) extend by keyboard
+  const ends0 = (await windowsOf(page))[0].ends;
+  await page.click('.fr-block button:has-text("Extend")');
+  await page.waitForSelector('.fr-dialog');
+  await page.focus('.fr-choices button');
+  await page.keyboard.press('Enter');
+  await closed();
+  await page.waitForFunction(() => /^(39|40) min left$/.test(document.querySelector('.fr-big')?.textContent));
+  ok(true, 'countdown grew to about 40 min');
+  const ends1 = (await windowsOf(page))[0].ends;
+  ok(Math.abs((ends1 - ends0) - 15 * 60000) <= 2000, `helper window end moved by 15 min (${ends0} -> ${ends1})`);
+
+  // (c) second block on the other list
+  await page.click('button:has-text("Start a block")');
+  await page.waitForSelector('.fr-dialog .fr-start');
+  await page.locator('.fr-dialog .fr-checkrow:has-text("Beta") input').check();
+  await page.click('.fr-dialog button.primary');
+  await closed();
+  await page.waitForFunction(() => document.querySelectorAll('.fr-block').length === 2);
+  bs = await blockedSites(page);
+  ok(bs.includes('alpha-one.com') && bs.includes('beta-one.com'), `both lists blocked (${bs.join(',')})`);
+  await shot('focus-12-two-blocks');
+
+  // (d) cancel one, then the other
+  const cancelCard = async (name) => {
+    await page.click(`.fr-block:has(.fr-pill:text-is("${name}")) button:has-text("Cancel")`);
+    await page.waitForSelector('.fr-dialog');
+    await page.click('.fr-dialog button:has-text("Stop blocking")');
+    await closed();
+  };
+  await cancelCard('Beta');
+  await page.waitForFunction(() => document.querySelectorAll('.fr-block').length === 1);
+  bs = await blockedSites(page);
+  ok(!bs.includes('beta-one.com') && bs.includes('alpha-one.com'), `Beta released, Alpha still blocked (${bs.join(',')})`);
+  await cancelCard('Alpha <b>list</b>');
+  await page.waitForFunction(() => document.querySelectorAll('.fr-block').length === 0);
+  bs = await blockedSites(page);
+  ok(bs.length === 0, 'no sites blocked after cancelling both');
+
+  // (e) start while the helper is down
+  h.setHelperDown(true);
+  await page.click('button:has-text("Start a block")');
+  await page.waitForSelector('.fr-dialog .fr-start');
+  await page.locator('.fr-dialog .fr-checkrow:has-text("Beta") input').check();
+  await page.click('.fr-dialog button.primary');
+  await closed();
+  await page.waitForSelector('.fr-block');
+  await page.waitForSelector('.fr-banner.fr-error', { timeout: 8000 });
+  ok((await text(page, '.fr-block')).includes('Saved, not yet enforced.'), 'card says "Saved, not yet enforced."');
+  await shot('focus-12-start-helper-down');
+  h.setHelperDown(false);
+  await page.click('.fr-banner .fr-retry');
+  await page.waitForSelector('.fr-banner.fr-ok', { timeout: 8000 });
+  await page.waitForFunction(() => !document.querySelector('.fr-block')?.innerText.includes('not yet enforced'));
+  ok(true, 'notice gone and banner green after Retry');
+  bs = await blockedSites(page);
+  ok(bs.includes('beta-one.com'), 'helper now lists the block');
+  ok((await windowsOf(page)).length === 1, 'pushed exactly once: windows.length === 1');
+
+  // (f) cancel while helper down
+  h.setHelperDown(true);
+  await page.click('.fr-block button:has-text("Cancel")');
+  await page.waitForSelector('.fr-dialog');
+  await page.click('.fr-dialog button:has-text("Stop blocking")');
+  await closed();
+  await page.waitForFunction(() => document.querySelector('.fr-notes')?.innerText.includes("Couldn't tell the helper to stop. It will stop by"));
+  ok(await page.evaluate(() => !!document.querySelector('.fr-notes .fr-retry')), 'note has a Retry button');
+  await shot('focus-12-cancel-helper-down');
+  h.setHelperDown(false);
+  await page.click('.fr-notes .fr-retry');
+  await page.waitForFunction(() => !document.querySelector('.fr-notes')?.innerText.includes("Couldn't tell"), null, { timeout: 8000 });
+  ok(true, 'stop note gone after Retry');
+  ok((await windowsOf(page)).length === 0, 'helper no longer lists the window');
+
+  // clean up
+  await h.db.run('DELETE FROM focus_items'); await h.db.run('DELETE FROM focus_sessions'); await h.db.run('DELETE FROM focus_lists');
 }

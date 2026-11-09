@@ -4,6 +4,7 @@ import { createHelperClient, createTauriHelperCall } from './helper-client.js';
 import { makeTzOffsetAt } from './tz.js';
 import { mountHome } from './ui/home.js';
 import { openListEditor } from './ui/list-editor.js';
+import { openStartDialog } from './ui/start-dialog.js';
 
 const listeners = new Set();
 let controller = null;
@@ -48,6 +49,6 @@ registerModule({
     Promise.resolve(getController(ctx).load()).catch(() => {});
   },
   render(root, ctx) {
-    return mountHome(root, getController(ctx), ctx, { subscribe, openListEditor });
+    return mountHome(root, getController(ctx), ctx, { subscribe, openListEditor, openStartDialog });
   },
 });

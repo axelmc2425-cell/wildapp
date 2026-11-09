@@ -183,3 +183,24 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-chipx:hover, .fr-chipx:focus-visible { color: var(--text); background: var(--border); }
 .fr-errlist { margin: 0; padding-left: 18px; overflow-wrap: anywhere; max-height: 110px; overflow-y: auto; }
 .fr-editor > .fr-err { margin: 0; }
+
+/* ---- Focus Room: start dialog ---- */
+.fr-dialog:has(.fr-start) { width: min(480px, 100%); }
+.fr-start { display: flex; flex-direction: column; gap: 14px; }
+.fr-fieldlabel { font-weight: 600; font-size: 13px; }
+.fr-checks { display: flex; flex-direction: column; gap: 6px; max-height: 200px; overflow-y: auto; }
+.fr-checkrow { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; min-width: 0; }
+.fr-checkrow:has(input:checked) { border-color: var(--accent); background: var(--code); }
+.fr-checkrow:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fr-checktext { display: flex; flex-direction: column; min-width: 0; }
+.fr-checkname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fr-durrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.fr-durchip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.fr-durrow input.fr-num { width: 80px; flex: none; }
+.fr-customlabel { margin-left: 6px; font-size: 13px; }
+.fr-num[aria-invalid="true"] { border-color: var(--danger); }
+.fr-strict { display: flex; flex-direction: column; gap: 6px; }
+.fr-strictopt { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+.fr-strictopt.fr-locked { flex-direction: row; background: var(--fr-muted-bg); border-style: dashed; color: var(--muted); opacity: .75; cursor: not-allowed; }
+.fr-st-summary { margin: 0; font-weight: 600; min-height: 1.4em; }
+.fr-start > .fr-err { margin: 0; }
