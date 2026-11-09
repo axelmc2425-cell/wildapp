@@ -49,12 +49,28 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
     sessions = await store.listSessions(db);
   }
 
+  // Sequence guard: a status result is applied only if nothing newer decided the helper state since
+  // it started, and an ok status never paints over an unsent (syncPending) block.
+  let seq = 0;
+  const STALE_NOTICE = 'Saved, but the list on screen may be out of date. Reopen the Focus Room to refresh.';
+  async function reloadSafe() {
+    try { await reload(); return true; } catch { return false; }
+  }
+  async function doResyncAfter(reloaded) {
+    const ok = await doResync();
+    if (!reloaded && notice === null) { notice = STALE_NOTICE; changed(); }
+    return ok;
+  }
+
   async function refreshStatus() {
+    const mine = ++seq;
     try {
       const status = await client.status();
-      helper = { kind: 'ok', status };
+      if (mine === seq && !syncPending) helper = { kind: 'ok', status };
     } catch (err) {
-      try { helper = classifyHelperFailure(err); } catch { helper = { kind: 'unknown', message: 'Unknown error' }; }
+      if (mine === seq) {
+        try { helper = classifyHelperFailure(err); } catch { helper = { kind: 'unknown', message: 'Unknown error' }; }
+      }
     }
     changed();
   }
@@ -70,6 +86,7 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
       return true;
     } catch (err) {
       syncPending = true;
+      seq++;
       try { helper = classifyHelperFailure(err); } catch { helper = { kind: 'unknown', message: 'Unknown error' }; }
       try {
         notice = err && PUSH_REJECTION_CODES.has(err.code)
@@ -152,12 +169,12 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
         }
         const starts = now();
         await store.createSessions(db, { listIds: ids, starts, ends: starts + d.minutes * MIN });
-        await reload();
       } catch (e) {
         return dbFail(e);
       }
+      const reloaded = await reloadSafe();
       changed();
-      await doResync();
+      await doResyncAfter(reloaded);
       return { ok: true };
     });
   }
@@ -179,12 +196,12 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
         const cap = block.starts + MAX_MINUTES * MIN;
         if (block.ends >= cap) return { ok: false, message: 'A block can be at most 24 hours long.' };
         await store.setSessionsEnd(db, block.ids, Math.min(block.ends + addMinutes * MIN, cap));
-        await reload();
       } catch (e) {
         return dbFail(e);
       }
+      const reloaded = await reloadSafe();
       changed();
-      await doResync();
+      await doResyncAfter(reloaded);
       return { ok: true };
     });
   }
@@ -196,12 +213,12 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
         block = await findLiveBlock(key);
         if (!block) return { ok: false, message: FINISHED };
         await store.deleteSessions(db, block.ids);
-        await reload();
       } catch (e) {
         return dbFail(e);
       }
+      const reloaded = await reloadSafe();
       changed();
-      const ok = await doResync();
+      const ok = await doResyncAfter(reloaded);
       return ok ? { ok: true, helperStopped: true } : { ok: true, helperStopped: false, enforcedUntil: block.ends };
     });
   }

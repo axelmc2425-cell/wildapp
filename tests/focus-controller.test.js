@@ -340,3 +340,90 @@ test('createUnavailableClient rejects with code unreachable', async () => {
   assert.equal(c2.state.syncPending, true);
   void ctl;
 });
+
+// Fix round 1: reload failure after a successful write must not hide the write.
+function breakReloadAfterWrite(db) {
+  let armed = false;
+  for (const m of ['batch', 'run']) {
+    const orig = db[m].bind(db);
+    db[m] = async (...a) => { const r = await orig(...a); armed = true; return r; };
+  }
+  const all = db.all.bind(db);
+  db.all = async (sql, ...a) => {
+    if (armed && /name, mode FROM focus_lists/.test(sql)) throw new Error('read failed');
+    return all(sql, ...a);
+  };
+  return { arm: () => { armed = false; } };
+}
+
+test('startBlock: reload failing after the write still resyncs, returns ok and sets a stale notice', async () => {
+  const { ctl, calls, db } = await setup();
+  const a = await ctl.saveList(list('A'));
+  const h = breakReloadAfterWrite(db); h.arm();
+  const before = calls.pushes.length;
+  assert.deepEqual(await ctl.startBlock({ listIds: [a.id], minutes: 20 }), { ok: true });
+  assert.equal((await db.all('SELECT id FROM focus_sessions')).length, 1);
+  assert.equal(calls.pushes.length, before + 1);
+  assert.equal(last(calls).length, 1);
+  assert.match(ctl.state.notice, /^Saved, but the list on screen may be out of date/);
+});
+
+test('extendBlock: reload failing after the write still resyncs and returns ok', async () => {
+  const { ctl, calls, db } = await setup();
+  const a = await ctl.saveList(list('A'));
+  await ctl.startBlock({ listIds: [a.id], minutes: 20 });
+  const key = ctl.state.blocks[0].key;
+  breakReloadAfterWrite(db).arm();
+  const before = calls.pushes.length;
+  assert.deepEqual(await ctl.extendBlock(key, 10), { ok: true });
+  assert.equal((await db.all('SELECT ends FROM focus_sessions'))[0].ends, T0 + 30 * MIN);
+  assert.equal(calls.pushes.length, before + 1);
+  assert.equal(last(calls)[0].ends, T0 + 30 * MIN);
+  assert.match(ctl.state.notice, /out of date/);
+});
+
+test('cancelBlock: reload failing after the delete still resyncs; helperStopped logic intact', async () => {
+  for (const down of [false, true]) {
+    const { ctl, calls, db, client } = await setup();
+    const a = await ctl.saveList(list('A'));
+    await ctl.startBlock({ listIds: [a.id], minutes: 20 });
+    const key = ctl.state.blocks[0].key;
+    breakReloadAfterWrite(db).arm();
+    if (down) client.fail = mkErr('unreachable', 'The Focus Room helper is not running');
+    const before = calls.pushes.length;
+    const r = await ctl.cancelBlock(key);
+    assert.equal((await db.all('SELECT id FROM focus_sessions')).length, 0);
+    if (down) {
+      assert.deepEqual(r, { ok: true, helperStopped: false, enforcedUntil: T0 + 20 * MIN });
+      assert.equal(ctl.state.syncPending, true);
+    } else {
+      assert.deepEqual(r, { ok: true, helperStopped: true });
+      assert.equal(calls.pushes.length, before + 1);
+      assert.deepEqual(last(calls), []);
+      assert.match(ctl.state.notice, /out of date/);
+    }
+  }
+});
+
+test('a slow status() that resolves after a failed push does not paint the banner green', async () => {
+  const { ctl, client } = await setup();
+  let release;
+  const gate = new Promise(r => { release = r; });
+  client.status = async () => { await gate; return STATUS; };
+  const slow = ctl.refreshStatus();
+  client.fail = mkErr('unreachable', 'The Focus Room helper is not running');
+  await ctl.resync();
+  assert.equal(ctl.state.helper.kind, 'not-running');
+  release();
+  await slow;
+  assert.equal(ctl.state.helper.kind, 'not-running');
+  assert.equal(ctl.state.syncPending, true);
+});
+
+test('an ok status is not applied while syncPending even if it is the newest', async () => {
+  const { ctl, client } = await setup();
+  client.fail = mkErr('unreachable', 'The Focus Room helper is not running');
+  await ctl.resync();
+  await ctl.refreshStatus();
+  assert.equal(ctl.state.helper.kind, 'not-running');
+});
