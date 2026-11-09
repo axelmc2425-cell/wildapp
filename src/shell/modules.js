@@ -17,3 +17,15 @@ export function listModules() {
 export function getModule(id) {
   return registry.get(id) || null;
 }
+
+/** Runs every module's optional onStart(ctx) in module order; one failure never stops the rest. */
+export async function runStartHooks(ctx) {
+  for (const m of listModules()) {
+    if (typeof m.onStart !== 'function') continue;
+    try {
+      await m.onStart(ctx);
+    } catch (e) {
+      console.error('module start hook failed: ' + m.id, e);
+    }
+  }
+}

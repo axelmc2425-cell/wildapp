@@ -1,7 +1,6 @@
 import { registerModule } from './modules.js';
 
 const soon = [
-  ['focus', 'Focus Room', '🎯', 'Pomodoro timer, ambient sound and a session log.'],
   ['cooking', 'Cooking Coach', '🍳', 'What can I cook tonight, timers, macros and cost.'],
   ['money', 'Money Sandbox', '💰', 'What-if simulator for big money decisions.'],
   ['skills', 'Skill Tree', '🌳', 'Learning goals, practice log and flashcards.'],

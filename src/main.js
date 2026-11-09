@@ -1,8 +1,9 @@
 import { createDb } from './core/db.js';
 import { searchAll } from './core/search.js';
-import { listModules, getModule } from './shell/modules.js';
+import { listModules, getModule, runStartHooks } from './shell/modules.js';
 import './shell/builtin.js';
 import './modules/secondbrain/index.js';
+import './modules/focus/index.js';
 import { applyTheme } from './shell/theme.js';
 import { createPalette } from './shell/palette.js';
 import { renderSettings } from './shell/settings.js';
@@ -77,6 +78,7 @@ async function boot() {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); palette.isOpen() ? palette.hide() : palette.show(); }
   });
   window.addEventListener('hashchange', route);
+  try { await runStartHooks(ctx); } catch (e) { console.error('start hooks failed', e); }
   route();
 }
 
