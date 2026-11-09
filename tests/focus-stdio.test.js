@@ -1,11 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createInterface } from 'node:readline';
+import { createStdioCall } from '../scripts/helper-bridge.mjs';
 import { createHelperClient } from '../src/modules/focus/helper-client.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -13,15 +12,9 @@ const exe = ['focus-helper', 'focus-helper.exe'].map((n) => join(root, 'target',
 
 test('JS client and Rust helper agree on the wire format', { skip: exe ? false : 'focus-helper binary not built' }, async (t) => {
   const state = join(mkdtempSync(join(tmpdir(), 'focus-stdio-')), 'state.json');
-  const child = spawn(exe, ['stdio', '--state', state], { stdio: ['pipe', 'pipe', 'inherit'] });
-  const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
-  t.after(() => { child.stdin.end(); child.kill(); });
-  const call = async (json) => {
-    child.stdin.write(json + '\n');
-    const { value, done } = await lines.next();
-    if (done) throw new Error('helper closed');
-    return value;
-  };
+  const bridge = createStdioCall(exe, state);
+  t.after(() => bridge.close());
+  const call = (json) => bridge.call(json);
   const client = createHelperClient(call);
   const vectors = JSON.parse(readFileSync(join(root, 'tests/fixtures/unlock-vectors.json'), 'utf8'));
   const valid = vectors.find((v) => v.name === 'valid');
