@@ -2,6 +2,7 @@ import { registerModule } from '../../shell/modules.js';
 import { createController } from './controller.js';
 import { createHelperClient, createTauriHelperCall } from './helper-client.js';
 import { makeTzOffsetAt } from './tz.js';
+import { mountHome } from './ui/home.js';
 
 const listeners = new Set();
 let controller = null;
@@ -46,15 +47,6 @@ registerModule({
     Promise.resolve(getController(ctx).load()).catch(() => {});
   },
   render(root, ctx) {
-    root.innerHTML = '';
-    const page = document.createElement('div');
-    page.className = 'page';
-    const h = document.createElement('h2');
-    h.textContent = '🎯 Focus Room';
-    const p = document.createElement('p');
-    p.textContent = 'Loading…';
-    page.append(h, p);
-    root.append(page);
-    return () => { root.innerHTML = ''; };
+    return mountHome(root, getController(ctx), ctx, { subscribe });
   },
 });

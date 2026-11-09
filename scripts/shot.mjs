@@ -21,6 +21,7 @@ const stepsFile = stepsIdx >= 0 ? resolve(args[stepsIdx + 1]) : null;
 const helperIdx = args.indexOf('--helper');
 const helperBin = helperIdx >= 0 ? resolve(args[helperIdx + 1]) : null;
 let helperDown = args.includes('--helper-down');
+let warningsOverride = null; // steps can set this to rewrite Status.warnings in helper replies
 const root = join(fileURLToPath(import.meta.url), '..', '..', 'src');
 
 function loadPlaywright() {
@@ -93,7 +94,14 @@ await page.exposeFunction('__db', async (cmd, a) => {
   if (cmd === 'focus_helper_call') {
     if (helperDown) throw new Error('The Focus Room helper service is not running');
     if (!bridge) throw new Error('Focus Room blocking is only available on Windows');
-    return bridge.call(a.request);
+    const reply = await bridge.call(a.request);
+    if (warningsOverride) {
+      try {
+        const j = JSON.parse(reply);
+        if (j && j.type === 'Status') return JSON.stringify({ ...j, warnings: warningsOverride });
+      } catch { /* not JSON: pass through */ }
+    }
+    return reply;
   }
   if (cmd === 'db_all') return db.all(a.sql, a.params);
   if (cmd === 'db_run') return db.run(a.sql, a.params);
@@ -114,7 +122,7 @@ try {
   await page.waitForSelector('#modlist .navitem');
   if (stepsFile) {
     const steps = await import(pathToFileURL(stepsFile).href);
-    await steps.default(page, shot, { db, importDir, exportDir, bridge, setHelperDown: (v) => { helperDown = !!v; } });
+    await steps.default(page, shot, { db, importDir, exportDir, bridge, setHelperDown: (v) => { helperDown = !!v; }, setWarnings: (arr) => { warningsOverride = Array.isArray(arr) ? arr : null; } });
   } else {
     await shot('home');
     await page.goto(url + '#/settings');
