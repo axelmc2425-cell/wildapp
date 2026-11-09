@@ -117,7 +117,7 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-head h2 { margin: 0; }
 .fr-banner { display: flex; align-items: center; gap: 10px; max-width: 100%; box-sizing: border-box; padding: 6px 14px; border-radius: 999px; font-size: 13px; border: 1px solid var(--fr-muted-bd); background: var(--fr-muted-bg); color: var(--fr-muted-fg); }
 .fr-banner.fr-ok { background: var(--fr-ok-bg); border-color: var(--fr-ok-bd); color: var(--fr-ok-fg); }
-.fr-banner.fr-warn { background: var(--fr-warn-bg); border-color: var(--fr-warn-bd); color: var(--fr-warn-fg); border-radius: 12px; }
+.fr-banner.fr-warn { background: var(--fr-warn-bg); border-color: var(--fr-warn-bd); color: var(--fr-warn-fg); border-radius: 12px; flex: 1 1 100%; }
 .fr-banner.fr-error { background: var(--fr-error-bg); border-color: var(--fr-error-bd); color: var(--fr-error-fg); border-radius: 12px; flex: 1 1 100%; }
 .fr-banner-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
 .fr-banner-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }

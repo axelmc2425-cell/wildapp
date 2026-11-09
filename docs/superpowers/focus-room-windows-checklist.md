@@ -157,7 +157,17 @@ Frozen mode is not available until sub-project 4 (Ruling 17): the helper rejects
 - [ ] Open `C:\ProgramData\MyBrainFocus\service.log` — Expected: it exists and is readable by SYSTEM/Administrators
 - [ ] After sections 8 and 9 tests, search the log — Expected: pipe and persist errors from those tests are recorded
 
-## 12. Cleanup
+## 12. Focus Room screens (sub-project 2)
+
+- [ ] Open Focus Room, start a block from the UI on a list containing a site you can open (e.g. reddit.com), then reload that site in a browser — Expected: the site stops loading; after pressing Cancel on the block the site loads again
+- [ ] With no lock pending and no block running, stop the `MyBrainFocus` service (`sc stop MyBrainFocus`) and watch the Focus Room page — Expected: the red "helper isn't running" banner appears within 10 seconds; after `sc start MyBrainFocus` it returns to green within 10 seconds
+- [ ] Stop the `MyBrainFocus` service, start a block from the UI, then start the service — Expected: the listed site is blocked without touching the UI again
+- [ ] While a block is running, edit a list in it (add a site, remove another) and save — Expected: the new site is blocked and the removed one loads again
+- [ ] Block an app whose name contains spaces (e.g. a game launcher such as `League of Legends.exe`) and try to run it — Expected: it is closed while the block runs
+- [ ] On a fresh profile, click each starter on the first-run card (Social media, News, Games, Blank list) and save — Expected: each creates a list that you can edit and delete afterwards
+- [ ] Open Start a block and look at the Frozen/Locked option — Expected: it is greyed out ("Locked, coming soon") and clicking it does nothing
+
+## 13. Cleanup
 
 With no lock pending, uninstall MyBrain.
 

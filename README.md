@@ -44,6 +44,15 @@ npm run stage:helper && npx tauri build   # build the installer
 `stage:helper` runs `cargo build --release -p focus-helper` and copies the result into place.
 To try the Focus Room on a real PC, follow `docs/superpowers/focus-room-windows-checklist.md`.
 
+## Focus Room screens
+
+To render the Focus Room screens (first run, lists, running block, helper down, warnings, editor, start dialog, helper details) as PNGs, build the helper and run:
+
+```bash
+cargo build --manifest-path focus-helper/Cargo.toml
+node scripts/shot.mjs /tmp/focus-shots --helper target/debug/focus-helper --steps scripts/focus-steps.mjs [--dark]
+```
+
 ## Checklist for trying it on Windows
 
 1. Install it and open MyBrain.
