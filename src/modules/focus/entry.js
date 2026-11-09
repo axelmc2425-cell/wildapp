@@ -20,6 +20,7 @@ export function checkEntry(kind, raw) {
   // Windows paths (backslashes) are reduced to the file name; a forward slash is never a Windows path.
   if (text.includes('/')) return { ok: false, message: "Use the program's file name, like steam.exe." };
   const value = normalizeApp(text);
+  if (value.slice(0, -'.exe'.length).trim() === '') return { ok: false, message: "Use the program's file name, like steam.exe." };
   if (!validItem('app', value)) return { ok: false, message: "Use the program's file name, like steam.exe." };
   return { ok: true, value, changed: value !== text.toLowerCase() };
 }

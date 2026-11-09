@@ -30,6 +30,13 @@ test('app entries', () => {
   assert.deepEqual(checkEntry('app', ''), { ok: false, message: EMPTY });
 });
 
+test('app inputs with no file name are rejected', () => {
+  for (const s of ['C:\\Games\\', '.exe', '\\', '   .exe']) {
+    assert.deepEqual(checkEntry('app', s), { ok: false, message: BAD_APP }, JSON.stringify(s));
+  }
+  assert.deepEqual(checkEntry('app', 'a.exe'), { ok: true, value: 'a.exe', changed: false });
+});
+
 test('starters pass checkEntry unchanged and have unique names', () => {
   assert.deepEqual(STARTERS.map((s) => s.name), ['Social media', 'News', 'Games']);
   assert.equal(new Set(STARTERS.map((s) => s.name)).size, STARTERS.length);
