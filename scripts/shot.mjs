@@ -33,7 +33,13 @@ function loadPlaywright() {
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml' };
 const server = http.createServer(async (req, res) => {
-  let p = new URL(req.url, 'http://x').pathname;
+  const u = new URL(req.url, 'http://x');
+  let p = u.pathname;
+  if (p === '/__abs') {
+    try { const want = u.searchParams.get('p') || ''; if (!want.startsWith(tmpdir())) throw new Error('outside the harness temp folder'); const data = await readFile(want); res.writeHead(200, { 'content-type': 'image/png' }); res.end(data); }
+    catch { res.writeHead(404); res.end('missing'); }
+    return;
+  }
   if (p === '/') p = '/index.html';
   try {
     const data = await readFile(join(root, p));
@@ -41,7 +47,7 @@ const server = http.createServer(async (req, res) => {
     res.end(data);
   } catch { res.writeHead(404); res.end('not found'); }
 });
-await new Promise(r => server.listen(0, r));
+await new Promise(r => server.listen(0, '127.0.0.1', r)); // never expose the harness beyond this machine
 const url = `http://localhost:${server.address().port}/`;
 
 await mkdir(outDir, { recursive: true });
@@ -88,9 +94,16 @@ await page.exposeFunction('__calls', () => calls);
 await page.exposeFunction('__db', async (cmd, a) => {
   calls.push(cmd);
   if (cmd === 'data_dir') return dir;
+  if (cmd === 'photo_import') {
+    mkdirSync(join(dir, 'attachments', 'photos'), { recursive: true });
+    const { copyFileSync, statSync } = await import('node:fs');
+    const imported = a.sources.map(src => { const name = src.split('/').pop(); copyFileSync(src, join(dir, 'attachments', 'photos', name)); return { file: 'photos/' + name, taken_ms: statSync(src).mtimeMs, original: name }; });
+    return { imported, skipped: [{ path: 'notes.txt', reason: 'not a supported image' }] };
+  }
+  if (cmd === 'photo_delete') return null;
   if (cmd === 'backup_auto') return join(dir, 'auto.zip');
   if (cmd === 'backup_create') return null;
-  if (cmd === 'read_folder_md') return readdirSync(a.dir).map(f => ({ path: f, bytes: [...readFileSync(join(a.dir, f))] }));
+  if (cmd === 'read_folder_md') return { files: readdirSync(a.dir).map(f => ({ path: f, bytes: [...readFileSync(join(a.dir, f))] })), skipped: [{ path: 'locked.md', reason: 'Access is denied' }] };
   if (cmd === 'write_files') { for (const f of a.files) writeFileSync(join(exportDir, f.path), Buffer.from(f.bytes)); return null; }
   if (cmd === 'focus_helper_call') {
     if (helperDown) throw new Error('The Focus Room helper service is not running');
@@ -112,8 +125,8 @@ await page.exposeFunction('__db', async (cmd, a) => {
 });
 await page.addInitScript(() => {
   window.__TAURI__ = {
-    core: { invoke: (cmd, a) => window.__db(cmd, a) },
-    dialog: { open: async (o) => (o && o.directory ? (window.__pickDir || null) : null), save: async () => '/tmp/backup.zip' },
+    core: { invoke: (cmd, a) => window.__db(cmd, a), convertFileSrc: (p) => '/__abs?p=' + encodeURIComponent(p) },
+    dialog: { open: async (o) => (o && o.directory ? (window.__pickDir || null) : (o && o.multiple ? (window.__pickFiles || null) : null)), save: async () => '/tmp/backup.zip' },
   };
 });
 

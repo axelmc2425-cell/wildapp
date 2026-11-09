@@ -1,17 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { registerModule, listModules, runStartHooks } from '../src/shell/modules.js';
-import '../src/shell/builtin.js';
 import '../src/modules/secondbrain/index.js';
 import '../src/modules/focus/index.js';
+import '../src/modules/cooking/index.js';
+import '../src/modules/money/index.js';
+import '../src/modules/skills/index.js';
+import '../src/modules/photos/index.js';
+import '../src/modules/journal/index.js';
 
 test('listModules returns seven modules in order', () => {
   assert.deepEqual(listModules().map(m => m.id),
     ['secondbrain', 'focus', 'cooking', 'money', 'skills', 'photos', 'journal']);
 });
 
-test('secondbrain and focus are ready, the rest are soon', () => {
-  assert.deepEqual(listModules().filter(m => m.ready).map(m => m.id), ['secondbrain', 'focus']);
+test('all seven modules are ready', () => {
+  assert.deepEqual(listModules().filter(m => m.ready).map(m => m.id), ['secondbrain', 'focus', 'cooking', 'money', 'skills', 'photos', 'journal']);
 });
 
 test('the sidebar lists Focus Room as ready (not soon)', () => {

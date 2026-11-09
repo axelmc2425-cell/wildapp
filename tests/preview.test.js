@@ -44,3 +44,10 @@ test('markdown renders headings and emphasis', () => {
   const html = renderPreview('# Title\n\n*em*', new Set());
   assert.ok(html.includes('<h1') && html.includes('<em>em</em>'), html);
 });
+
+test('a heading link resolves to its note and an embed is plain text', () => {
+  const html = renderPreview('[[Note#Heading]] and ![[pic.png]]', new Set(['note']));
+  assert.ok(html.includes('data-title="Note"') && html.includes('class="wikilink"'), html);
+  assert.ok(!html.includes('data-title="pic.png"'), html);
+  assert.ok(html.includes('![[pic.png]]'), html);
+});

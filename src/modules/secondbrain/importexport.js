@@ -1,4 +1,4 @@
-import { createNote, findNoteByTitle } from './notes.js';
+import { createNote, findNoteByTitle, relinkAll } from './notes.js';
 
 const FRONT = /^---\n([\s\S]*?)\n---[ \t]*(?:\n|$)/;
 
@@ -69,28 +69,31 @@ export async function importNotes(db, files) {
   for (const n of notes) {
     if (await findNoteByTitle(db, n.title)) { skipped.push({ path: n.path, reason: 'already exists' }); continue; }
     try {
-      await createNote(db, { title: n.title, body: n.body });
+      await createNote(db, { title: n.title, body: n.body }, { relink: false });
       created++;
     } catch (e) {
       skipped.push({ path: n.path, reason: String(e.message || e) });
     }
   }
+  if (created) await relinkAll(db); // links to files that were imported later in the batch
   return { created, skipped };
 }
 
+const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+
 function fileName(title) {
-  const base = String(title).replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-').replace(/[ .]+$/, '').trim();
-  return base || 'untitled';
+  let base = String(title).replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-').slice(0, 120).replace(/[ .]+$/, '').trim() || 'untitled';
+  if (RESERVED.test(base.split('.')[0])) base = '_' + base; // Windows cannot create CON.md, NUL.md, ...
+  return base;
 }
 
 export function exportNotes(notes) {
-  const used = new Map();
+  const used = new Set();
   return notes.map(n => {
     const base = fileName(n.title);
-    const key = base.toLowerCase();
-    const count = (used.get(key) || 0) + 1;
-    used.set(key, count);
-    const name = count > 1 ? `${base} (${count})` : base;
+    let name = base;
+    for (let i = 2; used.has(name.toLowerCase()); i++) name = `${base} (${i})`;
+    used.add(name.toLowerCase());
     return { path: name + '.md', text: `---\ntitle: ${JSON.stringify(n.title)}\n---\n${n.body}` };
   });
 }

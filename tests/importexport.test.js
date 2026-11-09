@@ -79,3 +79,33 @@ test('export file names never contain reserved characters and collisions are suf
   assert.deepEqual(paths.slice(0, 2), ['a-b.md', 'a-b (2).md']);
   for (const p of paths) assert.ok(!/[\\/:*?"<>|]/.test(p), p);
 });
+
+test('export prefixes Windows reserved names and shortens very long titles', () => {
+  const mk = (id, title) => ({ id, title, body: '', tags: [], created: 1, updated: 1 });
+  const paths = exportNotes([mk(1, 'CON'), mk(2, 'aux'), mk(3, 'Nul'), mk(4, 'x'.repeat(400)), mk(5, 'com1')]).map(f => f.path);
+  for (const p of paths.slice(0, 3).concat(paths[4])) assert.ok(/^_/.test(p), p);
+  assert.ok(paths[3].length <= 130, String(paths[3].length));
+});
+
+test('export never produces the same file name twice, even for look-alike titles', () => {
+  const mk = (id, title) => ({ id, title, body: '', tags: [], created: 1, updated: 1 });
+  const paths = exportNotes([mk(1, 'a?'), mk(2, 'a*'), mk(3, 'a- (2)'), mk(4, 'A-')]).map(f => f.path.toLowerCase());
+  assert.equal(new Set(paths).size, paths.length, paths.join(' | '));
+});
+
+test('importNotes relinks once at the end and backlinks to later files still resolve', async () => {
+  const db = await fresh();
+  const counting = {
+    scans: 0,
+    all(sql, p) { if (sql.includes("body LIKE '%[[%'")) this.scans++; return db.all(sql, p); },
+    run: (...a) => db.run(...a),
+    batch: (...a) => db.batch(...a),
+  };
+  const files = [file('A.md', 'goes to [[B]] and [[C]]'), file('B.md', 'b'), file('C.md', 'c'), file('D.md', 'd'), file('E.md', 'e')];
+  const r = await importNotes(counting, files);
+  assert.equal(r.created, 5);
+  assert.ok(counting.scans <= 1, 'scans: ' + counting.scans);
+  const { backlinks, findNoteByTitle } = await import('../src/modules/secondbrain/notes.js');
+  const b = await findNoteByTitle(db, 'B');
+  assert.deepEqual((await backlinks(db, b.id)).map(n => n.title), ['A']);
+});

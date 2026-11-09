@@ -44,3 +44,10 @@ test('snippet shows text around the match', async () => {
   assert.ok(hit.snippet.includes('needle'));
   assert.ok(hit.snippet.length <= 120);
 });
+
+test('search ignores case for non-ASCII letters', async () => {
+  const db = await fresh();
+  await createNote(db, { title: 'Élan', body: 'ça va' });
+  assert.deepEqual((await searchAll(db, 'élan')).map(h => h.title), ['Élan']);
+  assert.deepEqual((await searchAll(db, 'ÇA')).map(h => h.title), ['Élan']);
+});

@@ -1,6 +1,7 @@
-// Debounced saver that never drops text: on failure it keeps the latest payload and retries.
+// Debounced saver that never drops text. Pending payloads are kept per note id (payload.id); a failed
+// save stays pending and is retried. flush() resolves true only when everything has been saved.
 export function createAutosaver({ save, delay = 600, retryDelay = 3000, onStatus = () => {} }) {
-  let pending = null;
+  const pending = new Map();
   let timer = null;
   let busy = null;
   let disposed = false;
@@ -10,33 +11,38 @@ export function createAutosaver({ save, delay = 600, retryDelay = 3000, onStatus
     timer = setTimeout(run, ms);
   }
 
+  // Saves one pending payload (and then the rest). Resolves false if a save failed.
   async function run() {
-    if (disposed || pending === null || busy) return;
-    const payload = pending;
-    pending = null;
+    if (disposed || busy || pending.size === 0) return true;
+    const [id, payload] = pending.entries().next().value;
+    pending.delete(id);
     onStatus('saving');
     busy = save(payload).then(() => ({ ok: true }), (error) => ({ ok: false, error }));
     const r = await busy;
     busy = null;
     if (!r.ok) {
-      if (pending === null) pending = payload;
+      if (!pending.has(id)) pending.set(id, payload);
       onStatus('error', r.error);
       if (!disposed) schedule(retryDelay);
-      return;
+      return false;
     }
-    if (pending !== null) await run();
-    else onStatus('saved');
+    if (pending.size > 0) return run();
+    onStatus('saved');
+    return true;
   }
 
   return {
     change(payload) {
-      pending = payload;
+      pending.set(payload.id ?? '_', payload);
       schedule(delay);
     },
     async flush() {
       clearTimeout(timer);
-      if (busy) await busy;
-      await run();
+      for (;;) {
+        if (busy) await busy;
+        if (pending.size === 0) return true;
+        if (!(await run())) return false;
+      }
     },
     dispose() {
       disposed = true;
