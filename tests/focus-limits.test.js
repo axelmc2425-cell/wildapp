@@ -78,3 +78,10 @@ test("validateForPush checks unlock_delay_ms", () => {
   assert.deepEqual(validateForPush(win({ lock: "none", unlock_delay_ms: DAY })), { ok: false, reason: "bad-delay" });
   assert.deepEqual(validateForPush(win({ lock: "none", unlock_delay_ms: null })), { ok: true });
 });
+
+test("validateUnlockDelay requires an integer number", () => {
+  const bad = { ok: false, reason: "bad-delay" };
+  for (const v of [3600000.5, "86400000", -1, NaN, Infinity, -Infinity]) {
+    assert.deepEqual(validateUnlockDelay("locked", v), bad, String(v));
+  }
+});

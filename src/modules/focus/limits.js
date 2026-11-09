@@ -26,7 +26,7 @@ function capFor(lock) {
 /** Locked windows need a delay in range; other locks must not carry one. */
 export function validateUnlockDelay(lock, delayMs) {
   if (lock === 'locked') {
-    const ok = typeof delayMs === 'number' && Number.isFinite(delayMs)
+    const ok = Number.isInteger(delayMs)
       && delayMs >= MIN_UNLOCK_DELAY_MS && delayMs <= MAX_UNLOCK_DELAY_MS;
     return ok ? { ok: true } : { ok: false, reason: 'bad-delay' };
   }

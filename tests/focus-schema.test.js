@@ -49,12 +49,13 @@ test('migrates a v1 database to v2 keeping existing rows', async () => {
   await db.run('CREATE TABLE focus_lists (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, mode TEXT NOT NULL)');
   await db.run("CREATE TABLE focus_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, list_id INTEGER NOT NULL, starts INTEGER NOT NULL, ends INTEGER NOT NULL, lock TEXT NOT NULL CHECK (lock IN ('none','locked','frozen')))");
   await db.run("INSERT INTO focus_meta(key, value) VALUES ('schema_version', '1')");
-  await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (1, 10, 20, 'locked')");
+  for (const lock of ['none', 'locked', 'frozen']) {
+    await db.run('INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (1, 10, 20, ?)', [lock]);
+  }
   await migrateFocus(db);
-  const rows = await db.all('SELECT * FROM focus_sessions');
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].lock, 'locked');
-  assert.equal(rows[0].unlock_delay_ms, null);
+  const rows = await db.all('SELECT * FROM focus_sessions ORDER BY id');
+  assert.deepEqual(rows.map(r => r.lock), ['none', 'locked', 'frozen']);
+  assert.ok(rows.every(r => r.unlock_delay_ms === null));
   const v = await db.all("SELECT value FROM focus_meta WHERE key='schema_version'");
   assert.equal(v[0].value, '2');
 });
