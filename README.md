@@ -1,0 +1,63 @@
+# MyBrain
+
+A personal, offline, all-in-one desktop app for Windows. Your data stays on your computer.
+
+Right now it contains the shell and the first module, **Second Brain** (linked Markdown notes).
+Focus Room, Cooking Coach, Money Sandbox, Skill Tree, Photo Vault and Journal Companion are listed
+in the sidebar as "coming soon".
+
+## Second Brain
+
+- Markdown notes with `[[links]]`, `#tags`, backlinks, a related-notes panel and a graph view
+- A daily note, global search (Ctrl+K), quick capture from anywhere (Ctrl+Alt+N)
+- Import a folder of `.md` files (Obsidian vaults work), export all notes back to `.md`
+- One-click backup and restore (Settings)
+
+## Get the app
+
+Every push builds a Windows installer in GitHub Actions: open the latest **build-windows** run,
+download the `MyBrain-windows-installer` artifact and run the `.exe`.
+
+## Develop
+
+```bash
+npm install
+npm test                                        # JavaScript tests (Node 22+)
+cargo test --manifest-path core/Cargo.toml      # Rust tests (database, backup, files)
+npx tauri dev                                   # run the desktop app (needs Rust + WebView2)
+```
+
+Layout: `src/` is the plain HTML/JS front end (no build step), `core/` is the testable Rust logic,
+`src-tauri/` is the thin Tauri shell. Design: `docs/superpowers/specs/`, plan: `docs/superpowers/plans/`.
+
+## Building the installer locally
+
+The Windows bundle includes the Focus Room helper, which must be staged as
+`src-tauri/resources/focus-helper.exe` first (the file is git-ignored; without it `tauri dev` and
+`tauri build` fail). On Windows:
+
+```bash
+npm run stage:helper && npx tauri dev     # run the app
+npm run stage:helper && npx tauri build   # build the installer
+```
+
+`stage:helper` runs `cargo build --release -p focus-helper` and copies the result into place.
+To try the Focus Room on a real PC, follow `docs/superpowers/focus-room-windows-checklist.md`.
+
+## Focus Room screens
+
+To render the Focus Room screens (first run, lists, running block, helper down, warnings, editor, start dialog, helper details) as PNGs, build the helper and run:
+
+```bash
+cargo build --manifest-path focus-helper/Cargo.toml
+node scripts/shot.mjs /tmp/focus-shots --helper target/debug/focus-helper --steps scripts/focus-steps.mjs [--dark]
+```
+
+## Checklist for trying it on Windows
+
+1. Install it and open MyBrain.
+2. Create two notes and link them with `[[`. Check Backlinks and the Graph tab.
+3. Press Ctrl+Alt+N from another app, write a line and press Ctrl+Enter. The note appears in the list.
+4. Import a folder of `.md` files, then Export all.
+5. Settings → Back up now, change a note, then Restore and reopen the app.
+6. Close and reopen: everything is still there.

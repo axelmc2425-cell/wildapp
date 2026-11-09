@@ -1,0 +1,9 @@
+# Pin LF for files compared byte-for-byte or read by several languages.
+src/modules/focus/partner-unlock.html text eol=lf
+tests/fixtures/*.json text eol=lf
+*.rs text eol=lf
+Cargo.lock text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf

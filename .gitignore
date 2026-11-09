@@ -1,0 +1,4 @@
+.superpowers/
+node_modules/
+target/
+src-tauri/resources/*.exe

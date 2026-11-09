@@ -1,0 +1,897 @@
+[
+  {
+    "name": "no windows",
+    "windows": [],
+    "now": 1500,
+    "decision": {
+      "blockSites": [],
+      "blockApps": [],
+      "allow": null,
+      "frozen": false,
+      "locks": []
+    },
+    "probes": [
+      {
+        "kind": "site",
+        "value": "reddit.com",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "notepad.exe",
+        "blocked": false
+      }
+    ]
+  },
+  {
+    "name": "invalid and empty probes",
+    "windows": [
+      {
+        "id": "a",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "block",
+        "sites": [
+          "reddit.com"
+        ],
+        "apps": [
+          "steam.exe"
+        ]
+      },
+      {
+        "id": "b",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "allow",
+        "sites": [
+          "y.com"
+        ],
+        "apps": []
+      }
+    ],
+    "now": 1500,
+    "decision": {
+      "blockSites": [
+        "reddit.com"
+      ],
+      "blockApps": [
+        "steam.exe"
+      ],
+      "allow": {
+        "sites": [
+          "y.com"
+        ],
+        "apps": []
+      },
+      "frozen": false,
+      "locks": []
+    },
+    "probes": [
+      {
+        "kind": "site",
+        "value": "",
+        "blocked": false
+      },
+      {
+        "kind": "site",
+        "value": ".",
+        "blocked": false
+      },
+      {
+        "kind": "site",
+        "value": "..",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "   ",
+        "blocked": false
+      }
+    ]
+  },
+  {
+    "name": "active at starts",
+    "windows": [
+      {
+        "id": "a",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "block",
+        "sites": [
+          "reddit.com"
+        ],
+        "apps": [
+          "steam.exe"
+        ]
+      }
+    ],
+    "now": 1000,
+    "decision": {
+      "blockSites": [
+        "reddit.com"
+      ],
+      "blockApps": [
+        "steam.exe"
+      ],
+      "allow": null,
+      "frozen": false,
+      "locks": []
+    },
+    "probes": [
+      {
+        "kind": "site",
+        "value": "reddit.com",
+        "blocked": true
+      },
+      {
+        "kind": "site",
+        "value": "example.com",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "steam.exe",
+        "blocked": true
+      },
+      {
+        "kind": "app",
+        "value": "notepad.exe",
+        "blocked": false
+      }
+    ]
+  },
+  {
+    "name": "inactive at ends",
+    "windows": [
+      {
+        "id": "a",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "block",
+        "sites": [
+          "reddit.com"
+        ],
+        "apps": [
+          "steam.exe"
+        ]
+      }
+    ],
+    "now": 2000,
+    "decision": {
+      "blockSites": [],
+      "blockApps": [],
+      "allow": null,
+      "frozen": false,
+      "locks": []
+    },
+    "probes": [
+      {
+        "kind": "site",
+        "value": "reddit.com",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "steam.exe",
+        "blocked": false
+      }
+    ]
+  },
+  {
+    "name": "inactive before starts",
+    "windows": [
+      {
+        "id": "a",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "block",
+        "sites": [
+          "reddit.com"
+        ],
+        "apps": []
+      }
+    ],
+    "now": 999,
+    "decision": {
+      "blockSites": [],
+      "blockApps": [],
+      "allow": null,
+      "frozen": false,
+      "locks": []
+    },
+    "probes": [
+      {
+        "kind": "site",
+        "value": "reddit.com",
+        "blocked": false
+      }
+    ]
+  },
+  {
+    "name": "subdomain and case",
+    "windows": [
+      {
+        "id": "a",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "block",
+        "sites": [
+          "reddit.com"
+        ],
+        "apps": []
+      }
+    ],
+    "now": 1500,
+    "decision": {
+      "blockSites": [
+        "reddit.com"
+      ],
+      "blockApps": [],
+      "allow": null,
+      "frozen": false,
+      "locks": []
+    },
+    "probes": [
+      {
+        "kind": "site",
+        "value": "old.reddit.com",
+        "blocked": true
+      },
+      {
+        "kind": "site",
+        "value": "OLD.Reddit.com.",
+        "blocked": true
+      },
+      {
+        "kind": "site",
+        "value": "notreddit.com",
+        "blocked": false
+      },
+      {
+        "kind": "site",
+        "value": "reddit.com.evil.org",
+        "blocked": false
+      }
+    ]
+  },
+  {
+    "name": "app path and case",
+    "windows": [
+      {
+        "id": "a",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "block",
+        "sites": [],
+        "apps": [
+          "steam.exe"
+        ]
+      }
+    ],
+    "now": 1500,
+    "decision": {
+      "blockSites": [],
+      "blockApps": [
+        "steam.exe"
+      ],
+      "allow": null,
+      "frozen": false,
+      "locks": []
+    },
+    "probes": [
+      {
+        "kind": "app",
+        "value": "Steam.EXE",
+        "blocked": true
+      },
+      {
+        "kind": "app",
+        "value": "C:\\Program Files\\Steam\\steam.exe",
+        "blocked": true
+      },
+      {
+        "kind": "app",
+        "value": "steam",
+        "blocked": true
+      },
+      {
+        "kind": "app",
+        "value": "steamwebhelper.exe",
+        "blocked": false
+      }
+    ]
+  },
+  {
+    "name": "block wins over allow",
+    "windows": [
+      {
+        "id": "b",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "block",
+        "sites": [
+          "x.com"
+        ],
+        "apps": [
+          "game.exe"
+        ]
+      },
+      {
+        "id": "a",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "allow",
+        "sites": [
+          "x.com",
+          "y.com"
+        ],
+        "apps": [
+          "game.exe",
+          "code.exe"
+        ]
+      }
+    ],
+    "now": 1500,
+    "decision": {
+      "blockSites": [
+        "x.com"
+      ],
+      "blockApps": [
+        "game.exe"
+      ],
+      "allow": {
+        "sites": [
+          "x.com",
+          "y.com"
+        ],
+        "apps": [
+          "code.exe",
+          "game.exe"
+        ]
+      },
+      "frozen": false,
+      "locks": []
+    },
+    "probes": [
+      {
+        "kind": "site",
+        "value": "x.com",
+        "blocked": true
+      },
+      {
+        "kind": "site",
+        "value": "y.com",
+        "blocked": false
+      },
+      {
+        "kind": "site",
+        "value": "z.com",
+        "blocked": true
+      },
+      {
+        "kind": "app",
+        "value": "game.exe",
+        "blocked": true
+      },
+      {
+        "kind": "app",
+        "value": "code.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "notepad.exe",
+        "blocked": true
+      }
+    ]
+  },
+  {
+    "name": "allow windows union",
+    "windows": [
+      {
+        "id": "a1",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "allow",
+        "sites": [
+          "a.com"
+        ],
+        "apps": [
+          "code.exe"
+        ]
+      },
+      {
+        "id": "a2",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "allow",
+        "sites": [
+          "b.com"
+        ],
+        "apps": [
+          "term.exe"
+        ]
+      }
+    ],
+    "now": 1500,
+    "decision": {
+      "blockSites": [],
+      "blockApps": [],
+      "allow": {
+        "sites": [
+          "a.com",
+          "b.com"
+        ],
+        "apps": [
+          "code.exe",
+          "term.exe"
+        ]
+      },
+      "frozen": false,
+      "locks": []
+    },
+    "probes": [
+      {
+        "kind": "site",
+        "value": "a.com",
+        "blocked": false
+      },
+      {
+        "kind": "site",
+        "value": "sub.b.com",
+        "blocked": false
+      },
+      {
+        "kind": "site",
+        "value": "c.com",
+        "blocked": true
+      },
+      {
+        "kind": "app",
+        "value": "code.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "term.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "notepad.exe",
+        "blocked": true
+      }
+    ]
+  },
+  {
+    "name": "allow with expired window ignored",
+    "windows": [
+      {
+        "id": "a1",
+        "starts": 1000,
+        "ends": 1200,
+        "lock": "none",
+        "mode": "allow",
+        "sites": [
+          "a.com"
+        ],
+        "apps": []
+      },
+      {
+        "id": "b",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "block",
+        "sites": [
+          "x.com"
+        ],
+        "apps": []
+      }
+    ],
+    "now": 1500,
+    "decision": {
+      "blockSites": [
+        "x.com"
+      ],
+      "blockApps": [],
+      "allow": null,
+      "frozen": false,
+      "locks": []
+    },
+    "probes": [
+      {
+        "kind": "site",
+        "value": "a.com",
+        "blocked": false
+      },
+      {
+        "kind": "site",
+        "value": "x.com",
+        "blocked": true
+      }
+    ]
+  },
+  {
+    "name": "frozen without allow list",
+    "windows": [
+      {
+        "id": "f",
+        "starts": 1000,
+        "ends": 5000,
+        "lock": "frozen",
+        "mode": "block",
+        "sites": [],
+        "apps": []
+      }
+    ],
+    "now": 1500,
+    "decision": {
+      "blockSites": [],
+      "blockApps": [],
+      "allow": null,
+      "frozen": true,
+      "locks": [
+        {
+          "id": "f",
+          "lock": "frozen",
+          "ends": 5000
+        }
+      ]
+    },
+    "probes": [
+      {
+        "kind": "app",
+        "value": "notepad.exe",
+        "blocked": true
+      },
+      {
+        "kind": "app",
+        "value": "explorer.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "MyBrain.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "focus-helper.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "System",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "System Idle Process",
+        "blocked": false
+      },
+      {
+        "kind": "site",
+        "value": "example.com",
+        "blocked": false
+      }
+    ]
+  },
+  {
+    "name": "frozen with allow list",
+    "windows": [
+      {
+        "id": "f",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "frozen",
+        "mode": "block",
+        "sites": [],
+        "apps": []
+      },
+      {
+        "id": "a",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "allow",
+        "sites": [
+          "docs.rs"
+        ],
+        "apps": [
+          "code.exe"
+        ]
+      }
+    ],
+    "now": 1500,
+    "decision": {
+      "blockSites": [],
+      "blockApps": [],
+      "allow": {
+        "sites": [
+          "docs.rs"
+        ],
+        "apps": [
+          "code.exe"
+        ]
+      },
+      "frozen": true,
+      "locks": [
+        {
+          "id": "f",
+          "lock": "frozen",
+          "ends": 2000
+        }
+      ]
+    },
+    "probes": [
+      {
+        "kind": "app",
+        "value": "code.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "notepad.exe",
+        "blocked": true
+      },
+      {
+        "kind": "app",
+        "value": "svchost.exe",
+        "blocked": false
+      },
+      {
+        "kind": "site",
+        "value": "docs.rs",
+        "blocked": false
+      },
+      {
+        "kind": "site",
+        "value": "example.com",
+        "blocked": true
+      }
+    ]
+  },
+  {
+    "name": "allow list omitting critical apps",
+    "windows": [
+      {
+        "id": "a",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "allow",
+        "sites": [],
+        "apps": [
+          "code.exe"
+        ]
+      }
+    ],
+    "now": 1500,
+    "decision": {
+      "blockSites": [],
+      "blockApps": [],
+      "allow": {
+        "sites": [],
+        "apps": [
+          "code.exe"
+        ]
+      },
+      "frozen": false,
+      "locks": []
+    },
+    "probes": [
+      {
+        "kind": "app",
+        "value": "lsass.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "dwm.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "msedgewebview2.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "code.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "notepad.exe",
+        "blocked": true
+      },
+      {
+        "kind": "app",
+        "value": "LogonUI.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "consent.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "Memory Compression",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "Secure System",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "MsMpEng.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "ApplicationFrameHost.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "TextInputHost.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "shellhost.exe",
+        "blocked": false
+      }
+    ]
+  },
+  {
+    "name": "critical app listed in block list",
+    "windows": [
+      {
+        "id": "b",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "block",
+        "sites": [],
+        "apps": [
+          "explorer.exe",
+          "notepad.exe"
+        ]
+      }
+    ],
+    "now": 1500,
+    "decision": {
+      "blockSites": [],
+      "blockApps": [
+        "explorer.exe",
+        "notepad.exe"
+      ],
+      "allow": null,
+      "frozen": false,
+      "locks": []
+    },
+    "probes": [
+      {
+        "kind": "app",
+        "value": "explorer.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "notepad.exe",
+        "blocked": true
+      }
+    ]
+  },
+  {
+    "name": "locks sorted and unique lists",
+    "windows": [
+      {
+        "id": "z",
+        "starts": 1000,
+        "ends": 3000,
+        "lock": "locked",
+        "mode": "block",
+        "sites": [
+          "b.com",
+          "a.com"
+        ],
+        "apps": []
+      },
+      {
+        "id": "m",
+        "starts": 1000,
+        "ends": 4000,
+        "lock": "frozen",
+        "mode": "block",
+        "sites": [
+          "a.com"
+        ],
+        "apps": [
+          "b.exe",
+          "a.exe"
+        ]
+      },
+      {
+        "id": "n",
+        "starts": 1000,
+        "ends": 2000,
+        "lock": "none",
+        "mode": "block",
+        "sites": [
+          "c.com"
+        ],
+        "apps": []
+      }
+    ],
+    "now": 1500,
+    "decision": {
+      "blockSites": [
+        "a.com",
+        "b.com",
+        "c.com"
+      ],
+      "blockApps": [
+        "a.exe",
+        "b.exe"
+      ],
+      "allow": null,
+      "frozen": true,
+      "locks": [
+        {
+          "id": "m",
+          "lock": "frozen",
+          "ends": 4000
+        },
+        {
+          "id": "z",
+          "lock": "locked",
+          "ends": 3000
+        }
+      ]
+    },
+    "probes": [
+      {
+        "kind": "site",
+        "value": "a.com",
+        "blocked": true
+      },
+      {
+        "kind": "site",
+        "value": "c.com",
+        "blocked": true
+      },
+      {
+        "kind": "app",
+        "value": "a.exe",
+        "blocked": true
+      },
+      {
+        "kind": "app",
+        "value": "zzz.exe",
+        "blocked": true
+      }
+    ]
+  }
+]
