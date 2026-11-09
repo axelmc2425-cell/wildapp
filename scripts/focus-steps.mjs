@@ -1,6 +1,8 @@
 // Focus Room screenshot scenarios (harness steps file). Run:
 //   node scripts/shot.mjs /tmp/focus-shots --helper target/debug/focus-helper --steps scripts/focus-steps.mjs [--dark]
 import { saveList, createSessions } from '../src/modules/focus/store.js';
+import { readFileSync } from 'node:fs';
+import { lockedWarning } from '../src/modules/focus/lock-logic.js';
 import { STARTERS } from '../src/modules/focus/starters.js';
 
 const ok = (cond, msg) => { if (!cond) throw new Error('ASSERT FAILED: ' + msg); console.log('ok:', msg); };
@@ -287,14 +289,14 @@ async function startScenarios(page, shot, h) {
   await page.click('button:has-text("Start a block")');
   await page.waitForSelector('.fr-dialog .fr-start');
   ok(await page.evaluate(() => document.querySelector('.fr-dialog-title').textContent) === 'Start a block', 'dialog title');
-  ok((await page.locator('.fr-dialog input[type=checkbox]').count()) === 2, 'one checkbox per list');
+  ok((await page.locator('.fr-dialog .fr-checkrow input[type=checkbox]').count()) === 2, 'one checkbox per list');
   ok((await page.locator('.fr-dialog input[type=checkbox]:checked').count()) === 0, 'no list pre-checked');
   ok(await startDisabled(), 'Start disabled with nothing checked');
   ok(await page.evaluate(() => !document.querySelector('.fr-dialog b') && document.querySelector('.fr-checkname').textContent.includes('<b>')), 'hostile list name is text');
   const t0 = await text(page, '.fr-dialog');
   ok(t0.includes('2 sites, 1 app') && t0.includes('1 site'), 'list summaries shown');
-  ok(t0.includes('Normal: you can cancel any time.') && t0.includes('🔒 Locked, coming soon') && !t0.includes('Frozen'), 'normal + locked-coming-soon, no Frozen');
-  ok(await page.evaluate(() => document.querySelector('.fr-locked').getAttribute('aria-disabled') === 'true' && document.querySelector('.fr-locked').tabIndex === -1), 'locked option is aria-disabled and not focusable');
+  ok(t0.includes('Normal') && t0.includes('You can cancel any time.') && t0.includes('Locked') && !t0.includes('coming soon') && !t0.includes('Frozen'), 'normal + locked choices, no coming-soon, no Frozen');
+  ok(await page.evaluate(() => document.querySelector('input[type=radio][value=normal]').checked && document.querySelectorAll('.fr-modes input[type=radio]').length === 2), 'two radios, Normal selected by default');
   await page.locator('.fr-dialog input[type=checkbox]').first().check();
   ok(!(await startDisabled()), 'Start enabled after checking a list');
   ok((await summary()).includes('Ends at'), `summary says Ends at (got "${await summary()}")`);
@@ -410,6 +412,7 @@ async function startScenarios(page, shot, h) {
   ok((await windowsOf(page)).length === 0, 'helper no longer lists the window');
 
   await pendingScenarios(page, shot, h);
+  await lockScenarios(page, shot, h);
 
   // clean up
   await h.db.run('DELETE FROM focus_items'); await h.db.run('DELETE FROM focus_sessions'); await h.db.run('DELETE FROM focus_lists');
@@ -536,4 +539,119 @@ async function detailsScenarios(page, shot, h) {
   ok((await page.locator('.fr-details').count()) === 1, 'exactly one details element after navigating back');
   ok(await page.evaluate(() => !document.querySelector('.fr-details').open), 'details start collapsed again');
   await page.waitForTimeout(1200);
+}
+
+// ---- Task 9: Locked option and partner setup ----
+async function lockScenarios(page, shot, h) {
+  const dialogs = () => page.locator('.fr-dialog').count();
+  const closed = () => page.waitForFunction(() => !document.querySelector('.fr-dialog'));
+  const valid = JSON.parse(readFileSync(new URL('../tests/fixtures/unlock-vectors.json', import.meta.url), 'utf8')).find((v) => v.name === 'valid').publicKey;
+  const noOverflow = () => page.evaluate(() => [...document.querySelectorAll('.fr-dialog')].every((d) => d.scrollWidth <= d.clientWidth));
+  await h.db.run('DELETE FROM focus_sessions');
+  const ll = await saveList(h.db, { name: 'Lockable', sites: ['lock-one.com', 'lock-two.com'], apps: [] });
+  ok(ll.ok, 'list for the locked scenarios saved');
+  await page.reload();
+  await page.waitForSelector('.fr-banner.fr-ok', { timeout: 8000 });
+  await page.waitForFunction(() => document.querySelectorAll('.fr-block').length === 0);
+
+  // (a) helper down: Locked is disabled with the reason
+  h.setHelperDown(true);
+  await page.waitForSelector('.fr-banner.fr-error', { timeout: 7500 });
+  await page.click('button:has-text("Start a block")');
+  await page.waitForSelector('.fr-dialog .fr-start');
+  ok(await page.evaluate(() => document.querySelector('input[type=radio][value=locked]').disabled), 'helper down: Locked radio is disabled');
+  ok((await text(page, '.fr-dialog')).includes('The helper must be running to lock a block.'), 'helper down: the reason is shown');
+  await shot('focus-16-locked-helper-down');
+  await page.keyboard.press('Escape'); await closed();
+  h.setHelperDown(false);
+  await page.click('.fr-banner .fr-retry');
+  await page.waitForSelector('.fr-banner.fr-ok', { timeout: 8000 });
+
+  // (b) no partner: the setup button opens the partner dialog on top; Esc closes only that one
+  await page.click('button:has-text("Start a block")');
+  await page.waitForSelector('.fr-dialog .fr-start');
+  await page.locator('.fr-dialog .fr-checkrow:has-text("Lockable") input').check();
+  await page.click('.fr-moderow:has-text("Locked")');
+  ok(await page.evaluate(() => document.querySelector('input[type=radio][value=locked]').checked), 'Locked radio selected');
+  ok((await text(page, '.fr-dialog')).includes('Set up your partner first'), 'no partner: "Set up your partner first" shown');
+  ok(await page.evaluate(() => document.querySelector('.fr-dialog button.primary').disabled), 'no partner: Start is disabled');
+  await shot('focus-17-locked-no-partner');
+  await page.click('.fr-dialog button:has-text("Set up your partner first")');
+  await page.waitForSelector('.fr-ps');
+  ok((await dialogs()) === 2, 'setup dialog opened on top of the start dialog');
+  ok(await noOverflow(), 'no horizontal overflow in the dialogs');
+  await shot('focus-18-partner-setup');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => document.querySelectorAll('.fr-dialog').length === 1);
+  ok(await page.evaluate(() => !!document.querySelector('.fr-start') && !document.querySelector('.fr-ps')), 'Esc closed only the setup dialog');
+  await page.click('.fr-dialog button:has-text("Set up your partner first")');
+  await page.waitForSelector('.fr-ps');
+
+  // (c) the page download works offline: a Blob with the partner page
+  const dl = page.waitForEvent('download');
+  await page.click('.fr-ps button:has-text("Save the partner page")');
+  const file = await dl;
+  ok(file.suggestedFilename() === 'partner-unlock.html', `partner page downloads as ${file.suggestedFilename()}`);
+
+  // (d) a junk key: the helper's refusal shows, input is kept, dialog stays open
+  ok(await page.evaluate(() => document.querySelector('.fr-ps button.primary').disabled), 'Save partner disabled while empty');
+  await page.fill('.fr-ps input[type=text]', 'Sam <b>the</b> partner');
+  await page.fill('.fr-ps textarea', 'not-a-key');
+  await page.click('.fr-ps button.primary');
+  await page.waitForFunction(() => document.querySelector('.fr-ps .fr-err:not([hidden])'));
+  const refusal = await text(page, '.fr-ps .fr-err');
+  ok(refusal.includes("isn't valid"), `junk key shows the helper's refusal ("${refusal}")`);
+  ok(await page.evaluate(() => document.querySelector('.fr-ps .fr-err').getAttribute('role') === 'alert'), 'refusal is role=alert');
+  ok((await page.inputValue('.fr-ps textarea')) === 'not-a-key' && (await page.inputValue('.fr-ps input[type=text]')) === 'Sam <b>the</b> partner', 'input is intact after the refusal');
+  ok((await dialogs()) === 2, 'dialog stays open after the refusal');
+  await shot('focus-19-partner-bad-key');
+
+  // (e) Esc and overlay are inert while saving
+  h.setHelperDelay(700);
+  await page.fill('.fr-ps textarea', valid);
+  await page.click('.fr-ps button.primary');
+  await page.keyboard.press('Escape');
+  await page.mouse.click(5, 5);
+  ok((await dialogs()) === 2, 'Esc and overlay click are inert while the partner is saving');
+  await page.waitForFunction(() => !document.querySelector('.fr-ps'), null, { timeout: 8000 });
+  h.setHelperDelay(0);
+  ok((await dialogs()) === 1, 'saved: setup dialog closed, start dialog still open');
+  await page.waitForFunction(() => !document.querySelector('.fr-st-partner') || document.querySelector('.fr-st-partner').hidden);
+  ok(await page.evaluate(() => !document.querySelector('.fr-st-lockedopts').hidden), 'locked options appear once the partner is set');
+
+  // (f) the confirmation gates Lock it; the warning follows the waiting period
+  ok((await text(page, '.fr-dialog button.primary')) === 'Lock it', 'Start button reads "Lock it"');
+  ok(await page.evaluate(() => document.querySelector('.fr-dialog button.primary').disabled), 'Lock it disabled until confirmed');
+  ok((await text(page, '.fr-lockwarn')) === lockedWarning(24), 'warning text for the 24 h default');
+  await page.locator('.fr-lockwarn input').check();
+  ok(await page.evaluate(() => !document.querySelector('.fr-dialog button.primary').disabled), 'Lock it enabled once confirmed');
+  await page.click('.fr-dialog .fr-delaychip:has-text("6 h")');
+  ok((await text(page, '.fr-lockwarn')) === lockedWarning(6) && await page.evaluate(() => !document.querySelector('.fr-lockwarn input').checked), 'changing the period updates the warning and clears the confirmation');
+  await page.fill('.fr-dialog input[id^="fr-st-delay-"]', '200');
+  ok((await page.evaluate(() => document.querySelector('.fr-dialog .fr-err:not([hidden])')?.textContent)) === 'Enter a whole number of hours from 1 to 168.', 'custom hours over 168 are refused inline');
+  await page.fill('.fr-dialog input[id^="fr-st-delay-"]', '');
+  await page.click('.fr-dialog .fr-durchip:has-text("1 day")');
+  ok(await page.evaluate(() => document.querySelector('.fr-durchip[aria-pressed=true]').textContent) === '1 day', '1 day chip exists in Locked');
+  await page.fill('.fr-dialog input[id^="fr-st-custom-"]', '10081');
+  ok((await page.evaluate(() => document.querySelector('.fr-dialog .fr-err:not([hidden])')?.textContent)).includes('10080'), 'custom minutes over 10080 are refused');
+  await page.fill('.fr-dialog input[id^="fr-st-custom-"]', '10080');
+  ok((await text(page, '.fr-st-summary')) === 'Locked for 7 days', 'summary reads Locked for 7 days');
+  await page.fill('.fr-dialog input[id^="fr-st-custom-"]', '');
+  await page.click('.fr-dialog .fr-durchip:has-text("25 min")');
+  await page.click('.fr-dialog .fr-delaychip:has-text("24 h")');
+  await page.locator('.fr-lockwarn input').check();
+  ok(await noOverflow(), 'no horizontal overflow with Locked options open');
+  await shot('focus-20-locked-options');
+
+  // (g) Esc is inert while the locked start is pending; then the block exists
+  h.setHelperDelay(700);
+  await page.click('.fr-dialog button.primary');
+  await page.keyboard.press('Escape');
+  await page.mouse.click(5, 5);
+  ok((await dialogs()) === 1, 'Esc and overlay click are inert while the locked start is pending');
+  await closed();
+  h.setHelperDelay(0);
+  await page.waitForSelector('.fr-block');
+  ok((await page.locator('.fr-block').count()) === 1, 'a block exists after the locked start');
+  await shot('focus-21-locked-started');
 }

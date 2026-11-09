@@ -5,6 +5,7 @@ import { makeTzOffsetAt } from './tz.js';
 import { mountHome } from './ui/home.js';
 import { openListEditor } from './ui/list-editor.js';
 import { openStartDialog } from './ui/start-dialog.js';
+import { openPartnerSetup } from './ui/partner-setup.js';
 import { mountHelperDetails } from './ui/helper-details.js';
 
 const listeners = new Set();
@@ -50,6 +51,6 @@ registerModule({
     Promise.resolve(getController(ctx).load()).catch(() => {});
   },
   render(root, ctx) {
-    return mountHome(root, getController(ctx), ctx, { subscribe, openListEditor, openStartDialog, mountHelperDetails });
+    return mountHome(root, getController(ctx), ctx, { subscribe, openListEditor, openStartDialog, openPartnerSetup, mountHelperDetails });
   },
 });

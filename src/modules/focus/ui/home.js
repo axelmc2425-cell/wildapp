@@ -89,6 +89,12 @@ export function mountHome(root, controller, ctx, deps = {}) {
     render();
   }
 
+  // A started block's own message (e.g. "couldn't confirm the lock") shows in the notes area.
+  function afterStarted(res) {
+    if (res && typeof res.message === 'string' && res.message) local = { text: res.message };
+    afterAction();
+  }
+
   function handleResult(res, ok) {
     if (res && res.ok === false) {
       local = res.message === FINISHED ? null : { text: res.message || 'That did not work.' };
@@ -201,7 +207,10 @@ export function mountHome(root, controller, ctx, deps = {}) {
     const title = typeof deps.openStartDialog !== 'function' ? SOON : state.lists.length === 0 ? 'Create a list first' : null;
     return h('button', {
       type: 'button', class: 'primary', 'data-fk': 'start', disabled: !can, title,
-      onclick: () => deps.openStartDialog({ controller, onDone: afterAction }),
+      onclick: () => deps.openStartDialog({
+        controller, onDone: afterStarted, subscribe: deps.subscribe,
+        openPartnerSetup: typeof deps.openPartnerSetup === 'function' ? (o) => deps.openPartnerSetup({ ...o, onDone: () => { o.onDone?.(); afterAction(); } }) : undefined,
+      }),
     }, 'Start a block');
   }
 
@@ -287,7 +296,7 @@ export function mountHome(root, controller, ctx, deps = {}) {
     const sig = JSON.stringify([
       bannerFor(state.helper), state.syncPending, state.notice, local, listMsg,
       state.loaded, state.lists, blocks.map(b => [b.key, b.state, b.listNames]),
-      typeof deps.openListEditor, typeof deps.openStartDialog,
+      typeof deps.openListEditor, typeof deps.openStartDialog, typeof deps.openPartnerSetup,
     ]);
     renderBanner(state);
     mountDetails();

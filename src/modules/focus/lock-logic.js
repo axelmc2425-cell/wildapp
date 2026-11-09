@@ -82,3 +82,34 @@ export function canStartLocked(a) {
     && !!delay && delay.ok === true
     && confirmed === true;
 }
+
+/** Duration chips for a locked block, as [minutes, label]. */
+export const LOCKED_DURATION_PRESETS = [[25, '25 min'], [60, '1 h'], [120, '2 h'], [240, '4 h'], [1440, '1 day'], [10080, '7 days']];
+
+/** Like the normal duration input but capped at 10080 minutes. @param {{preset?: number, custom?: string}} input */
+export function resolveLockedMinutes(input) {
+  const bad = { ok: false, message: 'Enter a whole number of minutes from 1 to 10080 (7 days).' };
+  const i = input || {};
+  if (i.custom !== undefined && i.custom !== null && String(i.custom).trim() !== '') {
+    const t = String(i.custom).trim();
+    if (!/^\d+$/.test(t)) return bad;
+    const n = Number(t);
+    if (n < 1 || n > MAX_LOCKED_MINUTES) return bad;
+    return { ok: true, minutes: n };
+  }
+  if (typeof i.preset === 'number' && Number.isInteger(i.preset) && i.preset >= 1 && i.preset <= MAX_LOCKED_MINUTES) {
+    return { ok: true, minutes: i.preset };
+  }
+  return bad;
+}
+
+/** "Locked for 2 days 3 h 5 min" style text. */
+export function lockedSpanText(minutes) {
+  if (!Number.isInteger(minutes) || minutes < 1) return '';
+  const d = Math.floor(minutes / 1440), hr = Math.floor((minutes % 1440) / 60), m = minutes % 60;
+  const parts = [];
+  if (d) parts.push(`${d} ${d === 1 ? 'day' : 'days'}`);
+  if (hr) parts.push(`${hr} h`);
+  if (m) parts.push(`${m} min`);
+  return `Locked for ${parts.join(' ')}`;
+}

@@ -90,3 +90,15 @@ test('canStartLocked needs all four', () => {
   assert.equal(canStartLocked({ ...ok, duration: { ok: true, minutes: 10081 } }), false);
   assert.equal(canStartLocked(undefined), false);
 });
+
+test('resolveLockedMinutes caps at 10080 and prefers custom', async () => {
+  const { resolveLockedMinutes, lockedSpanText } = await import('../src/modules/focus/lock-logic.js');
+  assert.deepEqual(resolveLockedMinutes({ preset: 60 }), { ok: true, minutes: 60 });
+  assert.deepEqual(resolveLockedMinutes({ preset: 60, custom: '10080' }), { ok: true, minutes: 10080 });
+  assert.deepEqual(resolveLockedMinutes({ preset: 10080 }), { ok: true, minutes: 10080 });
+  for (const c of ['10081', '0', '-1', '1.5', 'abc']) assert.equal(resolveLockedMinutes({ preset: 60, custom: c }).ok, false);
+  assert.equal(resolveLockedMinutes({}).ok, false);
+  assert.equal(lockedSpanText(1500), 'Locked for 1 day 1 h');
+  assert.equal(lockedSpanText(10080), 'Locked for 7 days');
+  assert.equal(lockedSpanText(0), '');
+});
