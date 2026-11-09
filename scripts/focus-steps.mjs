@@ -608,6 +608,7 @@ async function lockScenarios(page, shot, h) {
 
   // (e) Esc and overlay are inert while saving
   h.setHelperDelay(700);
+  h.setPersistFail(true);
   await page.fill('.fr-ps textarea', valid);
   await page.click('.fr-ps button.primary');
   await page.keyboard.press('Escape');
@@ -615,7 +616,11 @@ async function lockScenarios(page, shot, h) {
   ok((await dialogs()) === 2, 'Esc and overlay click are inert while the partner is saving');
   await page.waitForFunction(() => !document.querySelector('.fr-ps'), null, { timeout: 8000 });
   h.setHelperDelay(0);
+  h.setPersistFail(false);
   ok((await dialogs()) === 1, 'saved: setup dialog closed, start dialog still open');
+  await page.waitForFunction(() => document.querySelector('.fr-notes')?.innerText.includes('lost on restart'), null, { timeout: 5000 });
+  ok(true, `a successful save that came with a warning shows it in the Home note ("${(await text(page, '.fr-notes')).replace(/\n/g, ' ')}")`);
+  ok(await page.evaluate(() => document.activeElement && document.activeElement !== document.body && document.querySelector('.fr-dialog').contains(document.activeElement)), 'focus moved into the start dialog after the setup closed');
   await page.waitForFunction(() => !document.querySelector('.fr-st-partner') || document.querySelector('.fr-st-partner').hidden);
   ok(await page.evaluate(() => !document.querySelector('.fr-st-lockedopts').hidden), 'locked options appear once the partner is set');
 
@@ -625,6 +630,10 @@ async function lockScenarios(page, shot, h) {
   ok((await text(page, '.fr-lockwarn')) === lockedWarning(24), 'warning text for the 24 h default');
   await page.locator('.fr-lockwarn input').check();
   ok(await page.evaluate(() => !document.querySelector('.fr-dialog button.primary').disabled), 'Lock it enabled once confirmed');
+  await page.click('.fr-moderow:has-text("Normal")');
+  await page.click('.fr-moderow:has-text("Locked")');
+  ok(await page.evaluate(() => !document.querySelector('.fr-lockwarn input').checked && document.querySelector('.fr-dialog button.primary').disabled), 'switching Normal and back clears the confirmation: Lock it disabled again');
+  await page.locator('.fr-lockwarn input').check();
   await page.click('.fr-dialog .fr-delaychip:has-text("6 h")');
   ok((await text(page, '.fr-lockwarn')) === lockedWarning(6) && await page.evaluate(() => !document.querySelector('.fr-lockwarn input').checked), 'changing the period updates the warning and clears the confirmation');
   await page.fill('.fr-dialog input[id^="fr-st-delay-"]', '200');

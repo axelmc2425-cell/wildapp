@@ -209,7 +209,7 @@ export function mountHome(root, controller, ctx, deps = {}) {
       type: 'button', class: 'primary', 'data-fk': 'start', disabled: !can, title,
       onclick: () => deps.openStartDialog({
         controller, onDone: afterStarted, subscribe: deps.subscribe,
-        openPartnerSetup: typeof deps.openPartnerSetup === 'function' ? (o) => deps.openPartnerSetup({ ...o, onDone: () => { o.onDone?.(); afterAction(); } }) : undefined,
+        openPartnerSetup: typeof deps.openPartnerSetup === 'function' ? (o) => deps.openPartnerSetup({ ...o, onDone: (res) => { o.onDone?.(res); afterStarted(res); } }) : undefined,
       }),
     }, 'Start a block');
   }

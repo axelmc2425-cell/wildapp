@@ -49,11 +49,16 @@ export function openStartDialog({ controller, onDone, openPartnerSetup, subscrib
   const normalRadio = h('input', { type: 'radio', name: modeName, value: 'normal', checked: true });
   const lockedRadio = h('input', { type: 'radio', name: modeName, value: 'locked', 'aria-describedby': `fr-st-lockmsg-${uid}` });
   const radios = [normalRadio, lockedRadio];
-  for (const r of radios) r.addEventListener('change', () => { if (r.checked) { mode = r.value; show(startErr, ''); refresh(); } });
+  for (const r of radios) r.addEventListener('change', () => { if (r.checked) { mode = r.value; confirmBox.checked = false; show(startErr, ''); refresh(); } });
   const lockMsg = h('p', { class: 'fr-st-lockmsg fr-muted', id: `fr-st-lockmsg-${uid}`, hidden: true });
   const setupBtn = h('button', { type: 'button', onclick: () => {
     if (busy || typeof openPartnerSetup !== 'function') return;
-    openPartnerSetup({ controller, onDone: () => refresh() });
+    openPartnerSetup({ controller, onDone: (res) => {
+      refresh();
+      // The setup dialog gave focus back to this (now hidden) button: move it to the first locked control.
+      const next = !lockedOpts.hidden ? confirmBox : lockedRadio;
+      if (next && !next.disabled) next.focus();
+    } });
   } }, 'Set up your partner first');
   const partnerBox = h('div', { class: 'fr-st-partner', hidden: true },
     h('p', { class: 'fr-muted' }, "A locked block needs a partner who can end it early if you really must. Set one up first."), setupBtn);
@@ -105,7 +110,7 @@ export function openStartDialog({ controller, onDone, openPartnerSetup, subscrib
     // The helper can drop out while the dialog is open: fall back to Normal rather than leave Locked selected.
     const ok = helperOk();
     lockedRadio.disabled = busy || !ok;
-    if (!ok && mode === 'locked') { mode = 'normal'; normalRadio.checked = true; }
+    if (!ok && mode === 'locked') { mode = 'normal'; normalRadio.checked = true; confirmBox.checked = false; }
     lockedRadio.checked = locked();
     normalRadio.checked = !locked();
     const lk = locked();
