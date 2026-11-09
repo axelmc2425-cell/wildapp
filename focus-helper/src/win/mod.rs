@@ -2,6 +2,7 @@
 //! Everything here is type-checked on Linux (`--target x86_64-pc-windows-gnu`) but can only
 //! be run on Windows. Pure decisions live in `crate::service_logic`.
 
+pub mod client;
 pub mod dns;
 pub mod install;
 pub mod log;

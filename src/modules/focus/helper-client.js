@@ -13,7 +13,8 @@ export function createHelperClient(call) {
     try {
       raw = await call(JSON.stringify(req));
     } catch (e) {
-      throw e instanceof Error ? e : new Error(String(e));
+      // Tauri rejects with a plain string; a pipe that is down or slow has no helper reply at all.
+      throw fail(e instanceof Error ? e.message : String(e), 'unreachable');
     }
     let res;
     try {
@@ -33,6 +34,8 @@ export function createHelperClient(call) {
     requestChallenge: (windowId) => send({ type: 'RequestChallenge', window_id: windowId }),
     submitToken: (token) => send({ type: 'SubmitToken', token }),
     setPartner: (publicKey) => send({ type: 'SetPartner', public_key: publicKey }),
+    /** Recovery from a bogus far-future clock; refused (`lock-active`) while any lock is pending. */
+    resetClock: () => send({ type: 'ResetClock' }),
   };
 }
 

@@ -62,3 +62,11 @@ fn unknown_args_exit_2() {
     let st = Command::new(env!("CARGO_BIN_EXE_focus-helper")).arg("bogus").stderr(Stdio::null()).status().unwrap();
     assert_eq!(st.code(), Some(2));
 }
+
+#[cfg(not(windows))]
+#[test]
+fn send_is_windows_only_elsewhere() {
+    let out = Command::new(env!("CARGO_BIN_EXE_focus-helper")).args(["send", r#"{"type":"GetStatus"}"#]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Windows only"));
+}

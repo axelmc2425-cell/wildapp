@@ -48,5 +48,20 @@ test('call failures and sync throws become rejections', async () => {
   assert.doesNotThrow(() => { p = c1.status(); });
   await assert.rejects(p, /boom/);
   const c2 = createHelperClient(async () => { throw new Error('async boom'); });
-  await assert.rejects(c2.status(), /async boom/);
+  await assert.rejects(c2.status(), (e) => e instanceof Error && e.code === 'unreachable' && /async boom/.test(e.message));
+  await assert.rejects(c1.status(), (e) => e.code === 'unreachable');
+});
+
+test('string rejections from the Tauri transport become unreachable errors', async () => {
+  const c = createHelperClient(async () => { throw 'The Focus Room helper service is not running'; });
+  await assert.rejects(c.status(), (e) => e instanceof Error && e.code === 'unreachable'
+    && e.message === 'The Focus Room helper service is not running');
+});
+
+test('resetClock sends ResetClock', async () => {
+  const f = fake('{"type":"Ok"}');
+  assert.deepEqual(await f.client.resetClock(), { type: 'Ok' });
+  assert.equal(f.sent[0], '{"type":"ResetClock"}');
+  const e = fake('{"type":"Error","code":"lock-active","message":"nope"}');
+  await assert.rejects(e.client.resetClock(), (x) => x.code === 'lock-active');
 });

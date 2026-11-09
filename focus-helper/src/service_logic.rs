@@ -16,13 +16,14 @@ pub const DIR_NAME: &str = "MyBrainFocus";
 pub const EXE_NAME: &str = "focus-helper.exe";
 pub const STATE_FILE: &str = "state.json";
 
-/// Pipe DACL: SYSTEM and Administrators full control. Authenticated users get explicit rights
+/// Pipe DACL: SYSTEM and Administrators full control. Interactive users (IU: anyone logged on at
+/// the console or over RDP, not services or network logons) get explicit rights
 /// 0x12019b = SYNCHRONIZE | READ_CONTROL | FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES |
 /// FILE_WRITE_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES, i.e. read+write WITHOUT
 /// FILE_APPEND_DATA (0x4), which on a pipe means FILE_CREATE_PIPE_INSTANCE. Without that bit an
 /// ordinary user can talk to the pipe but cannot create instances of it (no hijacking, no
 /// exhausting the instance limit). The service itself creates instances as SYSTEM (GA).
-pub const PIPE_SDDL: &str = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;AU)";
+pub const PIPE_SDDL: &str = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;IU)";
 
 /// State directory DACL, protected (`P`, no inheritance from ProgramData): SYSTEM full control,
 /// Administrators read/execute only, inherited by children. Used at atomic creation so there is
@@ -39,6 +40,26 @@ pub const EXIT_FAILURE: u8 = 3;
 /// Service log cap; rotated once to `service.log.old`.
 pub const LOG_MAX_BYTES: u64 = 1024 * 1024;
 pub const LOG_FILE: &str = "service.log";
+/// Install/uninstall log in the temp dir (the state dir may be read-only to the installer's
+/// user); same cap as the service log.
+pub const INSTALL_LOG_FILE: &str = "mybrain-focus-install.log";
+
+/// `YYYY-MM-DD HH:MM:SS UTC` for a Unix time in milliseconds (civil-from-days, no crates).
+pub fn format_utc(unix_ms: i64) -> String {
+    let secs = unix_ms.div_euclid(1000);
+    let days = secs.div_euclid(86_400);
+    let sod = secs.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02} UTC", sod / 3600, sod % 3600 / 60, sod % 60)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CmdError {
@@ -374,8 +395,9 @@ pub fn uninstall_decision(windows: &[Window], now_ms: i64) -> Result<(), String>
     match latest {
         None => Ok(()),
         Some(ends) => Err(format!(
-            "a locked or frozen focus window is still active or scheduled (latest ends at {ends} ms since the Unix epoch); \
-             it cannot be removed until it ends or the partner unlocks it"
+            "a locked or frozen focus window is still active or scheduled (latest ends at {}); \
+             it cannot be removed until it ends or the partner unlocks it",
+            format_utc(ends)
         )),
     }
 }
@@ -398,6 +420,23 @@ mod tests {
         assert!(uninstall_decision(&[w(Lock::None, 0, 100)], 50).is_ok(), "unlocked window");
         assert!(uninstall_decision(&[w(Lock::Locked, 0, 100)], 100).is_ok(), "ends == now is over");
         assert!(uninstall_decision(&[w(Lock::Locked, 0, 100)], 150).is_ok(), "expired");
+    }
+
+    #[test]
+    fn format_utc_known_values() {
+        assert_eq!(format_utc(0), "1970-01-01 00:00:00 UTC");
+        assert_eq!(format_utc(1_709_208_000_000), "2024-02-29 12:00:00 UTC"); // leap day
+        assert_eq!(format_utc(951_782_400_000), "2000-02-29 00:00:00 UTC"); // 400-year leap
+        assert_eq!(format_utc(1_700_000_000_000), "2023-11-14 22:13:20 UTC");
+        assert_eq!(format_utc(1_700_000_000_999), "2023-11-14 22:13:20 UTC");
+        assert_eq!(format_utc(-1000), "1969-12-31 23:59:59 UTC");
+    }
+
+    #[test]
+    fn refusal_message_shows_a_readable_end_time() {
+        let msg = uninstall_decision(&[w(Lock::Locked, 0, 1_700_000_000_000)], 50).unwrap_err();
+        assert!(msg.contains("2023-11-14 22:13:20 UTC"), "{msg}");
+        assert!(!msg.contains("1700000000000"), "{msg}");
     }
 
     #[test]
@@ -459,7 +498,7 @@ mod tests {
 
     #[test]
     fn sddls_and_icacls() {
-        assert_eq!(PIPE_SDDL, "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;AU)");
+        assert_eq!(PIPE_SDDL, "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;IU)");
         assert_eq!(0x12019b & 0x4, 0, "no FILE_APPEND_DATA / CREATE_PIPE_INSTANCE for users");
         assert_eq!(STATE_DIR_SDDL, "D:P(A;OICI;GA;;;SY)(A;OICI;GRGX;;;BA)");
         assert_eq!(SERVICE_SDDL_ADMIN_MANAGE, "D:(A;;GA;;;SY)(A;;GA;;;BA)");

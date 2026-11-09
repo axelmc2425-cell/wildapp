@@ -4,9 +4,14 @@
 #[cfg_attr(not(windows), allow(dead_code))]
 const MAX_REQUEST: usize = 4 * 1024 * 1024;
 
+/// Async so the pipe I/O (up to the 5 s timeout) runs on a blocking-pool thread and never
+/// stalls the UI thread.
 #[tauri::command]
-pub fn focus_helper_call(request: String) -> Result<String, String> {
-    call(request)
+pub async fn focus_helper_call(request: String) -> Result<String, String> {
+    match tauri::async_runtime::spawn_blocking(move || call(request)).await {
+        Ok(result) => result,
+        Err(e) => Err(format!("The Focus Room helper call failed: {e}")),
+    }
 }
 
 #[cfg(not(windows))]

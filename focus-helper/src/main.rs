@@ -10,7 +10,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use focus_helper::daemon::{Daemon, Platform};
 use focus_helper::enforce::{Proc, ProcessTable};
 
-const USAGE: &str = "usage: focus-helper stdio --state <path> | install | uninstall [--purge-state] | service | watchdog";
+const USAGE: &str = "usage: focus-helper stdio --state <path> | install | uninstall [--purge-state] | service | watchdog | send <json-request | ->";
 
 struct EmptyTable;
 impl ProcessTable for EmptyTable {
@@ -98,7 +98,9 @@ fn windows_cmd(cmd: Cmd) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
+            focus_helper::win::log::install_log(&format!("exit code {}: {}", e.exit_code(), e.message()));
             eprintln!("focus-helper: {}", e.message());
+            eprintln!("focus-helper: details are also in {}", std::env::temp_dir().join(focus_helper::service_logic::INSTALL_LOG_FILE).display());
             ExitCode::from(e.exit_code())
         }
     }
@@ -106,6 +108,38 @@ fn windows_cmd(cmd: Cmd) -> ExitCode {
 
 #[cfg(not(windows))]
 fn windows_cmd(_cmd: Cmd) -> ExitCode {
+    eprintln!("Windows only");
+    ExitCode::from(2)
+}
+
+/// `send`: one JSON request (argument, or `-` for one line from stdin) to the service pipe; prints
+/// the single JSON reply. Exit 0 whenever a reply arrived (even an Error reply), 1 on transport failure.
+#[cfg(windows)]
+fn send(arg: &str) -> ExitCode {
+    let request = if arg == "-" {
+        let mut line = String::new();
+        if io::stdin().lock().read_line(&mut line).is_err() || line.trim().is_empty() {
+            eprintln!("focus-helper: no request on stdin");
+            return ExitCode::from(1);
+        }
+        line
+    } else {
+        arg.to_string()
+    };
+    match focus_helper::win::client::send(&request) {
+        Ok(reply) => {
+            println!("{reply}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("focus-helper: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn send(_arg: &str) -> ExitCode {
     eprintln!("Windows only");
     ExitCode::from(2)
 }
@@ -136,6 +170,7 @@ fn main() -> ExitCode {
         ["uninstall", "--purge-state"] => windows_cmd(Cmd::Uninstall { purge: true }),
         ["service"] => windows_service_main(focus_helper::service_logic::Role::Main),
         ["watchdog"] => windows_service_main(focus_helper::service_logic::Role::Watchdog),
+        ["send", request] => send(request),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)

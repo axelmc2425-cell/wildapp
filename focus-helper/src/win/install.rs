@@ -16,7 +16,13 @@ use windows_service::service::ServiceState;
 use crate::lockstore::LockStore;
 use crate::persist;
 use crate::service_logic::{self as logic, CmdError, Role, SERVICE_SDDL, SERVICE_SDDL_ADMIN_MANAGE};
-use crate::win::log::log;
+use crate::win::log::{install_log, log};
+
+/// Install/uninstall steps go to the service log and to the temp-dir install log.
+fn ilog(msg: &str) {
+    log(msg);
+    install_log(msg);
+}
 use crate::win::{paths, scm};
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -74,13 +80,13 @@ fn disable_and_stop(existing: &[(Role, ServiceState)]) -> Result<(), String> {
 fn restore_service(role: Role) {
     sc_widen(role);
     if let Err(e) = paths::sc(&logic::sc_config_start_args(role, "auto")) {
-        log(&format!("restore: {e}"));
+        ilog(&format!("restore: {e}"));
     }
     if let Err(e) = scm::start_if_stopped(role) {
-        log(&format!("restore: cannot start {}: {e}", role.service_name()));
+        ilog(&format!("restore: cannot start {}: {e}", role.service_name()));
     }
     if let Err(e) = paths::sc(&logic::sc_sdset_args(role, SERVICE_SDDL)) {
-        log(&format!("restore: {e}"));
+        ilog(&format!("restore: {e}"));
     }
 }
 
@@ -111,7 +117,7 @@ pub fn install() -> Result<(), CmdError> {
     for (role, st) in &existing {
         if *st == ServiceState::Stopped && matches!(scm::is_disabled(*role), Ok(Some(true))) {
             // Left over from an interrupted install/uninstall: proceeding re-enables it.
-            log(&format!("install: recovering {} (disabled and stopped)", role.service_name()));
+            ilog(&format!("install: recovering {} (disabled and stopped)", role.service_name()));
         }
     }
 
@@ -119,19 +125,19 @@ pub fn install() -> Result<(), CmdError> {
     if let Err(why) = &lock {
         if existing.iter().any(|(_, st)| *st != ServiceState::Stopped) {
             let msg = format!("install refused: the helper is running and {why}");
-            log(&msg);
+            ilog(&msg);
             return Err(CmdError::LockPending(msg));
         }
     }
 
-    log("install: starting");
+    ilog("install: starting");
     let result = mutate(&existing);
     if let Err(e) = &result {
-        log(&format!("install failed: {e}; restoring protected state"));
+        ilog(&format!("install failed: {e}; restoring protected state"));
         restore();
         return Err(failed(e));
     }
-    log("install: done");
+    ilog("install: done");
     println!("installed {} and {}", Role::Main.service_name(), Role::Watchdog.service_name());
     Ok(())
 }
@@ -212,10 +218,10 @@ pub fn uninstall(purge_state: bool) -> Result<(), CmdError> {
     logic::uninstall_decision(&store.windows, now)
         .map_err(|why| CmdError::LockPending(format!("uninstall refused: {why}")))?;
     let existing = existing_services()?;
-    log("uninstall: starting");
+    ilog("uninstall: starting");
 
     if let Err(e) = disable_and_stop(&existing) {
-        log(&format!("uninstall: stop failed: {e}"));
+        ilog(&format!("uninstall: stop failed: {e}"));
         restore();
         return Err(failed(format!("could not stop the helper services; nothing was removed ({e})")));
     }
@@ -258,12 +264,12 @@ pub fn uninstall(purge_state: bool) -> Result<(), CmdError> {
     }
 
     if problems.is_empty() {
-        log("uninstall: done");
+        ilog("uninstall: done");
         println!("uninstalled");
         Ok(())
     } else {
         let msg = problems.join("; ");
-        log(&format!("uninstall: {msg}"));
+        ilog(&format!("uninstall: {msg}"));
         Err(failed(msg))
     }
 }
