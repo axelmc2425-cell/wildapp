@@ -4,6 +4,8 @@ All Windows-only code (service, named pipe, file permissions, browser encrypted-
 
 **Getting the installer:** open the `build-windows` workflow run on GitHub (Actions tab), scroll to Artifacts, download `MyBrain-windows-installer`, unzip it, then right-click the `.exe` and choose "Run as administrator" on a Windows 10/11 PC. Use a spare PC or a VM (with a snapshot) first. The helper is designed to be hard to remove, so read the next section before testing any lock.
 
+Note: `focus-helper` is not on PATH, so commands below spell out the full path (the folder is the 64-bit Program Files folder, normally `C:\Program Files`).
+
 Terms: "service" = a background Windows program; "ACL" = the permission list on a file or folder; "pipe" = the local channel (`\\.\pipe\mybrain-focus`) the app uses to talk to the helper; "DoH" = encrypted DNS in browsers, which would bypass the hosts-file block.
 
 ## Escape hatches (read before testing locks)
@@ -12,9 +14,9 @@ Terms: "service" = a background Windows program; "ACL" = the permission list on 
 - [ ] Keep a partner key ready (see section 6) before starting any lock — Expected: you have an early exit
 - [ ] Remember: locks always end at their end time — Expected: waiting is always a valid way out
 - [ ] The partner token flow is the early exit while a lock is active — Expected: it ends exactly that one window
-- [ ] If the helper misbehaves while NO lock is active, run `focus-helper uninstall` as Administrator — Expected: services and policies are removed
+- [ ] If the helper misbehaves while NO lock is active, run `& "C:\Program Files\MyBrainFocus\focus-helper.exe" uninstall` in PowerShell as Administrator — Expected: services and policies are removed
 - [ ] If a lock is active and something is wrong, wait out the end time or use the partner token — Expected: uninstall is refused during a lock (by design)
-- [ ] If services are stuck disabled, run `focus-helper install` again as Administrator — Expected: services are re-enabled (start=auto) and running
+- [ ] If services are stuck disabled, run `& "C:\Program Files\MyBrainFocus\focus-helper.exe" install` again in PowerShell as Administrator — Expected: services are re-enabled (start=auto) and running
 
 ## 1. Install and service hardening
 
@@ -22,7 +24,7 @@ Terms: "service" = a background Windows program; "ACL" = the permission list on 
 - [ ] Run `sc query MyBrainFocus` and `sc query MyBrainFocusWatchdog` — Expected: both exist and are RUNNING
 - [ ] Run `sc qc MyBrainFocus` and `sc qc MyBrainFocusWatchdog` — Expected: START_TYPE is AUTO_START and SERVICE_START_NAME is LocalSystem
 - [ ] Check BINARY_PATH_NAME in the `sc qc` output — Expected: it points at `C:\Program Files\MyBrainFocus\focus-helper.exe` (not a per-user folder)
-- [ ] Check the Security tab / `icacls "C:\Program Files\MyBrainFocus"` — Expected: only SYSTEM can write; Administrators and Users are read-only
+- [ ] Check the Security tab / `icacls "C:\Program Files\MyBrainFocus"` — Expected: SYSTEM full control; Administrators read/execute only; no Users entry
 - [ ] In an Administrator prompt run `sc stop MyBrainFocus` — Expected: "Access is denied"
 - [ ] In an Administrator prompt run `sc delete MyBrainFocus` — Expected: "Access is denied"
 - [ ] Open Services (services.msc) as Administrator, right-click MyBrainFocus — Expected: Stop/Pause/Properties changes are denied or greyed out
@@ -38,9 +40,10 @@ Start a short lock that blocks a test site (e.g. `example.com`).
 - [ ] Repeat in Firefox — Expected: fails to load
 - [ ] Open a different subdomain that is not listed (e.g. `blog.example.com`) — Expected: it still loads (known limit: only listed names are blocked)
 - [ ] Open `C:\Windows\System32\drivers\etc\hosts` in Notepad as Administrator — Expected: a managed block between `# BEGIN MYBRAIN-FOCUS` and `# END MYBRAIN-FOCUS` markers; any lines you added yourself are unchanged and outside the block
-- [ ] As a normal user try to edit and save the hosts file — Expected: save is denied (ACL lock holds)
+- [ ] During a block, open Notepad AS ADMINISTRATOR, edit the hosts file and save — Expected: "access denied" (a normal user is denied by Windows default, so this is the meaningful test)
+- [ ] During a block, open the hosts file Security tab (or `icacls`) — Expected: SYSTEM full control, Administrators read/execute only, Users read only
 - [ ] Add a second block, then let both end (or remove them), twice in a row — Expected: the helper rewrites the hosts file every time (lock, apply, unlock cycle works as SYSTEM) with no error
-- [ ] After all blocks end, view the hosts file and its Security tab — Expected: no managed block remains and the ACL is back to the Windows default
+- [ ] After all blocks end, view the hosts file and its Security tab — Expected: no managed block remains and the ACL is back to the Windows default (Administrators have full control again)
 
 ## 3. Encrypted DNS
 
@@ -79,7 +82,8 @@ Start a short Frozen lock with an empty allow list.
 - [ ] Submit the token in the app — Expected: only that one window ends; other windows stay locked
 - [ ] Submit the same token again — Expected: fails with `used`
 - [ ] Submit a token made for a different window — Expected: fails with `wrong-lock`
-- [ ] Wait more than 10 minutes after requesting a challenge, then submit its token — Expected: fails with `expired`
+- [ ] Sign a token, wait more than 10 minutes (the token's 10-minute life counts from when it is signed), then submit it — Expected: fails with `expired`
+- [ ] Optional: submit a token for a challenge requested more than 1 hour ago (the challenge itself is valid for 1 hour) — Expected: fails with `challenge-expired`
 - [ ] Try to set a new partner key while any locked/frozen window with a future end time exists, including a scheduled lock that has not started yet (Ruling 11) — Expected: refused
 - [ ] While a locked window exists, push a smaller set of windows (remove or shorten it) — Expected: refused; the locked window stays unchanged
 
@@ -97,20 +101,21 @@ Start a short Frozen lock with an empty allow list.
 
 ## 9. State directory
 
-- [ ] Run `icacls C:\ProgramData\MyBrainFocus` — Expected: owner is SYSTEM and Users have no access
+- [ ] Run `icacls C:\ProgramData\MyBrainFocus` — Expected: owner is SYSTEM; SYSTEM full control, Administrators read/execute only, no Users entry
 - [ ] Before first install (clean PC), as a standard user create `C:\ProgramData\MyBrainFocus`, then install — Expected: that folder is renamed aside (quarantined) and a fresh protected one is created
-- [ ] Inside the state directory create a junction (`mklink /J`) to a harmless test folder with a file in it, then restart the service (reboot or after the lock) — Expected: the junction is removed as a link and the test folder and its file are untouched
+- [ ] (VM only, no lock active; needs a SYSTEM shell, e.g. `psexec -s cmd` from Sysinternals, because even Administrators cannot write there) Inside the state directory create a junction (`mklink /J`) to a harmless test folder with a file in it, then restart the service (reboot or after the lock) — Expected: the junction is removed as a link and the test folder and its file are untouched
 - [ ] As a standard user try to edit `state.json` — Expected: access denied
-- [ ] Make the state directory read-only for SYSTEM (test VM only), then check Status — Expected: warnings contain `persist:`, and a request that changes state returns `persist-failed`
+- [ ] (VM only, take a snapshot first, NO lock active: this can corrupt persistence mid-lock; needs a SYSTEM shell as above) Make the state directory read-only for SYSTEM, then check Status — Expected: warnings contain `persist:`, and a request that changes state returns `persist-failed`
 - [ ] Restore the directory permissions afterwards — Expected: Status warnings clear
 
 ## 10. Installer, upgrade, uninstall
 
-- [ ] Uninstall via Settings > Apps while a locked/frozen window with a future end time exists — Expected: refused with the lock message (exit code 1); services still present
+- [ ] Uninstall via Settings > Apps while a locked/frozen window with a future end time exists — Expected: refused with the lock message (the GUI shows a message box and aborts; it does not show an exit code); services still present
+- [ ] Run `& "C:\Program Files\MyBrainFocus\focus-helper.exe" uninstall` from an elevated PowerShell while such a window exists, then check `$LASTEXITCODE` (PowerShell) or `%ERRORLEVEL%` (cmd) — Expected: 1
 - [ ] Uninstall when no such window exists — Expected: succeeds
 - [ ] Re-run the installer as Administrator over an existing install with no lock pending — Expected: succeeds
 - [ ] Re-run the installer while a lock is pending and the service is running — Expected: refused with a clear message (known: upgrades wait for locks, up to 30 days)
-- [ ] Kill the installer midway (e.g. while it runs `sc config`), then run `focus-helper install` as Administrator — Expected: both services end up with start=auto and running
+- [ ] Kill the installer midway (e.g. while it runs `sc config`), then run `& "C:\Program Files\MyBrainFocus\focus-helper.exe" install` in PowerShell as Administrator — Expected: both services end up with start=auto and running
 - [ ] Confirm the first installer build compiled (NSIS hook macro names and `$UpdateMode` were not verified offline) — Expected: the build-windows run is green and the installer launches
 - [ ] Install a newer app build over an older one (in-place update, no lock) — Expected: not blocked by the PREUNINSTALL Abort
 
