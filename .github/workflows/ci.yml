@@ -17,11 +17,12 @@ jobs:
         run: cargo build --manifest-path focus-helper/Cargo.toml
       - name: focus-helper unit tests
         run: cargo test --manifest-path focus-helper/Cargo.toml
-      - name: Regenerate decide vectors and partner page, fail on diff
+      - name: Regenerate shared vectors and partner page, fail on diff
         run: |
           node scripts/gen-decide-vectors.js
+          node scripts/gen-item-vectors.js
           node scripts/build-partner-page.js
-          git diff --exit-code -- tests/fixtures/decide-vectors.json src/modules/focus/partner-unlock.html
+          git diff --exit-code -- tests/fixtures/decide-vectors.json tests/fixtures/item-vectors.json src/modules/focus/partner-unlock.html
       - name: Type-check Windows-only code
         run: cargo check --manifest-path focus-helper/Cargo.toml --target x86_64-pc-windows-gnu --all-targets
       - name: JS tests

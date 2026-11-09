@@ -100,3 +100,33 @@ test('out-of-range weekday skips the schedule', async () => {
   const r = rec();
   assert.deepEqual(await syncWindows(db, r.client, NOW, utc), { pushed: 0, skipped: 1 });
 });
+
+test('frozen, allow-without-apps and bad-item windows are skipped and counted, never pushed', async () => {
+  const db = await mk();
+  await db.run("INSERT INTO focus_lists(name, mode) VALUES ('B','block')"); // 1
+  await db.run("INSERT INTO focus_lists(name, mode) VALUES ('A','allow')"); // 2
+  await db.run("INSERT INTO focus_items(list_id, kind, value) VALUES (1,'site','x.com')");
+  await db.run("INSERT INTO focus_items(list_id, kind, value) VALUES (1,'app','League of Legends.exe')");
+  await db.run("INSERT INTO focus_items(list_id, kind, value) VALUES (2,'site','docs.rs')");
+  await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (1, ?, ?, 'frozen')", [NOW - H, NOW + H]); // s1
+  await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (2, ?, ?, 'none')", [NOW - H, NOW + H]); // s2
+  await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (1, ?, ?, 'locked')", [NOW - H, NOW + H]); // s3 ok
+  const r = rec();
+  const res = await syncWindows(db, r.client, NOW, utc);
+  assert.deepEqual(res, { pushed: 1, skipped: 2 });
+  assert.deepEqual(r.pushed[0].map((w) => w.id), ['s3']);
+  assert.deepEqual(r.pushed[0][0].apps, ['league of legends.exe']);
+});
+
+test('a window with a bad app entry is skipped, the rest still pushed', async () => {
+  const db = await mk();
+  await db.run("INSERT INTO focus_lists(name, mode) VALUES ('B','block')");
+  await db.run("INSERT INTO focus_items(list_id, kind, value) VALUES (1,'app','a:b')");
+  await db.run("INSERT INTO focus_lists(name, mode) VALUES ('C','block')");
+  await db.run("INSERT INTO focus_items(list_id, kind, value) VALUES (2,'site','ok.com')");
+  await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (1, ?, ?, 'none')", [NOW - H, NOW + H]);
+  await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (2, ?, ?, 'none')", [NOW - H, NOW + H]);
+  const r = rec();
+  assert.deepEqual(await syncWindows(db, r.client, NOW, utc), { pushed: 1, skipped: 1 });
+  assert.deepEqual(r.pushed[0].map((w) => w.id), ['s2']);
+});

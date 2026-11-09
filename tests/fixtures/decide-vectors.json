@@ -721,6 +721,46 @@
         "kind": "app",
         "value": "notepad.exe",
         "blocked": true
+      },
+      {
+        "kind": "app",
+        "value": "LogonUI.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "consent.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "Memory Compression",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "Secure System",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "MsMpEng.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "ApplicationFrameHost.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "TextInputHost.exe",
+        "blocked": false
+      },
+      {
+        "kind": "app",
+        "value": "shellhost.exe",
+        "blocked": false
       }
     ]
   },

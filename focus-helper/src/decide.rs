@@ -9,6 +9,14 @@ pub const CRITICAL_APPS: &[&str] = &[
     "runtimebroker.exe", "searchhost.exe", "startmenuexperiencehost.exe",
     "shellexperiencehost.exe", "audiodg.exe", "spoolsv.exe", "msedgewebview2.exe",
     "mybrain.exe", "focus-helper.exe",
+    // Logon/UAC/session, shell hosts, security and servicing: killing any of these can lock the
+    // owner out of Windows, so they are never killed even in an allow-list.
+    "logonui.exe", "consent.exe", "credentialuibroker.exe", "userinit.exe", "lockapp.exe",
+    "dllhost.exe", "wmiprvse.exe", "applicationframehost.exe", "textinputhost.exe",
+    "securityhealthservice.exe", "msmpeng.exe", "nissrv.exe", "searchindexer.exe",
+    "wudfhost.exe", "tiworker.exe", "trustedinstaller.exe", "sgrmbroker.exe",
+    "dashost.exe", "smartscreen.exe", "backgroundtaskhost.exe", "memory compression",
+    "secure system", "sppsvc.exe", "searchapp.exe", "shellhost.exe",
 ];
 
 // Sorted by Rust `str` ordering (UTF-8 bytes); JS sorts by UTF-16 code units.

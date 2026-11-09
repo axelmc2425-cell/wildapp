@@ -1,6 +1,6 @@
 // Push the next 30 days of focus windows (sessions + expanded schedules) to the helper.
 import { sessionToWindow, expandSchedule } from './expand.js';
-import { validateWindow } from './limits.js';
+import { validateForPush, MAX_WINDOWS } from './limits.js';
 
 const HORIZON_MS = 30 * 86400000;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -39,14 +39,22 @@ export async function syncWindows(db, client, nowMs, tzOffsetAt) {
       windows.push(...expandSchedule(sched, list, nowMs, HORIZON_MS, tzOffsetAt));
     } catch { skipped++; }
   }
-  // The helper rejects a whole push if any window is invalid, so drop invalid ones here.
+  // The helper rejects a whole push if any window is invalid, so drop invalid ones here. That
+  // includes frozen windows (the helper rejects them until sub-project 4 ships frozen mode),
+  // allow-mode windows without apps, and windows with a bad site or app entry.
   const valid = windows.filter((w) => {
-    if (validateWindow(w).ok) return true;
+    if (validateForPush(w).ok) return true;
     skipped++;
     return false;
   });
   // Windows starting at or beyond the horizon are not yet due; a later sync pushes them.
-  const live = valid.filter((w) => w.ends > nowMs && w.starts < nowMs + HORIZON_MS);
+  let live = valid.filter((w) => w.ends > nowMs && w.starts < nowMs + HORIZON_MS);
+  // The helper caps a push (and its store) at MAX_WINDOWS; keep the soonest ones.
+  if (live.length > MAX_WINDOWS) {
+    live.sort((a, b) => a.starts - b.starts);
+    skipped += live.length - MAX_WINDOWS;
+    live = live.slice(0, MAX_WINDOWS);
+  }
   await client.pushWindows(live);
   return { pushed: live.length, skipped };
 }
