@@ -165,9 +165,31 @@ Frozen mode is not available until sub-project 4 (Ruling 17): the helper rejects
 - [ ] While a block is running, edit a list in it (add a site, remove another) and save — Expected: the new site is blocked and the removed one loads again
 - [ ] Block an app whose name contains spaces (e.g. a game launcher such as `League of Legends.exe`) and try to run it — Expected: it is closed while the block runs
 - [ ] On a fresh profile, click each starter on the first-run card (Social media, News, Games, Blank list) and save — Expected: each creates a list that you can edit and delete afterwards
-- [ ] Open Start a block and look at the Frozen/Locked option — Expected: it is greyed out ("Locked, coming soon") and clicking it does nothing
 
-## 13. Cleanup
+## 13. Focus locks (sub-project 4a)
+
+Nothing here has been run on Windows; these items are the only proof. Use short locks (the shortest allowed wait is 1 hour, so only the wait items take long). Snapshot the VM first.
+
+- [ ] In Focus Room open Start a block, choose Locked, and set up a partner (paste the key from the partner page) — Expected: partner setup is accepted and the Locked option becomes selectable
+- [ ] Start a locked block of about 10 minutes with a 1 hour wait option, then try to change the partner key — Expected: refused during the lock
+- [ ] During the lock, look for a way to cancel or shorten the block in the app — Expected: there is none; the card shows "Locked" and offers only Unlock
+- [ ] During the lock, edit the list in the block (remove a site) — Expected: the removal is refused; the block stays unchanged
+- [ ] During the lock, close the app completely and open the blocked site — Expected: the site is still blocked and a blocked app is still closed
+- [ ] During the lock, reboot Windows and, without opening the app, open the blocked site — Expected: still blocked; reopening Focus Room still shows the locked block with the correct time left
+- [ ] During the lock, run `sc stop MyBrainFocus` and `sc delete MyBrainFocus` in an Administrator prompt — Expected: both denied
+- [ ] During the lock, run the uninstaller (or `focus-helper.exe uninstall`) — Expected: refused; the services and hosts block remain
+- [ ] During the lock, choose Unlock with a partner token, copy the code to the partner page, sign it, paste the token back — Expected: the block ends and the site loads again
+- [ ] Reopen Focus Room after a token unlock — Expected: the block does not return as locked (the unlock is remembered until the original end time)
+- [ ] Paste a wrong token (for example one made for another window) in the unlock dialog — Expected: a clear error and the block stays locked
+- [ ] Start a new locked block (10 minutes or more) and choose Unlock by waiting with the 1 hour option — Expected: a pending card shows the time until the unlock and the site stays blocked in the meantime
+- [ ] Leave the wait running, close and reopen the app, then reboot — Expected: the pending card and its countdown are still correct
+- [ ] While a wait is pending, set the system clock back 1 hour (turn off automatic time first) — Expected: the countdown does not get shorter; the unlock time does not move earlier
+- [ ] While a wait is pending, choose Cancel wait — Expected: the card returns to the plain locked state and the block stays locked until its end
+- [ ] Start another wait and let the full hour pass (or, if the block ends first, note that it simply ends) — Expected: the block unlocks at the wait time and the site loads again
+- [ ] Start a locked block while the service is stopped (only possible with no lock pending: `sc stop MyBrainFocus`, then try to start a Locked block) — Expected: the start is refused with the "helper isn't running" error and no block is created; restart the service afterwards
+- [ ] With a locked block pending its start time in the future, try to change the partner key — Expected: refused
+
+## 14. Cleanup
 
 With no lock pending, uninstall MyBrain.
 

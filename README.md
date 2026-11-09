@@ -53,6 +53,17 @@ cargo build --manifest-path focus-helper/Cargo.toml
 node scripts/shot.mjs /tmp/focus-shots --helper target/debug/focus-helper --steps scripts/focus-steps.mjs [--dark]
 ```
 
+## Focus locks
+
+Locked blocks cannot be cancelled in the app; they end at their end time, with a partner token, or after a chosen waiting period (1 hour or longer). The end-to-end tests (`tests/focus-locks-e2e.test.js`) need a helper built with the `test-clock` feature, which lets the tests move the helper's clock. Build it, then run the test:
+
+```bash
+cargo build --manifest-path focus-helper/Cargo.toml --features test-clock
+node --test tests/focus-locks-e2e.test.js
+```
+
+Never ship a `test-clock` build. The Windows-only behaviour of locks is checked by section 13 of `docs/superpowers/focus-room-windows-checklist.md`.
+
 ## Checklist for trying it on Windows
 
 1. Install it and open MyBrain.
