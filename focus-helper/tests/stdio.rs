@@ -33,7 +33,7 @@ fn stdio_round_trip_keeps_locked_window() {
     };
 
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
-    let w = json!({"id":"w-stdio","starts":now-3_600_000,"ends":now+3_600_000,"lock":"locked","mode":"block","sites":["x.com"],"apps":[]});
+    let w = json!({"id":"w-stdio","starts":now-3_600_000,"ends":now+3_600_000,"lock":"locked","mode":"block","sites":["x.com"],"apps":[],"unlock_delay_ms":86400000});
 
     assert_eq!(call(json!({"type":"SetPartner","public_key":partner_key()}).to_string())["type"], "Ok");
     assert_eq!(call(json!({"type":"PushWindows","windows":[w]}).to_string())["type"], "Ok");

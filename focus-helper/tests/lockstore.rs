@@ -17,6 +17,7 @@ fn win(id: &str, lock: Lock, starts: i64, ends: i64) -> Window {
         mode: Mode::Block,
         sites: vec!["example.com".into()],
         apps: vec!["game.exe".into()],
+        unlock_delay_ms: if lock == Lock::Locked { Some(86_400_000) } else { None },
     }
 }
 
@@ -540,4 +541,58 @@ fn tombstones_survive_serde_and_old_state_loads() {
     assert_eq!((old.version, old.high_water_ms, old.ended_early.len()), (STORE_VERSION, 7, 0));
     let empty: LockStore = serde_json::from_str("{}").unwrap();
     assert_eq!(empty.version, STORE_VERSION);
+}
+
+fn push_one(w: Window) -> Result<PushReport, PushError> {
+    let (mut s, _) = with_partner();
+    s.push(vec![w], NOW)
+}
+
+#[test]
+fn locked_window_requires_delay() {
+    let mut w = win("a", Lock::Locked, NOW, NOW + H);
+    w.unlock_delay_ms = None;
+    assert_eq!(push_one(w), Err(PushError::Invalid(Invalid::BadDelay)));
+}
+
+#[test]
+fn delay_below_one_hour_rejected() {
+    let mut w = win("a", Lock::Locked, NOW, NOW + H);
+    w.unlock_delay_ms = Some(MIN_UNLOCK_DELAY_MS - 1);
+    assert_eq!(push_one(w), Err(PushError::Invalid(Invalid::BadDelay)));
+}
+
+#[test]
+fn delay_above_seven_days_rejected() {
+    let mut w = win("a", Lock::Locked, NOW, NOW + H);
+    w.unlock_delay_ms = Some(MAX_UNLOCK_DELAY_MS + 1);
+    assert_eq!(push_one(w), Err(PushError::Invalid(Invalid::BadDelay)));
+}
+
+#[test]
+fn delay_on_none_window_rejected() {
+    let mut w = win("a", Lock::None, NOW, NOW + H);
+    w.unlock_delay_ms = Some(86_400_000);
+    assert_eq!(push_one(w), Err(PushError::Invalid(Invalid::BadDelay)));
+    assert_eq!(Invalid::BadDelay.reason(), "bad-delay");
+}
+
+#[test]
+fn valid_delay_accepted_and_stored() {
+    let (mut s, _) = with_partner();
+    s.push(vec![win("a", Lock::Locked, NOW, NOW + H)], NOW).unwrap();
+    assert_eq!(s.windows[0].unlock_delay_ms, Some(86_400_000));
+}
+
+#[test]
+fn existing_locked_window_ignores_pushed_item_and_delay_changes() {
+    let (mut s, _) = with_partner();
+    s.push(vec![win("a", Lock::Locked, NOW, NOW + H)], NOW).unwrap();
+    let before = s.windows[0].clone();
+    let mut w = win("a", Lock::Locked, NOW, NOW + H);
+    w.sites = vec!["other.com".into()];
+    w.apps = vec!["other.exe".into()];
+    w.unlock_delay_ms = Some(MIN_UNLOCK_DELAY_MS);
+    s.push(vec![w], NOW).unwrap();
+    assert_eq!(s.windows[0], before);
 }

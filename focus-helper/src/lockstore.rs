@@ -8,6 +8,9 @@ use crate::model::{Lock, Mode, Window};
 use crate::unlock::{self, Challenge, UnlockError, CHALLENGE_TTL_MS};
 
 pub const MAX_LOCKED_MS: i64 = 604_800_000;
+/// Bounds of a Locked window's unlock delay.
+pub const MIN_UNLOCK_DELAY_MS: i64 = 3_600_000;
+pub const MAX_UNLOCK_DELAY_MS: i64 = 604_800_000;
 pub const MAX_FROZEN_MS: i64 = 86_400_000;
 /// Most windows accepted in one push, and most stored.
 pub const MAX_WINDOWS: usize = 1024;
@@ -23,6 +26,7 @@ pub enum Invalid {
     BadTimes,
     BadLock,
     TooLong,
+    BadDelay,
 }
 
 impl Invalid {
@@ -32,6 +36,7 @@ impl Invalid {
             Invalid::BadTimes => "bad-times",
             Invalid::BadLock => "bad-lock",
             Invalid::TooLong => "too-long",
+            Invalid::BadDelay => "bad-delay",
         }
     }
 }
@@ -131,9 +136,15 @@ fn validate_window(w: &Window) -> Result<(), Invalid> {
         return Err(Invalid::BadTimes);
     }
     match cap_for(w.lock) {
-        Some(cap) if w.ends.saturating_sub(w.starts) > cap => Err(Invalid::TooLong),
-        _ => Ok(()),
+        Some(cap) if w.ends.saturating_sub(w.starts) > cap => return Err(Invalid::TooLong),
+        _ => {}
     }
+    let delay_ok = match (w.lock, w.unlock_delay_ms) {
+        (Lock::Locked, Some(d)) => (MIN_UNLOCK_DELAY_MS..=MAX_UNLOCK_DELAY_MS).contains(&d),
+        (Lock::Locked, None) => false,
+        (_, d) => d.is_none(),
+    };
+    if delay_ok { Ok(()) } else { Err(Invalid::BadDelay) }
 }
 
 /// Sites are plain host names: no whitespace, control characters, `#`, `/` or `\`.

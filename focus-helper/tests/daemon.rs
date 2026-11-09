@@ -65,7 +65,7 @@ fn tmp(name: &str) -> PathBuf {
 }
 
 fn window(id: &str, lock: Lock, starts: i64, ends: i64) -> Window {
-    Window { id: id.into(), starts, ends, lock, mode: Mode::Block, sites: vec!["x.com".into(), "a.com".into()], apps: vec![] }
+    Window { id: id.into(), starts, ends, lock, mode: Mode::Block, sites: vec!["x.com".into(), "a.com".into()], apps: vec![], unlock_delay_ms: if lock == Lock::Locked { Some(86_400_000) } else { None } }
 }
 
 fn seed(path: &PathBuf, windows: Vec<Window>, high_water: i64) {

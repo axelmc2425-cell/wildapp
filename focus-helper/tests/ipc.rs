@@ -13,7 +13,7 @@ fn vector() -> Value {
 }
 
 fn win(id: &str, lock: Lock, starts: i64, ends: i64) -> Window {
-    Window { id: id.into(), starts, ends, lock, mode: Mode::Block, sites: vec!["x.com".into()], apps: vec![] }
+    Window { id: id.into(), starts, ends, lock, mode: Mode::Block, sites: vec!["x.com".into()], apps: vec![], unlock_delay_ms: if lock == Lock::Locked { Some(86_400_000) } else { None } }
 }
 
 fn run(s: &mut LockStore, c: &mut EffectiveClock, r: Request) -> Response {
@@ -166,7 +166,7 @@ fn full_conversation() {
         serde_json::from_str(&out).unwrap()
     };
     assert_eq!(call(json!({"type":"SetPartner","public_key":v["publicKey"]})), json!({"type":"Ok"}));
-    let w = json!({"id":id,"starts":NOW-1000,"ends":NOW+3_600_000,"lock":"locked","mode":"block","sites":["news.com"],"apps":[]});
+    let w = json!({"id":id,"starts":NOW-1000,"ends":NOW+3_600_000,"lock":"locked","mode":"block","sites":["news.com"],"apps":[],"unlock_delay_ms":86400000});
     assert_eq!(call(json!({"type":"PushWindows","windows":[w.clone()]})), json!({"type":"Ok"}));
     let ch = call(json!({"type":"RequestChallenge","window_id":id}));
     assert_eq!(ch["type"], "Challenge");

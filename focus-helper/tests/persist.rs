@@ -21,6 +21,7 @@ fn store(id: &str, hw: i64) -> LockStore {
             mode: Mode::Block,
             sites: vec!["a.com".into()],
             apps: vec![],
+            unlock_delay_ms: Some(86_400_000),
         }],
         partner_key: Some("k".into()),
         challenges: vec![],
