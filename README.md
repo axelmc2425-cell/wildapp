@@ -30,6 +30,20 @@ npx tauri dev                                   # run the desktop app (needs Rus
 Layout: `src/` is the plain HTML/JS front end (no build step), `core/` is the testable Rust logic,
 `src-tauri/` is the thin Tauri shell. Design: `docs/superpowers/specs/`, plan: `docs/superpowers/plans/`.
 
+## Building the installer locally
+
+The Windows bundle includes the Focus Room helper, which must be staged as
+`src-tauri/resources/focus-helper.exe` first (the file is git-ignored; without it `tauri dev` and
+`tauri build` fail). On Windows:
+
+```bash
+npm run stage:helper && npx tauri dev     # run the app
+npm run stage:helper && npx tauri build   # build the installer
+```
+
+`stage:helper` runs `cargo build --release -p focus-helper` and copies the result into place.
+To try the Focus Room on a real PC, follow `docs/superpowers/focus-room-windows-checklist.md`.
+
 ## Checklist for trying it on Windows
 
 1. Install it and open MyBrain.

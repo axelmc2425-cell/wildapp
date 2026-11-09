@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test \"tests/**/*.test.js\"",
+    "stage:helper": "node scripts/stage-helper.mjs",
     "tauri": "tauri"
   },
   "devDependencies": {
