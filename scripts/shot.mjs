@@ -1,5 +1,5 @@
 // Headless screenshot harness. Runs src/ in Chromium on top of a real SQLite file.
-// Usage: node scripts/shot.mjs <outDir> [--seed] [--steps path/to/steps.mjs] [--dark] [--helper <focus-helper binary>] [--helper-down]
+// Usage: node scripts/shot.mjs <outDir> [--steps path/to/steps.mjs] [--dark] [--helper <focus-helper binary>] [--helper-down]
 import http from 'node:http';
 import { readFile, mkdir, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,11 +10,9 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { openNodeDb } from '../src/core/db-node.js';
 import { migrate } from '../src/core/schema.js';
 import { createStdioCall } from './helper-bridge.mjs';
-import { createNote, saveNote } from '../src/modules/secondbrain/notes.js';
 
 const args = process.argv.slice(2);
 const outDir = resolve(args[0] || 'shots');
-const seed = args.includes('--seed');
 const dark = args.includes('--dark');
 const stepsIdx = args.indexOf('--steps');
 const stepsFile = stepsIdx >= 0 ? resolve(args[stepsIdx + 1]) : null;
@@ -55,24 +53,6 @@ await mkdir(outDir, { recursive: true });
 const dir = await mkdtemp(join(tmpdir(), 'mybrain-shot-'));
 const db = await openNodeDb(join(dir, 'shot.db'));
 await migrate(db);
-
-if (seed) {
-  const specs = [
-    ['Welcome', 'Start here. See [[Projects]] and [[Reading list]]. #meta'],
-    ['Projects', 'Active work: [[Garden plan]] and [[Budget]]. #work'],
-    ['Garden plan', 'Tomatoes and herbs need sun. Link back to [[Projects]]. #garden #work'],
-    ['Budget', 'Monthly budget notes about savings and groceries. #money #work'],
-    ['Reading list', 'Books about gardening and money. [[Garden plan]] #books'],
-    ['Ideas', 'A tool for planning a vegetable garden with sun maps. #garden #ideas'],
-    ['2026-11-08', '# 2026-11-08\n\n## Today\nTalked about [[Budget]].\n'],
-    ['Meeting notes', 'Discussed the budget and the garden plan with [[Projects]].'],
-  ];
-  for (const [title, body] of specs) await createNote(db, { title });
-  for (const [title, body] of specs) {
-    const n = (await db.all('SELECT id FROM notes WHERE title = ?', [title]))[0];
-    await saveNote(db, n.id, { body });
-  }
-}
 
 const pw = loadPlaywright();
 const browser = await pw.chromium.launch();
@@ -144,8 +124,6 @@ try {
     await shot('home');
     await page.goto(url + '#/settings');
     await shot('settings');
-    await page.keyboard.press('Control+k');
-    await shot('palette');
   }
 } finally {
   if (bridge) await bridge.close();

@@ -9,8 +9,7 @@ use mybrain_core::photos::{self, ImportResult};
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri::{Manager, State};
 
 struct DataDir(PathBuf);
 
@@ -81,33 +80,9 @@ fn photo_delete(dd: State<DataDir>, file: String) -> Result<(), String> {
     photos::delete_photo_file(&dd.0, &file)
 }
 
-fn open_quick(app: &tauri::AppHandle) {
-    if let Some(w) = app.get_webview_window("quick") {
-        let _ = w.show();
-        let _ = w.set_focus();
-        return;
-    }
-    let _ = WebviewWindowBuilder::new(app, "quick", WebviewUrl::App("quick/quick.html".into()))
-        .title("Quick note")
-        .inner_size(480.0, 320.0)
-        .always_on_top(true)
-        .center()
-        .focused(true)
-        .build();
-}
-
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state() == ShortcutState::Pressed {
-                        open_quick(app);
-                    }
-                })
-                .build(),
-        )
         .setup(|app| {
             let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
             std::fs::create_dir_all(dir.join("attachments")).map_err(|e| e.to_string())?;
@@ -115,10 +90,6 @@ fn main() {
             let _ = backup::apply_pending_restore(&dir);
             app.manage(Db::open(&dir.join("mybrain.db"))?);
             app.manage(DataDir(dir));
-            // Ctrl+Alt+N opens the quick-capture window; ignore the error if another app owns the shortcut.
-            let _ = app
-                .global_shortcut()
-                .register(Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyN));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
