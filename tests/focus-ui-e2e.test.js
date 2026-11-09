@@ -100,7 +100,7 @@ test('a block started while the helper is down is pushed once the bridge starts'
   assert.equal(s.windows.length, 1, 'a second resync leaves exactly one window');
 });
 
-test('a 1-minute block with a clock far in the past is never pushed', { skip }, async (t) => {
+test('a block on a far-past clock is not held or enforced by the helper (the helper uses its own clock)', { skip }, async (t) => {
   const past = Date.UTC(2020, 0, 1, 12);
   const { ctl, client } = await setup(t, { now: () => past });
   const a = await ctl.saveList(list('Social', ['reddit.com']));
