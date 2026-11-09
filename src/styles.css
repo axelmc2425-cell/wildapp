@@ -165,3 +165,21 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-err { color: var(--danger); font-size: 13px; margin: 8px 0 0; }
 .fr-home button:disabled, .fr-dialog button:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 960px) { .fr-home { padding: 20px 16px; } .fr-list { flex-wrap: wrap; } }
+/* ---- Focus Room list editor ---- */
+.fr-editor { display: flex; flex-direction: column; gap: 12px; }
+.fr-dialog:has(.fr-editor) { width: min(520px, 100%); }
+.fr-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.fr-field > label { font-weight: 600; font-size: 13px; }
+.fr-field input[type="text"] { width: 100%; box-sizing: border-box; padding: 7px 10px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; font: inherit; }
+.fr-field input[type="text"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fr-hint { margin: 0; font-size: 12px; color: var(--muted); }
+.fr-msg { display: flex; flex-wrap: wrap; gap: 0 10px; align-items: baseline; }
+.fr-msg .fr-err { margin: 0; }
+.fr-ednote { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.fr-chiprow { display: flex; flex-wrap: wrap; gap: 6px; max-height: 132px; overflow-y: auto; padding: 2px 0; min-width: 0; }
+.fr-chiprow[hidden], .fr-err[hidden] { display: none; }
+.fr-edchip { align-items: center; padding-right: 2px; }
+.fr-chipx { border: 0; background: transparent; padding: 0 5px; border-radius: 4px; color: var(--muted); font-size: 14px; line-height: 1.2; cursor: pointer; }
+.fr-chipx:hover, .fr-chipx:focus-visible { color: var(--text); background: var(--border); }
+.fr-errlist { margin: 0; padding-left: 18px; overflow-wrap: anywhere; max-height: 110px; overflow-y: auto; }
+.fr-editor > .fr-err { margin: 0; }
