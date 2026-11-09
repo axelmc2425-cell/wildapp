@@ -26,10 +26,12 @@ async function probe() {
   const dir = mkdtempSync(join(tmpdir(), 'focus-locks-probe-'));
   const b = createStdioCall(exe, join(dir, 'state.json'));
   try {
+    // A spawn failure, crash or malformed reply throws here and fails the run; only a clean
+    // `bad-request` (unknown variant) means "built without test-clock".
     const res = JSON.parse(await b.call(JSON.stringify({ type: 'AdvanceClock', ms: 0 })));
-    return res.type === 'Error' ? 'focus-helper was built without --features test-clock (AdvanceClock refused)' : false;
-  } catch (e) {
-    return `focus-helper probe failed: ${e.message}`;
+    if (res.type === 'Ok') return false;
+    if (res.type === 'Error' && res.code === 'bad-request') return 'focus-helper was built without --features test-clock (AdvanceClock: bad-request)';
+    throw new Error(`unexpected AdvanceClock reply: ${JSON.stringify(res)}`);
   } finally {
     await b.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
@@ -76,19 +78,31 @@ async function setup(t) {
     const r = await ctl.startLockedBlock({ listIds: [a.id], minutes, delayHours: 1 });
     assert.equal(r.ok, true, JSON.stringify(r));
     const block = ctl.state.blocks.find((b) => b.lock === 'locked');
-    return { a, block, wid: windowIdForBlock(block) };
+    const wid = windowIdForBlock(block);
+    await assertLive(wid); // the helper really holds it, so later "ended" checks are meaningful
+    return { a, block, wid };
   };
   const token = async (key) => {
     const c = await ctl.requestPartnerChallenge(key);
     assert.equal(c.ok, true, JSON.stringify(c));
     return signUnlock(keys.privateKeyJwk, c.code, Date.now());
   };
+  const present = (s, wid) => s.windows.some((x) => x.id === wid);
+  // Ended on the helper's own clock. An absent window also counts as ended (a pruned one), so use
+  // `live` where the window must still exist.
   const ended = (s, wid) => {
     const w = s.windows.find((x) => x.id === wid);
     return !w || w.ends <= s.now_ms;
   };
+  // The helper itself still holds the window and enforces its sites.
+  const assertLive = async (wid) => {
+    const s = await client.status();
+    assert.ok(present(s, wid), 'window must be present on the helper');
+    assert.equal(ended(s, wid), false, 'window must not be ended');
+    assert.ok(s.decision.blockSites.includes('reddit.com'));
+  };
   return {
-    ctl, client, keys, advance, restart, lockedBlock, token, ended, list, db,
+    ctl, client, keys, advance, restart, lockedBlock, token, ended, present, assertLive, list, db,
     setDown: (v) => { isDown = v; },
   };
 }
@@ -121,28 +135,37 @@ test('cancel is refused and the helper still holds the window', T, async (t) => 
 });
 
 test('unlock with a real partner token ends the lock and a re-sync does not bring it back', T, async (t) => {
-  const { ctl, client, lockedBlock, token, ended } = await setup(t);
+  const { ctl, client, lockedBlock, token, ended, present } = await setup(t);
   const { block, wid } = await lockedBlock();
+  const original = (await client.status()).windows.find((w) => w.id === wid);
+  assert.ok(original);
   assert.deepEqual(await ctl.submitPartnerToken(block.key, await token(block.key)), { ok: true });
   assert.equal(ctl.state.blocks.filter((b) => b.lock === 'locked' && b.state === 'running').length, 0);
   let s = await client.status();
+  assert.ok(present(s, wid), 'the real helper keeps listing the window it ended early');
   assert.ok(ended(s, wid));
   assert.deepEqual(s.decision.blockSites, []);
   await ctl.resync();
   s = await client.status();
   assert.ok(ended(s, wid), 're-sync must not revive the window');
   assert.deepEqual(s.decision.blockSites, []);
+  // The helper's own tombstone: pushing the ORIGINAL window (same id, original end) must not bring it back.
+  await client.pushWindows([original]);
+  s = await client.status();
+  assert.ok(ended(s, wid), 'pushing the original window must not revive it');
+  assert.deepEqual(s.decision.blockSites, []);
   assert.equal(ctl.state.blocks.filter((b) => b.lock === 'locked' && b.state === 'running').length, 0);
 });
 
 test('wait it out: request, advance the clock past the delay, the controller removes the block', T, async (t) => {
-  const { ctl, client, lockedBlock, advance, ended } = await setup(t);
+  const { ctl, client, lockedBlock, advance, ended, assertLive } = await setup(t);
   const { block, wid } = await lockedBlock();
   const r = await ctl.startDelayedUnlock(block.key);
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.ok(Number.isFinite(r.unlockAt));
   assert.equal((await client.status()).pending_unlocks.length, 1);
   assert.equal(ctl.state.blocks.filter((b) => b.lock === 'locked').length, 1, 'still locked during the wait');
+  await assertLive(wid);
   await advance(PAST_DELAY);
   await ctl.refreshStatus();
   const s = await client.status();
@@ -152,11 +175,12 @@ test('wait it out: request, advance the clock past the delay, the controller rem
 });
 
 test('cancelling a wait keeps the lock after the delay passes', T, async (t) => {
-  const { ctl, client, lockedBlock, advance, ended } = await setup(t);
+  const { ctl, client, lockedBlock, advance, ended, assertLive } = await setup(t);
   const { block, wid } = await lockedBlock();
   assert.equal((await ctl.startDelayedUnlock(block.key)).ok, true);
   assert.deepEqual(await ctl.cancelDelayedUnlock(block.key), { ok: true });
   assert.equal((await client.status()).pending_unlocks.length, 0);
+  await assertLive(wid);
   await advance(PAST_DELAY);
   await ctl.refreshStatus();
   const s = await client.status();
@@ -166,7 +190,7 @@ test('cancelling a wait keeps the lock after the delay passes', T, async (t) => 
 });
 
 test('a wait survives restarting the helper bridge on the same state file', T, async (t) => {
-  const { ctl, client, lockedBlock, advance, restart, ended } = await setup(t);
+  const { ctl, client, lockedBlock, advance, restart, ended, assertLive } = await setup(t);
   const { block, wid } = await lockedBlock();
   const r = await ctl.startDelayedUnlock(block.key);
   assert.equal(r.ok, true, JSON.stringify(r));
@@ -177,6 +201,7 @@ test('a wait survives restarting the helper bridge on the same state file', T, a
   assert.equal(s0.windows.length, 1);
   await ctl.refreshStatus();
   assert.equal(ctl.state.blocks.filter((b) => b.lock === 'locked' && b.state === 'running').length, 1);
+  await assertLive(wid);
   await advance(PAST_DELAY);
   await ctl.refreshStatus();
   assert.ok(ended(await client.status(), wid));
