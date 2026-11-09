@@ -58,7 +58,8 @@ export async function syncWindows(db, client, nowMs, tzOffsetAt) {
   for (const group of blocks.values()) {
     const w = lockedBlockToWindow(group, byId);
     const prev = merged.get(w.id);
-    if (!prev || w.unlock_delay_ms > prev.unlock_delay_ms) merged.set(w.id, w);
+    if (!prev || w.unlock_delay_ms > prev.unlock_delay_ms
+      || (w.unlock_delay_ms === prev.unlock_delay_ms && w.ends > prev.ends)) merged.set(w.id, w);
   }
   windows.push(...merged.values());
   for (const s of schedules) {

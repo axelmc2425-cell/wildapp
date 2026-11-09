@@ -292,6 +292,7 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
     if (h.kind === 'unavailable') return 'The Focus Room helper is only available in the desktop app.';
     return describeUnlockError(err);
   }
+  const isTimeout = (err) => { try { return classifyHelperFailure(err).kind === 'timeout'; } catch { return false; } };
   const unreachable = (err) => {
     if (err && err.code === 'unreachable') return true;
     try { return ['not-running', 'timeout', 'unavailable'].includes(classifyHelperFailure(err).kind); } catch { return false; }
@@ -327,18 +328,18 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
         return { ok: false, message: "Nothing was locked. Add your partner's key first, so someone else can end it early if you need." };
       }
       let ids;
+      let starts0;
       try {
-        const starts = now();
+        starts0 = now();
         ids = await store.createSessions(db, {
-          listIds: uniq, starts, ends: starts + minutes * MIN, lock: 'locked', unlockDelayMs: delay.hours * 3600000,
+          listIds: uniq, starts: starts0, ends: starts0 + minutes * MIN, lock: 'locked', unlockDelayMs: delay.hours * 3600000,
         });
       } catch (e) {
         return dbFail(e);
       }
       const priorPending = syncPending;
-      try {
-        lastSync = await syncWindows(db, client, now(), tzOffsetAt);
-      } catch (err) {
+      const wid = windowIdForBlock({ starts: starts0, listIds: uniq });
+      const rollback = async (reason) => {
         let undone = true;
         try { await store.endLockedSessions(db, ids); } catch { undone = false; }
         syncPending = priorPending;
@@ -346,21 +347,55 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
         changed();
         if (!undone) {
           syncPending = true;
-          return { ok: false, message: 'The helper refused the lock, and it could not be undone here. Reopen the Focus Room to check.' };
+          return { ok: false, message: 'The helper did not take the lock, and it could not be undone here. Reopen the Focus Room to check.' };
         }
-        return { ok: false, message: `Nothing was locked. ${plainReason(err)}` };
+        return { ok: false, message: `Nothing was locked. ${reason}` };
+      };
+      // true: the helper holds the new window; false: it does not; null: could not tell.
+      const holds = async () => {
+        try {
+          const st = await client.status();
+          return Array.isArray(st && st.windows) && st.windows.some((w) => w && w.id === wid);
+        } catch { return null; }
+      };
+      const unconfirmed = () => {
+        syncPending = true;
+        seq++;
+        changed();
+        return { ok: true, unconfirmed: true, message: "Couldn't confirm the lock with the helper. It may be on. Check the Focus Room." };
+      };
+      const confirmed = async (message) => {
+        syncPending = false;
+        notice = null;
+        await reloadSafe();
+        await pollAndReconcile();
+        changed();
+        return message ? { ok: true, message } : { ok: true };
+      };
+      let pushErr = null;
+      try {
+        lastSync = await syncWindows(db, client, now(), tzOffsetAt);
+      } catch (err) { pushErr = err; }
+      if (pushErr) {
+        const code = pushErr && pushErr.code;
+        const ambiguous = code === 'persist-failed' || isTimeout(pushErr);
+        const definite = !ambiguous && (PUSH_REJECTION_CODES.has(code) || code === 'no-partner' || unreachable(pushErr));
+        // Anything else (timeout, persist-failed, unknown) may have applied: ask the helper.
+        if (definite) return rollback(plainReason(pushErr));
+        const present = await holds();
+        if (present === null) return unconfirmed();
+        if (!present) return rollback(plainReason(pushErr));
+        return confirmed(code === 'persist-failed' ? 'Locked, but the helper could not save it, so it will be lost on restart.' : undefined);
       }
-      syncPending = false;
-      notice = null;
-      await reloadSafe();
-      await pollAndReconcile();
-      changed();
-      return { ok: true };
+      const present = await holds();
+      if (present === null) return unconfirmed();
+      if (!present) return rollback('The helper did not receive it.');
+      return confirmed();
     });
   }
 
   // Shared shape of the four lock requests: find the live locked block by the key given, ask the helper.
-  function lockRequest(blockKey, call, done) {
+  function lockRequest(blockKey, expectType, call, done) {
     return enqueue(async () => {
       let block;
       try {
@@ -377,6 +412,9 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
       } catch (err) {
         return requestFailure(err);
       }
+      if (!res || res.type !== expectType) {
+        return { ok: false, message: 'The helper sent an unexpected reply. The lock is unchanged as far as we can tell. Refresh and try again.' };
+      }
       await pollAndReconcile();
       changed();
       return done(res, windowId);
@@ -384,7 +422,7 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
   }
 
   function requestPartnerChallenge(blockKey) {
-    return lockRequest(blockKey, (id) => client.requestChallenge(id), (res) => (
+    return lockRequest(blockKey, 'Challenge', (id) => client.requestChallenge(id), (res) => (
       res && typeof res.code === 'string' && res.code
         ? { ok: true, code: res.code }
         : { ok: false, message: 'The helper sent an unreadable reply. Try again.' }));
@@ -394,11 +432,11 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
     if (typeof token !== 'string' || token.trim() === '' || token.length > 4096) {
       return Promise.resolve({ ok: false, message: describeUnlockError({ code: 'bad-format' }) });
     }
-    return lockRequest(blockKey, () => client.submitToken(token.trim()), () => ({ ok: true }));
+    return lockRequest(blockKey, 'Ok', () => client.submitToken(token.trim()), () => ({ ok: true }));
   }
 
   function startDelayedUnlock(blockKey) {
-    return lockRequest(blockKey, (id) => client.requestDelayedUnlock(id), (res, id) => {
+    return lockRequest(blockKey, 'UnlockPending', (id) => client.requestDelayedUnlock(id), (res, id) => {
       const at = res && Number.isFinite(res.unlock_at) ? res.unlock_at : pendingUnlockFor(helper.status, id);
       return at == null
         ? { ok: false, message: 'The helper sent an unreadable reply. Try again.' }
@@ -407,7 +445,7 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
   }
 
   function cancelDelayedUnlock(blockKey) {
-    return lockRequest(blockKey, (id) => client.cancelDelayedUnlock(id), () => ({ ok: true }));
+    return lockRequest(blockKey, 'Ok', (id) => client.cancelDelayedUnlock(id), () => ({ ok: true }));
   }
 
   function setPartner(input) {
@@ -417,12 +455,17 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
       const nm = typeof name === 'string' ? name.trim() : '';
       if (!key || key.length > 1024) return { ok: false, message: describeUnlockError({ code: 'bad-key' }) };
       if (!nm || nm.length > 60) return { ok: false, message: 'Enter your partner\'s name (up to 60 characters).' };
+      let warning = null;
       try {
         await client.setPartner(key);
       } catch (err) {
-        return unreachable(err)
-          ? { ok: false, message: 'Not sent. Your partner was not changed.' }
-          : { ok: false, message: describeUnlockError(err) };
+        if (err && err.code === 'persist-failed') {
+          warning = 'The partner key is set, but the helper could not save it, so it will be lost on restart.';
+        } else {
+          return unreachable(err)
+            ? { ok: false, message: 'Not sent. Your partner was not changed.' }
+            : { ok: false, message: describeUnlockError(err) };
+        }
       }
       try {
         await db.batch([
@@ -430,13 +473,18 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
           { sql: 'INSERT INTO focus_partner(public_key, name) VALUES (?, ?)', params: [key, nm] },
         ]);
       } catch (e) {
+        // The helper now has the new key; never keep showing the previous partner's name.
+        try { await db.run('DELETE FROM focus_partner'); } catch { /* best effort */ }
+        await reloadSafe();
+        partnerName = null;
         await pollAndReconcile();
-        return { ok: false, message: `The helper accepted the key, but the name could not be saved: ${errText(e)}` };
+        changed();
+        return { ok: false, message: `The helper accepted the key but its name could not be saved: ${errText(e)}.` };
       }
       await reloadSafe();
       await pollAndReconcile();
       changed();
-      return { ok: true };
+      return warning ? { ok: true, message: warning } : { ok: true };
     });
   }
 

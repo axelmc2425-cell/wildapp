@@ -60,7 +60,7 @@ export function describeUnlockError(err) {
 /** Mirrors the id `lockedBlockToWindow` builds. @param {{starts: number, ends: number, listIds: number[]}} block */
 export function windowIdForBlock(block) {
   const listIds = [...new Set(block.listIds)].sort((a, b) => a - b);
-  return 'b' + block.starts + '-' + block.ends + '-' + listIds.join('.');
+  return 'b' + block.starts + '-' + listIds.join('.');
 }
 
 /** @returns {number|null} unlock_at for the window, or null */

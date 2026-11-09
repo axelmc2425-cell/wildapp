@@ -62,7 +62,7 @@ test('windowIdForBlock equals lockedBlockToWindow id', () => {
   const [block] = groupSessions(sessions, lists, 0);
   const win = lockedBlockToWindow(sessions, new Map(lists.map((l) => [l.id, l])));
   assert.equal(windowIdForBlock(block), win.id);
-  assert.equal(win.id, 'b1000-5000-2.10');
+  assert.equal(win.id, 'b1000-2.10');
 });
 
 test('pendingUnlockFor', () => {

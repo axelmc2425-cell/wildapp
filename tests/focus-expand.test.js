@@ -96,7 +96,7 @@ test('two lists in one locked block become one window with the union of items', 
     [2, { id: 2, mode: 'block', items: [{ kind: 'site', value: 'https://www.X.com/' }, { kind: 'site', value: 'y.com' }, { kind: 'app', value: 'slack.exe' }] }],
   ]);
   const w = lockedBlockToWindow([lsess(1, 1), lsess(2, 2)], listsById);
-  assert.equal(w.id, 'b1000-5000-1.2');
+  assert.equal(w.id, 'b1000-1.2');
   assert.deepEqual(w.sites.sort(), ['x.com', 'y.com']);
   assert.deepEqual(w.apps, ['slack.exe']);
   assert.equal(w.lock, 'locked');
@@ -115,5 +115,5 @@ test('window id is stable across calls and independent of row order', () => {
   const a = lockedBlockToWindow([lsess(1, 3), lsess(2, 10), lsess(3, 2)], listsById);
   const b = lockedBlockToWindow([lsess(3, 2), lsess(1, 3), lsess(2, 10)], listsById);
   assert.equal(a.id, b.id);
-  assert.equal(a.id, 'b1000-5000-2.3.10');
+  assert.equal(a.id, 'b1000-2.3.10');
 });

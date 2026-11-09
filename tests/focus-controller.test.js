@@ -700,3 +700,151 @@ test('HELPER_UNAVAILABLE_CLIENT answers every lock call without throwing', async
     await assert.rejects(() => c[m]('x'), (e) => e.code === 'unreachable');
   }
 });
+
+// ---- fix round 1 ----
+// A fake that behaves like the real helper: it retains locked windows across pushes, treats a same-id
+// push with a later end as an extension (keeping stored fields) and any other id as a new window.
+function realish(client) {
+  let held = [];
+  client.mirror = true;
+  client.pushWindows = async (incoming) => {
+    if (client.fail) throw client.fail;
+    const next = held.map((w) => ({ ...w }));
+    for (const w of incoming) {
+      if (w.lock !== 'locked') continue;
+      const old = next.find((k) => k.id === w.id);
+      if (old) { if (w.ends > old.ends) old.ends = w.ends; } else next.push({ ...w });
+    }
+    held = next;
+    client.windows = [...held, ...incoming.filter((w) => w.lock !== 'locked')];
+    return { type: 'Ok' };
+  };
+  client.submitToken = async () => { held = []; client.windows = []; return { type: 'Ok' }; };
+  return { held: () => held };
+}
+
+test('extend keeps exactly one helper window for the block, and a token then removes it', async () => {
+  const x = await lockedSetup();
+  const h = realish(x.client);
+  await startLocked(x, { minutes: 60 });
+  assert.equal(h.held().length, 1);
+  const id = h.held()[0].id;
+  assert.deepEqual(await x.ctl.extendBlock(x.ctl.state.blocks[0].key, 30), { ok: true });
+  assert.equal(h.held().length, 1);
+  assert.equal(h.held()[0].id, id);
+  assert.equal(h.held()[0].ends, T0 + 90 * MIN);
+  const r = await x.ctl.submitPartnerToken(x.ctl.state.blocks[0].key, 'TOKEN');
+  assert.deepEqual(r, { ok: true });
+  assert.equal(h.held().length, 0);
+  assert.equal(await rowCount(x.db), 0);
+});
+
+test('locked start: persist-failed with the window present keeps the rows and warns', async () => {
+  const x = await lockedSetup();
+  const h = realish(x.client);
+  const push = x.client.pushWindows;
+  x.client.pushWindows = async (w) => { await push(w); throw mkErr('persist-failed', 'disk'); };
+  const r = await startLocked(x);
+  assert.deepEqual(r, { ok: true, message: 'Locked, but the helper could not save it, so it will be lost on restart.' });
+  assert.equal(await rowCount(x.db), 2);
+  assert.equal(h.held().length, 1);
+});
+
+test('locked start: persist-failed with the window absent rolls back', async () => {
+  const x = await lockedSetup();
+  realish(x.client);
+  x.client.pushWindows = async () => { throw mkErr('persist-failed', 'disk'); };
+  const r = await startLocked(x);
+  assert.equal(r.ok, false);
+  assert.match(r.message, /^Nothing was locked\. /);
+  assert.equal(await rowCount(x.db), 0);
+});
+
+test('locked start: timeout with the window present is a plain success', async () => {
+  const x = await lockedSetup();
+  realish(x.client);
+  const push = x.client.pushWindows;
+  x.client.pushWindows = async (w) => { await push(w); throw mkErr('unreachable', 'The helper did not answer in time'); };
+  assert.deepEqual(await startLocked(x), { ok: true });
+  assert.equal(await rowCount(x.db), 2);
+});
+
+test('locked start: timeout with the window absent rolls back', async () => {
+  const x = await lockedSetup();
+  realish(x.client);
+  x.client.pushWindows = async () => { throw mkErr('unreachable', 'The helper did not answer in time'); };
+  const r = await startLocked(x);
+  assert.equal(r.ok, false);
+  assert.equal(await rowCount(x.db), 0);
+});
+
+test('locked start: timeout then unreadable status keeps the rows, unconfirmed, syncPending', async () => {
+  const x = await lockedSetup();
+  realish(x.client);
+  let n = 0;
+  const st = x.client.status;
+  x.client.status = async () => { if (++n > 1) throw mkErr('unreachable', 'The helper did not answer in time'); return st(); };
+  x.client.pushWindows = async () => { throw mkErr('unreachable', 'The helper did not answer in time'); };
+  const r = await startLocked(x);
+  assert.deepEqual(r, { ok: true, unconfirmed: true, message: "Couldn't confirm the lock with the helper. It may be on. Check the Focus Room." });
+  assert.equal(await rowCount(x.db), 2);
+  assert.equal(x.ctl.state.syncPending, true);
+});
+
+test('locked start: a push that succeeds but whose window is absent from status rolls back', async () => {
+  const x = await lockedSetup();
+  realish(x.client);
+  x.client.pushWindows = async () => ({ type: 'Ok' }); // helper silently holds nothing
+  const r = await startLocked(x);
+  assert.deepEqual(r, { ok: false, message: 'Nothing was locked. The helper did not receive it.' });
+  assert.equal(await rowCount(x.db), 0);
+  assert.equal(x.ctl.state.syncPending, false);
+});
+
+test('locked start: status unreadable after a good push is unconfirmed, rows kept', async () => {
+  const x = await lockedSetup();
+  realish(x.client);
+  let n = 0;
+  const st = x.client.status;
+  x.client.status = async () => { if (++n > 1) throw mkErr('unreachable', 'x'); return st(); };
+  const r = await startLocked(x);
+  assert.equal(r.ok, true);
+  assert.equal(r.unconfirmed, true);
+  assert.equal(await rowCount(x.db), 2);
+  assert.equal(x.ctl.state.syncPending, true);
+});
+
+test('setPartner: persist-failed counts as accepted and warns', async () => {
+  const x = await lockedSetup();
+  x.client.lockErr = mkErr('persist-failed', 'disk');
+  const r = await x.ctl.setPartner({ publicKey: 'K', name: 'Sam' });
+  assert.equal(r.ok, true);
+  assert.match(r.message, /lost on restart/);
+  assert.deepEqual(JSON.parse(JSON.stringify(await x.db.all('SELECT name FROM focus_partner'))), [{ name: 'Sam' }]);
+});
+
+test('setPartner: a failed name save after the helper accepted never shows the old name', async () => {
+  const x = await lockedSetup();
+  await x.ctl.setPartner({ publicKey: 'K1', name: 'Old' });
+  await x.db.run("CREATE TRIGGER nope BEFORE INSERT ON focus_partner BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+  const r = await x.ctl.setPartner({ publicKey: 'K2', name: 'New' });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /^The helper accepted the key but its name could not be saved: .*disk full.*\.$/);
+  assert.deepEqual(x.ctl.state.partner, { set: true, name: null });
+});
+
+test('unexpected reply types give a plain failure', async () => {
+  const x = await lockedSetup();
+  await startLocked(x);
+  const key = x.ctl.state.blocks[0].key;
+  x.client.requestChallenge = async () => ({ type: 'Ok' });
+  x.client.submitToken = async () => ({ type: 'Challenge', code: 'x' });
+  x.client.requestDelayedUnlock = async () => ({ type: 'Ok' });
+  x.client.cancelDelayedUnlock = async () => ({ type: 'UnlockPending', unlock_at: 1 });
+  for (const f of [() => x.ctl.requestPartnerChallenge(key), () => x.ctl.submitPartnerToken(key, 'T'), () => x.ctl.startDelayedUnlock(key), () => x.ctl.cancelDelayedUnlock(key)]) {
+    const r = await f();
+    assert.equal(r.ok, false);
+    assert.match(r.message, /unexpected reply/);
+  }
+  assert.equal(await rowCount(x.db), 2);
+});

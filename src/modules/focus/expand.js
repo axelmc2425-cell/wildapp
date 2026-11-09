@@ -45,7 +45,7 @@ export function lockedBlockToWindow(sessions, listsById) {
     t.apps.forEach((x) => apps.add(x));
   }
   return {
-    id: 'b' + starts + '-' + ends + '-' + listIds.join('.'), starts, ends, lock: 'locked', mode: 'block',
+    id: 'b' + starts + '-' + listIds.join('.'), starts, ends, lock: 'locked', mode: 'block',
     sites: [...sites], apps: [...apps], unlock_delay_ms: unlockDelayMs,
   };
 }

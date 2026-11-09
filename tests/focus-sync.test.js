@@ -43,10 +43,10 @@ test('session and weekly schedule; finished sessions dropped', async () => {
   assert.equal(ws.length, 5);
   assert.equal(res.pushed, 5);
   assert.equal(res.skipped, 0);
-  assert.equal(ws.filter((w) => w.id === `b${NOW - H}-${NOW + H}-1`).length, 1);
+  assert.equal(ws.filter((w) => w.id === `b${NOW - H}-1`).length, 1);
   assert.ok(!ws.some((w) => w.id === 's2'));
   assert.equal(ws.filter((w) => w.id.startsWith('c1@')).length, 4);
-  assert.deepEqual(ws.find((w) => w.id === `b${NOW - H}-${NOW + H}-1`).sites, ['x.com']);
+  assert.deepEqual(ws.find((w) => w.id === `b${NOW - H}-1`).sites, ['x.com']);
   assert.ok(ws.every((w) => w.ends > NOW && w.starts < NOW + 30 * DAY));
 });
 
@@ -115,7 +115,7 @@ test('frozen, allow-without-apps and bad-item windows are skipped and counted, n
   const r = rec();
   const res = await syncWindows(db, r.client, NOW, utc);
   assert.deepEqual(res, { pushed: 1, skipped: 2 });
-  assert.deepEqual(r.pushed[0].map((w) => w.id), [`b${NOW - H}-${NOW + H}-1`]);
+  assert.deepEqual(r.pushed[0].map((w) => w.id), [`b${NOW - H}-1`]);
   assert.deepEqual(r.pushed[0][0].apps, ['league of legends.exe']);
 });
 
@@ -151,7 +151,7 @@ test('sync pushes the merged window and counts it once', async () => {
   const res = await syncWindows(db, r.client, NOW, utc);
   assert.deepEqual(res, { pushed: 1, skipped: 0 });
   const [w] = r.pushed[0];
-  assert.equal(w.id, `b${NOW - H}-${NOW + H}-1.2`);
+  assert.equal(w.id, `b${NOW - H}-1.2`);
   assert.deepEqual(w.sites.sort(), ['a.com', 'b.com']);
   assert.equal(w.unlock_delay_ms, H);
   assert.equal(w.lock, 'locked');
@@ -166,17 +166,18 @@ test('same lists and times but lock none stay separate windows from a locked blo
   const r = rec();
   const res = await syncWindows(db, r.client, NOW, utc);
   assert.deepEqual(res, { pushed: 3, skipped: 0 });
-  assert.deepEqual(r.pushed[0].map((w) => w.id).sort(), [`b${NOW - H}-${NOW + H}-1.2`, 's3', 's4'].sort());
+  assert.deepEqual(r.pushed[0].map((w) => w.id).sort(), [`b${NOW - H}-1.2`, 's3', 's4'].sort());
 });
 
-test('locked sessions with different times, or different lists and delays, stay separate windows', async () => {
+test('locked sessions with different lists stay separate; same start and lists but different ends merge with the later end', async () => {
   const db = await twoLists();
   await addLocked(db, 1, NOW - H, NOW + H, H);
   await addLocked(db, 2, NOW - H, NOW + H, 2 * H);
   await addLocked(db, 1, NOW - H, NOW + 2 * H, H);
   const r = rec();
-  assert.deepEqual(await syncWindows(db, r.client, NOW, utc), { pushed: 3, skipped: 0 });
-  assert.equal(new Set(r.pushed[0].map((w) => w.id)).size, 3);
+  assert.deepEqual(await syncWindows(db, r.client, NOW, utc), { pushed: 2, skipped: 0 });
+  assert.equal(new Set(r.pushed[0].map((w) => w.id)).size, 2);
+  assert.equal(r.pushed[0].find((w) => w.id.endsWith('-1')).ends, NOW + 2 * H);
 });
 
 for (const order of [[H, 2 * H], [2 * H, H]]) {
@@ -186,7 +187,7 @@ for (const order of [[H, 2 * H], [2 * H, H]]) {
     const r = rec();
     assert.deepEqual(await syncWindows(db, r.client, NOW, utc), { pushed: 1, skipped: 0 });
     assert.equal(r.pushed[0][0].unlock_delay_ms, 2 * H);
-    assert.equal(r.pushed[0][0].id, `b${NOW - H}-${NOW + H}-1`);
+    assert.equal(r.pushed[0][0].id, `b${NOW - H}-1`);
   });
 }
 
@@ -215,7 +216,7 @@ test('a locked session whose list was deleted is skipped; the rest of its block 
   await addLocked(db, 99, NOW - H, NOW + H);
   const r = rec();
   assert.deepEqual(await syncWindows(db, r.client, NOW, utc), { pushed: 1, skipped: 1 });
-  assert.equal(r.pushed[0][0].id, `b${NOW - H}-${NOW + H}-1`);
+  assert.equal(r.pushed[0][0].id, `b${NOW - H}-1`);
 });
 
 test('a locked session without a valid unlock delay is skipped', async () => {
