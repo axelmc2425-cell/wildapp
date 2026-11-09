@@ -14,6 +14,12 @@ pub fn hosts_path() -> PathBuf {
     root.join("System32").join("drivers").join("etc").join("hosts")
 }
 
+/// Absolute `%SystemRoot%\System32\<exe>`, never a PATH lookup (the helper runs as SYSTEM).
+pub fn sys32(exe: &str) -> PathBuf {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+    PathBuf::from(crate::service_logic::system32_exe(&root, exe))
+}
+
 fn run(cmd: &mut Command) -> io::Result<()> {
     let out = cmd.output()?;
     if out.status.success() {
@@ -41,7 +47,7 @@ fn run(cmd: &mut Command) -> io::Result<()> {
 /// use `enforce_hosts`. It is idempotent (`/grant:r` replaces, `/inheritance:r`
 /// repeats harmlessly), so calling it after an unchanged apply is cheap.
 pub fn lock_hosts() -> io::Result<()> {
-    run(Command::new("icacls")
+    run(Command::new(sys32("icacls.exe"))
         .arg(hosts_path())
         .arg("/inheritance:r")
         .arg("/grant:r")
@@ -52,7 +58,7 @@ pub fn lock_hosts() -> io::Result<()> {
 
 /// Restore the inherited default ACL (undoes `lock_hosts`).
 pub fn unlock_hosts() -> io::Result<()> {
-    run(Command::new("icacls").arg(hosts_path()).arg("/reset"))
+    run(Command::new(sys32("icacls.exe")).arg(hosts_path()).arg("/reset"))
 }
 
 /// Write the managed block, then fix the ACL, then flush DNS.
@@ -78,7 +84,7 @@ pub fn enforce_hosts(sites: &[String]) -> io::Result<bool> {
 }
 
 pub fn flush_dns() -> io::Result<()> {
-    run(Command::new("ipconfig").arg("/flushdns"))
+    run(Command::new(sys32("ipconfig.exe")).arg("/flushdns"))
 }
 
 #[derive(Clone, Copy)]

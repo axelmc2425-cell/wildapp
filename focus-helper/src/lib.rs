@@ -7,6 +7,7 @@ pub mod ipc;
 pub mod lockstore;
 pub mod model;
 pub mod persist;
+pub mod service_logic;
 pub mod hosts_io;
 pub mod unlock;
 #[cfg(windows)]

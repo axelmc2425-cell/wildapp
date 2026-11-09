@@ -1,4 +1,4 @@
-//! `focus-helper` binary. Portable `stdio` mode here; Windows service modes arrive in Task 12b.
+//! `focus-helper` binary: portable `stdio` mode, plus the Windows install/uninstall/service/watchdog modes.
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
@@ -10,7 +10,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use focus_helper::daemon::{Daemon, Platform};
 use focus_helper::enforce::{Proc, ProcessTable};
 
-const USAGE: &str = "usage: focus-helper stdio --state <path> | install | uninstall | service | watchdog";
+const USAGE: &str = "usage: focus-helper stdio --state <path> | install | uninstall [--purge-state] | service | watchdog";
 
 struct EmptyTable;
 impl ProcessTable for EmptyTable {
@@ -80,17 +80,62 @@ fn stdio(state: PathBuf) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+enum Cmd {
+    Install,
+    Uninstall {
+        #[cfg_attr(not(windows), allow(dead_code))]
+        purge: bool,
+    },
+}
+
+#[cfg(windows)]
+fn windows_cmd(cmd: Cmd) -> ExitCode {
+    use focus_helper::win::install;
+    let result = match cmd {
+        Cmd::Install => install::install(),
+        Cmd::Uninstall { purge } => install::uninstall(purge),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("focus-helper: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn windows_cmd(_cmd: Cmd) -> ExitCode {
+    eprintln!("Windows only");
+    ExitCode::from(2)
+}
+
+#[cfg(windows)]
+fn windows_service_main(role: focus_helper::service_logic::Role) -> ExitCode {
+    match focus_helper::win::service::run(role) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("focus-helper: cannot start as a service: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn windows_service_main(_role: focus_helper::service_logic::Role) -> ExitCode {
+    eprintln!("Windows only");
+    ExitCode::from(2)
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["stdio", "--state", path] => stdio(PathBuf::from(path)),
-        ["install"] | ["uninstall"] | ["service"] | ["watchdog"] => {
-            #[cfg(windows)]
-            eprintln!("not implemented yet (Task 12b)");
-            #[cfg(not(windows))]
-            eprintln!("Windows only");
-            ExitCode::from(2)
-        }
+        ["install"] => windows_cmd(Cmd::Install),
+        ["uninstall"] => windows_cmd(Cmd::Uninstall { purge: false }),
+        ["uninstall", "--purge-state"] => windows_cmd(Cmd::Uninstall { purge: true }),
+        ["service"] => windows_service_main(focus_helper::service_logic::Role::Main),
+        ["watchdog"] => windows_service_main(focus_helper::service_logic::Role::Watchdog),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)

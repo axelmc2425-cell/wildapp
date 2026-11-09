@@ -30,6 +30,9 @@ pub struct Daemon {
     state_path: PathBuf,
     last_sites: Option<Vec<String>>,
     doh_on: bool,
+    /// Set once DoH has been cleared (or deliberately set) since start. Until then an idle
+    /// daemon clears DoH-off unconditionally, to undo state left behind by a crash.
+    doh_startup_done: bool,
     doh_warnings: Vec<String>,
     error_warnings: Vec<String>,
     /// High-water mark at the last save; `None` until the first tick anchors it.
@@ -48,6 +51,7 @@ impl Daemon {
             state_path: state_path.to_path_buf(),
             last_sites: None,
             doh_on: false,
+            doh_startup_done: false,
             doh_warnings: Vec::new(),
             error_warnings: Vec::new(),
             last_saved_ms: None,
@@ -122,6 +126,13 @@ impl Daemon {
         })
     }
 
+    /// Whether the service Stop control may be honored now (no locked/frozen window is active),
+    /// judged on the effective clock.
+    pub fn stop_allowed(&mut self, wall_ms: i64, mono_ms: i64) -> bool {
+        let now = self.clock.now(wall_ms, mono_ms);
+        crate::service_logic::stop_allowed(&self.store.windows, now)
+    }
+
     pub fn tick(&mut self, wall_ms: i64, mono_ms: i64, platform: &mut dyn Platform) {
         let now = self.clock.now(wall_ms, mono_ms);
         if self.clock.high_water_ms() > self.store.high_water_ms {
@@ -165,15 +176,17 @@ impl Daemon {
                 match platform.set_doh_off() {
                     Ok(w) => {
                         self.doh_on = true;
+                        self.doh_startup_done = true;
                         self.doh_warnings = w;
                     }
                     Err(e) => errors.push(format!("doh: {e}")),
                 }
             }
-        } else if self.doh_on || !self.doh_warnings.is_empty() {
+        } else if self.doh_on || !self.doh_warnings.is_empty() || !self.doh_startup_done {
             match platform.clear_doh_off() {
                 Ok(()) => {
                     self.doh_on = false;
+                    self.doh_startup_done = true;
                     self.doh_warnings.clear();
                 }
                 Err(e) => errors.push(format!("doh: {e}")),

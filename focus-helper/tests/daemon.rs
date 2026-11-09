@@ -238,3 +238,38 @@ fn persist_failure_is_surfaced_and_retried() {
     let st = status(&mut d, &mut p, NOW + 2000, 2001);
     assert!(!st["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().starts_with("persist: ")));
 }
+
+#[test]
+fn first_idle_tick_clears_stale_doh_once() {
+    let path = tmp("stale-doh");
+    seed(&path, vec![], 0);
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    d.tick(NOW, 0, &mut p);
+    assert_eq!(p.doh_clear, 1);
+    d.tick(NOW + 1000, 1000, &mut p);
+    d.tick(NOW + 2000, 2000, &mut p);
+    assert_eq!(p.doh_clear, 1, "only once while idle");
+    assert_eq!(p.doh_off, 0);
+}
+
+#[test]
+fn no_startup_clear_when_a_window_is_active_at_start() {
+    let path = tmp("active-start");
+    seed(&path, vec![window("w", Lock::None, NOW - 1000, NOW + 5000)], 0);
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    d.tick(NOW, 0, &mut p);
+    assert_eq!((p.doh_off, p.doh_clear), (1, 0));
+}
+
+#[test]
+fn stop_allowed_uses_the_effective_clock() {
+    let path = tmp("stop-allowed");
+    seed(&path, vec![window("w", Lock::Locked, NOW - 1000, NOW + 5000)], NOW);
+    let mut d = Daemon::load(&path);
+    assert!(!d.stop_allowed(NOW, 0));
+    // Wall clock set back an hour: still inside the lock.
+    assert!(!d.stop_allowed(NOW - 3_600_000, 1000));
+    assert!(d.stop_allowed(NOW + 6000, 7000));
+}

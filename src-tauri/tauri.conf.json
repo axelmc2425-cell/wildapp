@@ -3,11 +3,40 @@
   "productName": "MyBrain",
   "version": "0.1.0",
   "identifier": "app.mybrain.desktop",
-  "build": { "frontendDist": "../src" },
+  "build": {
+    "frontendDist": "../src"
+  },
   "app": {
     "withGlobalTauri": true,
-    "windows": [{ "label": "main", "title": "MyBrain", "width": 1200, "height": 800 }],
-    "security": { "csp": null }
+    "windows": [
+      {
+        "label": "main",
+        "title": "MyBrain",
+        "width": 1200,
+        "height": 800
+      }
+    ],
+    "security": {
+      "csp": null
+    }
   },
-  "bundle": { "active": true, "targets": ["nsis", "msi"], "icon": ["icons/icon.ico", "icons/icon.png"] }
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "resources": [
+      "resources/focus-helper.exe"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "installer-hooks.nsh"
+      }
+    }
+  }
 }
