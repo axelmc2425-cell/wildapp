@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   UNLOCK_DELAY_PRESETS_H, resolveDelayHours, lockedWarning, describeUnlockError,
-  windowIdForBlock, pendingUnlockFor, canStartLocked,
+  windowIdForBlock, pendingUnlockFor, canStartLocked, waitLengthText, lockedBlockHolding,
 } from '../src/modules/focus/lock-logic.js';
 import { lockedBlockToWindow } from '../src/modules/focus/expand.js';
 import { groupSessions } from '../src/modules/focus/model.js';
@@ -101,4 +101,24 @@ test('resolveLockedMinutes caps at 10080 and prefers custom', async () => {
   assert.equal(lockedSpanText(1500), 'Locked for 1 day 1 h');
   assert.equal(lockedSpanText(10080), 'Locked for 7 days');
   assert.equal(lockedSpanText(0), '');
+});
+
+test('waitLengthText', () => {
+  assert.equal(waitLengthText(3600000), '1 hour');
+  assert.equal(waitLengthText(24 * 3600000), '24 hours');
+  assert.equal(waitLengthText(90 * 60000), '90 minutes');
+  assert.equal(waitLengthText(null), 'the waiting period you chose');
+  assert.equal(waitLengthText(0), 'the waiting period you chose');
+});
+
+test('lockedBlockHolding', () => {
+  const blocks = [
+    { lock: 'none', state: 'running', listIds: [1] },
+    { lock: 'locked', state: 'upcoming', listIds: [2] },
+    { lock: 'locked', state: 'running', listIds: [3, 4], key: 'k' },
+  ];
+  assert.equal(lockedBlockHolding(blocks, 1), null);
+  assert.equal(lockedBlockHolding(blocks, 2), null);
+  assert.equal(lockedBlockHolding(blocks, 4).key, 'k');
+  assert.equal(lockedBlockHolding(undefined, 4), null);
 });

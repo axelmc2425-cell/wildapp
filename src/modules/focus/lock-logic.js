@@ -113,3 +113,20 @@ export function lockedSpanText(minutes) {
   if (m) parts.push(`${m} min`);
   return `Locked for ${parts.join(' ')}`;
 }
+
+/** "24 hours" / "1 hour" from a waiting period in ms; falls back to minutes, or a neutral phrase when unknown. */
+export function waitLengthText(delayMs) {
+  if (typeof delayMs !== 'number' || !Number.isFinite(delayMs) || delayMs <= 0) return 'the waiting period you chose';
+  const hours = delayMs / 3600000;
+  if (Number.isInteger(hours)) return `${hours} ${hours === 1 ? 'hour' : 'hours'}`;
+  const mins = Math.max(1, Math.round(delayMs / 60000));
+  return `${mins} ${mins === 1 ? 'minute' : 'minutes'}`;
+}
+
+/** The running locked block (if any) that holds this list. @param {{lock?: string, state?: string, listIds: number[]}[]} blocks */
+export function lockedBlockHolding(blocks, listId) {
+  for (const b of Array.isArray(blocks) ? blocks : []) {
+    if (b && b.lock === 'locked' && b.state === 'running' && Array.isArray(b.listIds) && b.listIds.includes(listId)) return b;
+  }
+  return null;
+}

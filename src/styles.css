@@ -245,3 +245,25 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-det-title { margin: 0 0 4px; font-weight: 600; }
 .fr-det-detail { margin: 0 0 8px; }
 .fr-details-body > .fr-muted { margin: 10px 0 0; }
+
+/* ---- Focus Room: locked card and unlock dialog ---- */
+.fr-lock { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--fr-warn-bd); background: var(--fr-warn-bg); color: var(--fr-warn-fg); }
+.fr-card-when { min-width: 0; overflow-wrap: anywhere; }
+.fr-pending { margin: 10px 0 0; padding: 8px 12px; border: 1px solid var(--fr-warn-bd); border-radius: 8px; background: var(--fr-warn-bg); color: var(--fr-warn-fg); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.fr-list-lock { margin: 4px 0 0; overflow-wrap: anywhere; }
+.fr-un { display: flex; flex-direction: column; gap: 12px; }
+.fr-un-intro { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.fr-un-opt { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; min-width: 0; }
+.fr-un-opt > * { max-width: 100%; box-sizing: border-box; }
+.fr-un-title { margin: 0; font-size: 14px; }
+.fr-un-text, .fr-un-waitat { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.fr-un-waitat { font-weight: 600; }
+.fr-un-codearea { display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 0; }
+.fr-un-coderow { display: flex; gap: 8px; align-items: flex-start; }
+.fr-un-code, .fr-un-token { flex: 1; min-width: 0; width: 100%; box-sizing: border-box; padding: 7px 10px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; font-family: ui-monospace, monospace; font-size: 12px; }
+.fr-un-code:focus-visible, .fr-un-token:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fr-un-copymsg { margin: 0; overflow-wrap: anywhere; }
+.fr-un .fr-err { margin: 0; overflow-wrap: anywhere; }
+.fr-dialog:has(.fr-un) { width: min(520px, 100%); }
+.fr-card-heading { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.fr-un-code { resize: none; overflow-wrap: anywhere; line-height: 1.4; }

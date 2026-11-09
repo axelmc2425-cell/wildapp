@@ -661,6 +661,17 @@ test('reconcile removes a locked block the helper no longer holds, and keeps it 
   assert.equal(await rowCount(x.db), 2);
 });
 
+test('reconcile treats a window the helper ended early (end pulled back, still listed) as gone', async () => {
+  const x = await lockedSetup();
+  await startLocked(x);
+  const w = x.client.windows[0];
+  x.client.windows = [{ ...w, ends: T0 }];
+  x.client.statusValue = { ...STATUS, now_ms: T0 + 1000 };
+  await x.ctl.refreshStatus();
+  assert.equal(await rowCount(x.db), 0);
+  assert.equal(x.ctl.state.blocks.length, 0);
+});
+
 test('reconcile leaves a block whose time has passed alone', async () => {
   const x = await lockedSetup();
   await startLocked(x, { minutes: 5 });

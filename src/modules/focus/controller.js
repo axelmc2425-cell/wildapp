@@ -104,7 +104,12 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
     try {
       await reload();
       const t = now();
-      const held = new Set(status.windows.map((w) => w && w.id));
+      // The real helper ends a window early by pulling its end back to "now" and keeps listing it until
+      // it is pruned, so a window already over on the helper's own clock is not held any more.
+      const helperNow = Number.isFinite(status.now_ms) ? status.now_ms : null;
+      const held = new Set(status.windows
+        .filter((w) => w && !(helperNow !== null && Number.isFinite(w.ends) && w.ends <= helperNow))
+        .map((w) => w.id));
       const gone = groupSessions(sessions, lists, t)
         .filter((b) => b.lock === 'locked' && t < b.ends && !held.has(windowIdForBlock(b)));
       if (!gone.length) return;

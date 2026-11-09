@@ -1,5 +1,16 @@
 import { h } from './dom.js';
 import { bannerFor, detailRows } from '../model.js';
+import { formatClock } from './util.js';
+import { windowIdForBlock } from '../lock-logic.js';
+
+/** Partner name, local-time formatting and list names for the details rows. */
+function rowOpts(state) {
+  const labels = new Map();
+  for (const b of Array.isArray(state.blocks) ? state.blocks : []) {
+    if (b.lock === 'locked') labels.set(windowIdForBlock(b), b.listNames.join(' + '));
+  }
+  return { partnerName: state.partner?.name ?? null, formatTime: formatClock, labelFor: (id) => labels.get(id) || '' };
+}
 
 /** 'Last sync: 3 windows sent, 1 skipped', or null when there has been no sync. */
 export function describeLastSync(lastSync) {
@@ -15,7 +26,7 @@ export function detailsSignature(state) {
   const helper = state.helper || { kind: 'unknown' };
   const status = helper.kind === 'ok' ? helper.status : null;
   return JSON.stringify([
-    helper.kind, helper.kind === 'ok' ? detailRows(status).filter((r) => r.label !== CLOCK) : bannerFor(helper),
+    helper.kind, helper.kind === 'ok' ? detailRows(status, rowOpts(state)).filter((r) => r.label !== CLOCK) : bannerFor(helper),
     describeLastSync(state.lastSync), !!state.syncPending,
   ]);
 }
@@ -61,7 +72,7 @@ export function mountHelperDetails(container, controller) {
     content.textContent = '';
     clockDd = null;
     if (helper.kind === 'ok') {
-      content.append(rowsList(detailRows(helper.status), (dd) => { clockDd = dd; }));
+      content.append(rowsList(detailRows(helper.status, rowOpts(state)), (dd) => { clockDd = dd; }));
     } else {
       const b = bannerFor(helper);
       content.append(

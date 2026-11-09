@@ -195,3 +195,15 @@ test('groupSessions: locked blocks carry lock and delay; delay splits the group'
   assert.equal(normal.lock, 'none');
   assert.equal(normal.unlockDelayMs, null);
 });
+
+test('detailRows shows the partner name and each pending unlock', () => {
+  const st = { decision: {}, windows: [], partner_set: true, now_ms: 0, warnings: [], pending_unlocks: [{ window_id: 'w1', unlock_at: 5000 }] };
+  const rows = detailRows(st, { partnerName: 'Sam', formatTime: (ms) => `t${ms}`, labelFor: (id) => (id === 'w1' ? 'Games' : '') });
+  const m = Object.fromEntries(rows.map((x) => [x.label, x]));
+  assert.equal(m['Partner key'].value, 'Sam (key set)');
+  assert.deepEqual(m['Pending unlocks'].lines, ['Games unlocks at t5000']);
+  const plain = detailRows({ ...st, pending_unlocks: [] });
+  assert.equal(plain.find((x) => x.label === 'Pending unlocks'), undefined);
+  assert.equal(plain.find((x) => x.label === 'Partner key').value, 'set');
+  assert.equal(detailRows({ ...st, partner_set: false }, { partnerName: 'Sam' }).find((x) => x.label === 'Partner key').value, 'not set');
+});

@@ -2,9 +2,11 @@
 //   node scripts/shot.mjs /tmp/focus-shots --helper target/debug/focus-helper --steps scripts/focus-steps.mjs [--dark]
 import { saveList, createSessions } from '../src/modules/focus/store.js';
 import { readFileSync } from 'node:fs';
+import { generatePartnerKeys, signUnlock } from '../src/modules/focus/unlock.js';
 import { lockedWarning } from '../src/modules/focus/lock-logic.js';
 import { STARTERS } from '../src/modules/focus/starters.js';
 
+let partnerKeys = null;
 const ok = (cond, msg) => { if (!cond) throw new Error('ASSERT FAILED: ' + msg); console.log('ok:', msg); };
 const detailMap = (page) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.fr-details .fr-dl dt')].map(dt => [dt.textContent, dt.nextElementSibling.innerText.trim()])));
 const text = (page, sel) => page.evaluate((s) => document.querySelector(s)?.innerText ?? null, sel);
@@ -413,6 +415,7 @@ async function startScenarios(page, shot, h) {
 
   await pendingScenarios(page, shot, h);
   await lockScenarios(page, shot, h);
+  await unlockScenarios(page, shot, h);
 
   // clean up
   await h.db.run('DELETE FROM focus_items'); await h.db.run('DELETE FROM focus_sessions'); await h.db.run('DELETE FROM focus_lists');
@@ -545,7 +548,8 @@ async function detailsScenarios(page, shot, h) {
 async function lockScenarios(page, shot, h) {
   const dialogs = () => page.locator('.fr-dialog').count();
   const closed = () => page.waitForFunction(() => !document.querySelector('.fr-dialog'));
-  const valid = JSON.parse(readFileSync(new URL('../tests/fixtures/unlock-vectors.json', import.meta.url), 'utf8')).find((v) => v.name === 'valid').publicKey;
+  partnerKeys = await generatePartnerKeys(); // the Unlock scenarios sign with this key
+  const valid = partnerKeys.publicKey;
   const noOverflow = () => page.evaluate(() => [...document.querySelectorAll('.fr-dialog')].every((d) => d.scrollWidth <= d.clientWidth));
   await h.db.run('DELETE FROM focus_sessions');
   const ll = await saveList(h.db, { name: 'Lockable', sites: ['lock-one.com', 'lock-two.com'], apps: [] });
@@ -663,4 +667,156 @@ async function lockScenarios(page, shot, h) {
   await page.waitForSelector('.fr-block');
   ok((await page.locator('.fr-block').count()) === 1, 'a block exists after the locked start');
   await shot('focus-21-locked-started');
+}
+
+// ---- Task 10: locked card and the Unlock early dialog (runs with the locked block from lockScenarios in place) ----
+async function unlockScenarios(page, shot, h) {
+  const closed = () => page.waitForFunction(() => !document.querySelector('.fr-dialog'));
+  const open = () => page.evaluate(() => !!document.querySelector('.fr-dialog'));
+  const cards = () => page.locator('.fr-block').count();
+  const keys = partnerKeys;
+  await h.db.run('UPDATE focus_partner SET name = ?', ['Sam']);
+  await page.reload();
+  await page.waitForSelector('.fr-block .fr-lock');
+  await page.waitForSelector('.fr-banner.fr-ok', { timeout: 8000 });
+
+  // (a) the locked card
+  const card = await text(page, '.fr-block');
+  ok(card.includes('Locked') && card.includes('Locked until'), 'locked card has the lock label and "Locked until <time>"');
+  ok(await page.evaluate(() => !!document.querySelector('.fr-block .fr-lock')), 'lock label element exists');
+  ok((await page.locator('.fr-block button:has-text("Cancel")').count()) === 0, 'locked card has NO Cancel button');
+  ok((await page.locator('.fr-block button:has-text("Unlock early")').count()) === 1, 'locked card has Unlock early');
+  ok((await page.locator('.fr-block button:has-text("Extend")').count()) === 1, 'locked card has Extend');
+  await page.click('.fr-block button:has-text("Extend")');
+  await page.waitForSelector('.fr-dialog');
+  ok((await text(page, '.fr-dialog')).includes('can only make the lock longer'), 'Extend says it can only make the lock longer');
+  await shot('focus-22-extend-locked');
+  await page.keyboard.press('Escape'); await closed();
+
+  // (b) list rows: Edit and Delete are disabled with the reason
+  const lockedList = await page.evaluate(() => {
+    const row = [...document.querySelectorAll('.fr-list')].find((r) => r.innerText.includes('Lockable'));
+    const [edit, del] = [...row.querySelectorAll('button')];
+    return { editDisabled: edit.disabled, delDisabled: del.disabled, editTitle: edit.title, text: row.innerText };
+  });
+  ok(lockedList.editDisabled && lockedList.delDisabled, 'Edit and Delete are disabled for a list in a locked block');
+  ok(/^In a locked block until \d{1,2}:\d{2}/.test(lockedList.editTitle) && /In a locked block until/.test(lockedList.text), `reason shown: "${lockedList.editTitle}"`);
+  await page.evaluate(() => document.querySelector('.fr-lists').scrollIntoView({ block: 'center' }));
+  await shot('focus-23-locked-list-rows');
+  await page.evaluate(() => window.scrollTo(0, 0));
+
+  // (c) the dialog and the code
+  await page.click('.fr-block button:has-text("Unlock early")');
+  await page.waitForSelector('.fr-dialog .fr-un');
+  ok((await text(page, '.fr-dialog-title')) === 'Unlock early', 'Unlock early opens the dialog');
+  const dt = await text(page, '.fr-dialog');
+  ok(dt.includes('Ask my partner') && dt.includes('Wait it out') && dt.includes('24 hours'), 'both options shown, wait length is 24 hours');
+  await shot('focus-24-unlock-dialog');
+  await page.click('.fr-dialog button:has-text("Get a code")');
+  await page.waitForSelector('.fr-un-codearea:not([hidden])');
+  const code = await page.inputValue('.fr-un-code');
+  ok(code.length > 10, `a code is shown (${code.slice(0, 12)}...)`);
+  ok((await page.locator('.fr-dialog button:has-text("Copy")').count()) === 1, 'Copy button is shown');
+  await page.click('.fr-dialog button:has-text("Copy")');
+  await page.waitForFunction(() => document.querySelector('.fr-un-copymsg').textContent !== '');
+  ok(true, `copy gave feedback and did not throw ("${await text(page, '.fr-un-copymsg')}")`);
+  ok((await page.getByLabel("Partner's signed token").count()) === 1, 'token field is labelled');
+  await shot('focus-25-unlock-code');
+
+  // (d) wrong tokens: plain reason, role=alert, the lock stays
+  await page.fill('.fr-un-token', 'garbage');
+  await page.click('.fr-dialog button:has-text("Submit")');
+  await page.waitForFunction(() => document.querySelector('.fr-un .fr-err:not([hidden])'));
+  const e1 = await text(page, '.fr-un-opt .fr-err:not([hidden])');
+  ok(e1.includes("isn't in the right format") && e1.includes('The lock stays on'), `garbage token: "${e1}"`);
+  ok(await page.evaluate(() => document.querySelector('.fr-un .fr-err:not([hidden])').getAttribute('role') === 'alert'), 'error is role=alert');
+  const other = await generatePartnerKeys();
+  await page.fill('.fr-un-token', await signUnlock(other.privateKeyJwk, code, Date.now()));
+  await page.click('.fr-dialog button:has-text("Submit")');
+  await page.waitForFunction(() => /signed by your partner/.test(document.querySelector('.fr-un .fr-err:not([hidden])')?.textContent || ''));
+  ok(true, 'a token signed by the wrong key says it was not signed by the partner key');
+  await shot('focus-26-unlock-wrong-token');
+  ok((await open()) && (await cards()) === 1, 'dialog stays open and the card stays after a wrong token');
+
+  // (e) the right token removes the card
+  await page.fill('.fr-un-token', await signUnlock(keys.privateKeyJwk, code, Date.now()));
+  await page.click('.fr-dialog button:has-text("Submit")');
+  await closed();
+  await page.waitForFunction(() => document.querySelectorAll('.fr-block').length === 0, null, { timeout: 8000 });
+  ok(true, 'a correctly signed token closed the dialog and removed the card');
+  const after = await h.helperCall({ type: 'GetStatus' });
+  ok(after.windows.every((w) => w.ends <= after.now_ms) && after.decision.blockSites.length === 0, 'the helper ended the window and blocks nothing');
+  await shot('focus-27-unlocked');
+
+  // (f) wait it out
+  await startLocked(page, 120, 1);
+  ok((await cards()) === 1 && (await page.locator('.fr-block .fr-lock').count()) === 1, 'second locked block started (2 h, 1 h wait)');
+  await page.click('.fr-block button:has-text("Unlock early")');
+  await page.waitForSelector('.fr-dialog .fr-un');
+  ok((await text(page, '.fr-dialog')).includes('1 hour after you start waiting'), 'wait text names 1 hour');
+  ok((await page.locator('.fr-dialog button:has-text("Cancel request")').isHidden()), 'no Cancel request before waiting');
+  await page.click('.fr-dialog button:has-text("Start waiting")');
+  await page.waitForFunction(() => /^Unlocks at \d/.test(document.querySelector('.fr-un-waitat')?.textContent || ''));
+  ok(await page.locator('.fr-dialog button:has-text("Cancel request")').isVisible(), 'Unlocks at <time> and Cancel request shown');
+  await shot('focus-28-wait-started');
+  // Esc is inert while the cancel request is pending
+  h.setHelperDelay(700);
+  await page.click('.fr-dialog button:has-text("Cancel request")');
+  await page.keyboard.press('Escape');
+  await page.mouse.click(5, 5);
+  ok(await open(), 'Esc and overlay click are inert while a request is pending');
+  await page.waitForFunction(() => /Start waiting/.test(document.querySelector('.fr-dialog')?.innerText || '') && !document.querySelector('.fr-dialog button[data-fk="un-startwait"]').hidden);
+  h.setHelperDelay(0);
+  ok(true, 'cancelling the request returns to Start waiting');
+  ok((await h.helperCall({ type: 'GetStatus' })).pending_unlocks.length === 0, 'helper has no pending unlock after cancelling');
+  await page.keyboard.press('Escape'); await closed();
+  ok((await cards()) === 1 && !(await text(page, '.fr-block')).includes('unless you cancel'), 'cancelling leaves the card, with no pending text');
+  // double click starts one wait only
+  await page.click('.fr-block button:has-text("Unlock early")');
+  await page.waitForSelector('.fr-dialog .fr-un');
+  h.setHelperDelay(400);
+  await page.evaluate(() => { const b = document.querySelector('[data-fk="un-startwait"]'); b.click(); b.click(); });
+  await page.waitForFunction(() => /^Unlocks at/.test(document.querySelector('.fr-un-waitat')?.textContent || ''));
+  h.setHelperDelay(0);
+  ok((await h.helperCall({ type: 'GetStatus' })).pending_unlocks.length === 1, 'double click sent a single request');
+  await page.keyboard.press('Escape'); await closed();
+  await page.waitForFunction(() => document.querySelector('.fr-block .fr-pending'));
+  const pend = await text(page, '.fr-block .fr-pending');
+  ok(/^Unlocks at \d{1,2}:\d{2}.* unless you cancel$/.test(pend), `pending card text: "${pend}"`);
+  await shot('focus-29-pending-card');
+  // reopening starts in the pending state
+  await page.click('.fr-block button:has-text("Unlock early")');
+  await page.waitForSelector('.fr-dialog .fr-un');
+  ok(await page.locator('.fr-dialog button:has-text("Cancel request")').isVisible() && /Unlocks at/.test(await text(page, '.fr-un-waitat')), 'dialog opens in the pending state when a wait is running');
+  await page.keyboard.press('Escape'); await closed();
+
+  // (g) helper details list the pending unlock and the partner name
+  if (!(await page.evaluate(() => document.querySelector('.fr-details').open))) await page.click('.fr-details > summary');
+  await page.waitForFunction(() => /unlocks at/.test(document.querySelector('.fr-details')?.innerText || ''), null, { timeout: 8000 });
+  const dm = await detailMap(page);
+  ok(dm['Partner key'] === 'Sam (key set)', `details show the partner name (${dm['Partner key']})`);
+  ok(/unlocks at \d/.test(dm['Pending unlocks']), `details list the pending unlock (${dm['Pending unlocks']})`);
+  await page.evaluate(() => document.querySelector('.fr-details').scrollIntoView({ block: 'end' }));
+  await shot('focus-30-details-pending');
+  await page.evaluate(() => window.scrollTo(0, 0));
+
+  // (h) the helper clock passes the wait: the card goes after the next poll
+  await h.advanceHelperClock(61 * 60000);
+  await page.waitForFunction(() => document.querySelectorAll('.fr-block').length === 0, null, { timeout: 12000 });
+  ok(true, 'after the wait elapsed on the helper clock the card disappeared');
+  await shot('focus-31-wait-elapsed');
+  ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'no horizontal overflow');
+}
+
+async function startLocked(page, minutes, delayHours) {
+  await page.click('button:has-text("Start a block")');
+  await page.waitForSelector('.fr-dialog .fr-start');
+  await page.locator('.fr-dialog .fr-checkrow:has-text("Lockable") input').check();
+  await page.click('.fr-moderow:has-text("Locked")');
+  await page.click(`.fr-dialog .fr-durchip:has-text("${minutes === 120 ? '2 h' : '25 min'}")`);
+  await page.click(`.fr-dialog .fr-delaychip:has-text("${delayHours} h")`);
+  await page.locator('.fr-lockwarn input').check();
+  await page.click('.fr-dialog button.primary');
+  await page.waitForFunction(() => !document.querySelector('.fr-dialog'));
+  await page.waitForSelector('.fr-block .fr-lock');
 }

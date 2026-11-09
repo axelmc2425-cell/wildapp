@@ -126,7 +126,7 @@ try {
   await page.waitForSelector('#modlist .navitem');
   if (stepsFile) {
     const steps = await import(pathToFileURL(stepsFile).href);
-    await steps.default(page, shot, { db, importDir, exportDir, bridge, setHelperDown: (v) => { helperDown = !!v; }, setPersistFail: (v) => { persistFail = !!v; }, setHelperDelay: (ms) => { helperDelay = Number(ms) || 0; }, setWarnings: (arr) => { warningsOverride = Array.isArray(arr) ? arr : null; } });
+    await steps.default(page, shot, { db, importDir, exportDir, bridge, setHelperDown: (v) => { helperDown = !!v; }, setPersistFail: (v) => { persistFail = !!v; }, setHelperDelay: (ms) => { helperDelay = Number(ms) || 0; }, advanceHelperClock: async (ms) => { const r = JSON.parse(await bridge.call(JSON.stringify({ type: 'AdvanceClock', ms }))); if (r.type !== 'Ok') throw new Error('AdvanceClock failed: ' + JSON.stringify(r)); }, helperCall: async (req) => JSON.parse(await bridge.call(JSON.stringify(req))), setWarnings: (arr) => { warningsOverride = Array.isArray(arr) ? arr : null; } });
   } else {
     await shot('home');
     await page.goto(url + '#/settings');
