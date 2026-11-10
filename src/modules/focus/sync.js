@@ -1,6 +1,6 @@
 // Push the next 30 days of focus windows (sessions + expanded schedules) to the helper.
 import { sessionToWindow, lockedBlockToWindow, expandSchedule } from './expand.js';
-import { listSchedules } from './store.js';
+import { listSchedulesChecked } from './store.js';
 import { validateForPush, MAX_WINDOWS } from './limits.js';
 
 const HORIZON_MS = 30 * 86400000;
@@ -18,17 +18,18 @@ export function dedupeById(windows) {
 }
 
 export async function syncWindows(db, client, nowMs, tzOffsetAt) {
-  const [lists, items, sessions, schedules] = await Promise.all([
+  const [lists, items, sessions, checked] = await Promise.all([
     db.all('SELECT id, mode FROM focus_lists'),
     db.all('SELECT list_id, kind, value FROM focus_items'),
     db.all('SELECT id, list_id, starts, ends, lock, unlock_delay_ms FROM focus_sessions'),
-    listSchedules(db),
+    listSchedulesChecked(db),
   ]);
   const byId = new Map(lists.map((l) => [l.id, { id: l.id, mode: l.mode, items: [] }]));
   for (const it of items) byId.get(it.list_id)?.items.push({ kind: it.kind, value: it.value });
 
   const windows = [];
-  let skipped = 0;
+  const schedules = checked.schedules;
+  let skipped = checked.bad;
   // Locked sessions sharing starts, ends and unlock delay are one block: one helper window.
   const blocks = new Map();
   for (const s of sessions) {

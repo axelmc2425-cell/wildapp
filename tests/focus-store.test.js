@@ -8,7 +8,7 @@ import { migrateFocus } from '../src/modules/focus/schema.js';
 import {
   listLists, saveList, deleteList, createSessions, setSessionsEnd,
   deleteSessions, listSessions, purgeFinished,
-  listSchedules, saveSchedule, setScheduleEnabled, deleteSchedule, scheduleHoldsList,
+  listSchedules, listSchedulesChecked, saveSchedule, setScheduleEnabled, deleteSchedule, scheduleHoldsList,
 } from '../src/modules/focus/store.js';
 
 async function fresh() {
@@ -393,4 +393,15 @@ test('deleteList removes only the link when the schedule has other lists, else t
   assert.deepEqual(left.map(s => [s.id, s.listIds]), [[two, [b]]]);
   assert.ok(!left.some(s => s.id === one));
   assert.equal((await db.all('SELECT * FROM focus_schedule_lists')).length, 1);
+});
+
+test('listSchedules skips corrupt rows and listSchedulesChecked counts them', async () => {
+  const db = await fresh();
+  await saveList(db, { name: 'L', sites: ['a.com'], apps: [] });
+  const ins = (wd, st = '09:00') => db.run("INSERT INTO focus_schedules(list_id, name, weekdays, start_time, end_time, lock, enabled) VALUES (1, 'S', ?, ?, '10:00', 'none', 1)", [wd, st]);
+  await ins('not json'); await ins('[9]'); await ins('[1]', 'zz'); await ins('[1]');
+  const { schedules, bad } = await listSchedulesChecked(db);
+  assert.equal(bad, 3);
+  assert.deepEqual(schedules.map(s => s.id), [4]);
+  assert.deepEqual((await listSchedules(db)).map(s => s.id), [4]);
 });

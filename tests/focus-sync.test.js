@@ -128,6 +128,17 @@ test('horizon and ended boundaries', async () => {
   assert.deepEqual(r.pushed[0].map((w) => w.id), ['s4']);
 });
 
+test('a corrupt schedule row is skipped and counted; good schedules and locked sessions still push', async () => {
+  const db = await withList();
+  await addSched(db, { weekdays: 'not json' });
+  await addSched(db, { weekdays: '[9]' });
+  await addSched(db, { start: 'zz' });
+  await addSched(db);
+  await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock, unlock_delay_ms) VALUES (1, ?, ?, 'locked', ?)", [NOW - H, NOW + H, H]);
+  const r = rec();
+  assert.deepEqual(await syncWindows(db, r.client, NOW, utc), { pushed: 5, skipped: 3 });
+});
+
 test('frozen, allow-without-apps and bad-item windows are skipped and counted, never pushed', async () => {
   const db = await mk();
   await db.run("INSERT INTO focus_lists(name, mode) VALUES ('B','block')"); // 1

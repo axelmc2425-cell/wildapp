@@ -161,16 +161,40 @@ export async function purgeFinished(db, nowMs, keepMs = DAY_MS) {
   return r.changes;
 }
 
-/** @returns {Promise<ScheduleRec[]>} ordered by id */
-export async function listSchedules(db) {
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function parseWeekdays(raw) {
+  try {
+    const w = JSON.parse(raw);
+    return Array.isArray(w) && w.every(d => Number.isInteger(d) && d >= 0 && d <= 6) ? w : null;
+  } catch { return null; }
+}
+
+/**
+ * Like listSchedules, but also counts rows skipped because they are unreadable
+ * (bad weekdays JSON/values or bad start/end times).
+ * @returns {Promise<{ schedules: ScheduleRec[], bad: number }>}
+ */
+export async function listSchedulesChecked(db) {
   const rows = await db.all('SELECT id, name, weekdays, start_time, end_time, lock, enabled, ends_on, unlock_delay_ms FROM focus_schedules ORDER BY id');
   const links = await db.all('SELECT schedule_id, list_id FROM focus_schedule_lists ORDER BY list_id');
-  const byId = new Map(rows.map(r => [r.id, {
-    id: r.id, name: r.name, listIds: [], weekdays: JSON.parse(r.weekdays), start: r.start_time, end: r.end_time,
-    lock: r.lock, unlockDelayMs: r.unlock_delay_ms ?? null, endsOn: r.ends_on ?? null, enabled: r.enabled !== 0,
-  }]));
+  const byId = new Map();
+  let bad = 0;
+  for (const r of rows) {
+    const weekdays = parseWeekdays(r.weekdays);
+    if (!weekdays || !HHMM.test(String(r.start_time)) || !HHMM.test(String(r.end_time))) { bad++; continue; }
+    byId.set(r.id, {
+      id: r.id, name: r.name, listIds: [], weekdays, start: r.start_time, end: r.end_time,
+      lock: r.lock, unlockDelayMs: r.unlock_delay_ms ?? null, endsOn: r.ends_on ?? null, enabled: r.enabled !== 0,
+    });
+  }
   for (const l of links) byId.get(l.schedule_id)?.listIds.push(l.list_id);
-  return [...byId.values()];
+  return { schedules: [...byId.values()], bad };
+}
+
+/** @returns {Promise<ScheduleRec[]>} ordered by id; unreadable rows are skipped */
+export async function listSchedules(db) {
+  return (await listSchedulesChecked(db)).schedules;
 }
 
 async function getSchedule(db, id) {
