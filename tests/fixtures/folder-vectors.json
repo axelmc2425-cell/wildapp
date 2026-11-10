@@ -1,0 +1,27 @@
+{
+  "ok": [
+    "C:\\Games\\Steam",
+    "d:\\Apps\\My Game",
+    "C:\\Program Files\\Some App",
+    "C:\\Users\\me\\Games"
+  ],
+  "malformed": [
+    "Games",
+    "\\\\server\\share",
+    "C:Games",
+    "C:\\a\\..\\b",
+    "C:\\a\\*",
+    "C:\\a\u0007b",
+    ""
+  ],
+  "forbidden": [
+    "C:\\",
+    "c:\\WINDOWS",
+    "C:\\Windows\\System32",
+    "C:\\Program Files",
+    "C:\\Program Files (x86)\\",
+    "C:\\Users",
+    "C:\\Program Files\\MyBrainFocus",
+    "C:\\Program Files\\MyBrainFocus\\x"
+  ]
+}

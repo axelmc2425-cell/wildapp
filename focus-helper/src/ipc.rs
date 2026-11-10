@@ -38,8 +38,8 @@ pub enum Response {
     Challenge { code: String },
     /// The window ends early at `unlock_at` (effective ms) unless cancelled.
     UnlockPending { unlock_at: i64 },
-    /// Codes: bad-request, no-partner, bad-window (bad-times, bad-lock, too-long, bad-item, allow-needs-apps,
-    /// too-many, duplicate id, bad-delay), frozen-unavailable, too-many, no-such-lock, not-delayable,
+    /// Codes: bad-request, no-partner, bad-window (bad-times, bad-lock, too-long, bad-item, bad-folder,
+    /// forbidden-folder, allow-needs-apps, too-many, duplicate id, bad-delay), frozen-unavailable, too-many, no-such-lock, not-delayable,
     /// no-pending-unlock, bad-key, lock-active (also ResetClock), the unlock
     /// reasons, and `persist-failed` (daemon only: applied in memory but the state file could not
     /// be written, so the change is lost on restart; retried every tick).
@@ -81,6 +81,8 @@ pub fn handle_changed(
             Err(PushError::FrozenUnavailable) => {
                 err("frozen-unavailable", "frozen windows are not available in this version")
             }
+            Err(PushError::BadFolder) => err("bad-window", "bad-folder"),
+            Err(PushError::ForbiddenFolder) => err("bad-window", "forbidden-folder"),
             Err(PushError::AllowNeedsApps) => err("bad-window", "allow-needs-apps"),
             Err(PushError::TooMany) => err("bad-window", "too-many"),
             Err(PushError::DuplicateId) => err("bad-window", "duplicate id"),

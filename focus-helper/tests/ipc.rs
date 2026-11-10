@@ -13,7 +13,7 @@ fn vector() -> Value {
 }
 
 fn win(id: &str, lock: Lock, starts: i64, ends: i64) -> Window {
-    Window { id: id.into(), starts, ends, lock, mode: Mode::Block, sites: vec!["x.com".into()], apps: vec![], unlock_delay_ms: if lock == Lock::Locked { Some(86_400_000) } else { None } }
+    Window { id: id.into(), starts, ends, lock, mode: Mode::Block, sites: vec!["x.com".into()], apps: vec![], app_folders: vec![], unlock_delay_ms: if lock == Lock::Locked { Some(86_400_000) } else { None } }
 }
 
 fn run(s: &mut LockStore, c: &mut EffectiveClock, r: Request) -> Response {
