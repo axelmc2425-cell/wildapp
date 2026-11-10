@@ -138,3 +138,21 @@
 - [ ] **Step 3: Screenshots.** Extend `scripts/focus-steps.mjs` with a step that stubs `window.__TAURI__.dialog.open` and shows the editor with both Browse buttons, folder chips and the forbidden-folder error; run `node scripts/shot.mjs <dir> --steps scripts/focus-steps.mjs --helper target/debug/focus-helper` in light and `--dark`; expect no console errors and no horizontal overflow.
 - [ ] **Step 4: Docs.** Add checklist section 14 with the Windows items from the spec's Testing list; add one README line about folder blocking and its limits (junctions, launchers).
 - [ ] **Step 5: Run** `npm test` and `cargo test -p focus-helper`; **Commit** `test(focus-pickers): e2e, screenshots, checklist`.
+
+### Task 7: Partner page Save dialog and Show in folder
+
+Owner decision (2026-11-10): no hosted link and no server. The partner page is saved as a file and sent by the owner; the current `<a download>` button does nothing visible in the desktop window.
+
+**Files:**
+- Modify: `src/shell/native.js`, `src/modules/focus/ui/partner-setup.js`, `src-tauri/src/main.rs`
+- Test: `tests/focus-ui-dom.test.js` (or a new `tests/focus-partner-setup.test.js`)
+
+**Interfaces:**
+- Consumes: existing Tauri commands `write_files(dir: String, files: Vec<FileEntry>)` (`FileEntry { path, bytes }`) and the dialog plugin's `save`.
+- Produces: `pickSavePath(defaultName: string, ext: string): Promise<string | null>` and `revealInFolder(path: string): Promise<void>` in `native.js`; a Rust command `reveal_in_folder(path: String) -> Result<(), String>` registered in `generate_handler!` (Windows: spawn `explorer.exe` with the single argument `/select,<path>`; other platforms: return `Err("not supported")`; refuse a path that does not exist).
+
+- [ ] **Step 1: Write failing tests** with `window.__TAURI__` stubbed (`dialog.save` returns `C:\Users\me\Desktop\partner-unlock.html`, `core.invoke` records calls): clicking **Save the partner page** calls `write_files` with dir `C:\Users\me\Desktop` and one file named `partner-unlock.html` whose bytes decode to the partner page, then calls `reveal_in_folder` with the full path, then shows "Saved to C:\Users\me\Desktop\partner-unlock.html. Send this file to your partner (email, WhatsApp, a USB stick). They open it in a browser." A cancelled dialog (null) writes nothing and shows nothing. A failing `write_files` shows "Could not save the page: <reason>. Nothing was sent." With `hasNative()` false the old blob download runs and the same send-it hint is shown.
+- [ ] **Step 2: Run** `node --test tests/focus-partner-setup.test.js` — expect failures.
+- [ ] **Step 3: Implement** the wrappers and `reveal_in_folder`; split the chosen path at the last `\` or `/` into dir and file name; encode the page with `TextEncoder` into a number array for `bytes`; a reveal failure must not hide the "Saved to" message. Also add a **Copy page text** button only if trivial; otherwise skip (not in scope).
+- [ ] **Step 4: Run** `npm test` — expect all pass; the Rust command is covered by the Windows `cargo check` in CI and the checklist.
+- [ ] **Step 5: Add to the checklist** (section 14): the Save dialog opens, the file lands where chosen, Explorer opens with it selected, the saved page opens in a browser and works offline. **Commit** `feat(focus): save the partner page with a real dialog`.
