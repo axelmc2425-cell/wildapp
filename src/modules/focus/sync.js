@@ -11,7 +11,11 @@ function validSchedule(s, list) {
   try { weekdays = typeof s.weekdays === 'string' ? JSON.parse(s.weekdays) : s.weekdays; } catch { return null; }
   if (!Array.isArray(weekdays) || !weekdays.every((d) => Number.isInteger(d) && d >= 0 && d <= 6)) return null;
   if (!TIME_RE.test(String(s.start_time)) || !TIME_RE.test(String(s.end_time))) return null;
-  return { ...s, weekdays };
+  // Task 3 replaces this inline conversion with listSchedules rows.
+  return {
+    id: s.id, name: '', listIds: [s.list_id], weekdays, start: s.start_time, end: s.end_time,
+    lock: s.lock, unlockDelayMs: null, endsOn: null, enabled: true,
+  };
 }
 
 /** Keep one window per id (largest unlock delay, then latest end); a duplicate id would fail the whole push. */
@@ -67,7 +71,7 @@ export async function syncWindows(db, client, nowMs, tzOffsetAt) {
     const sched = validSchedule(s, list);
     if (!sched) { skipped++; continue; }
     try {
-      windows.push(...expandSchedule(sched, list, nowMs, HORIZON_MS, tzOffsetAt));
+      windows.push(...expandSchedule(sched, byId, nowMs, HORIZON_MS, tzOffsetAt));
     } catch { skipped++; }
   }
   // The helper rejects a whole push if any window is invalid, so drop invalid ones here. That
