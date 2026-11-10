@@ -289,7 +289,7 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
       // The first occurrence the helper should now hold, if one falls inside the pushed horizon.
       const t = now();
       const rec = (await store.readSchedule(db, res.id).catch(() => null));
-      const n = rec ? nextOccurrence({ ...rec, enabled: true }, t, tzOffsetAt) : null;
+      const n = rec ? nextOccurrence(rec, t, tzOffsetAt) : null;
       const ends = n && n.state !== 'ended' && Number.isFinite(n.ends) ? n.ends : null;
       if (ends === null || !(n.starts < t + HORIZON_MS)) return res;
       const wid = `c${res.id}@${n.starts}`;
@@ -303,7 +303,7 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
         syncPending = true;
         seq++;
         changed();
-        return { ok: true, id: res.id, unconfirmed: true, message: "Saved, but couldn't confirm the lock with the helper. It may not be active yet. Check the Focus Room." };
+        return { ok: true, id: res.id, unconfirmed: true, message: "The lock is saved, but we couldn't confirm it with the helper, so it may not be enforced yet. Check the Focus Room." };
       }
       let undone = true;
       try { await store.restoreSchedule(db, res.id, prev); } catch { undone = false; }

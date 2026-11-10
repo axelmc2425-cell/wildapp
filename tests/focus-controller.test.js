@@ -1064,3 +1064,43 @@ test('saveSchedule rejects lists whose items together exceed 512', async () => {
   assert.equal((await db.all('SELECT id FROM focus_schedules')).length, 0);
   assert.equal((await ctl.saveSchedule(schedIn([a.id]))).ok, true);
 });
+
+test('a paused unlocked schedule edited to Locked is resumed, pushed, and kept', async () => {
+  const { ctl, client, db } = await setup();
+  client.mirror = true;
+  const a = await ctl.saveList(list('A'));
+  const n = await ctl.saveSchedule(schedIn([a.id]));
+  await ctl.setScheduleEnabled(n.id, false);
+  const r = await ctl.saveSchedule({ ...lockedIn([a.id]), id: n.id });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const [row] = await db.all('SELECT lock, enabled FROM focus_schedules');
+  assert.deepEqual({ ...row }, { lock: 'locked', enabled: 1 });
+  assert.ok(client.windows.some(w => w.id.startsWith(`c${n.id}@`) && w.lock === 'locked'));
+});
+
+test('rolling back a locked edit of a paused schedule restores enabled = 0', async () => {
+  const { ctl, client, db } = await setup();
+  client.mirror = true;
+  const a = await ctl.saveList(list('A'));
+  const n = await ctl.saveSchedule(schedIn([a.id], { name: 'Before' }));
+  await ctl.setScheduleEnabled(n.id, false);
+  client.mirror = false;
+  const r = await ctl.saveSchedule({ ...lockedIn([a.id], { name: 'After' }), id: n.id });
+  assert.equal(r.ok, false);
+  const [row] = await db.all('SELECT name, lock, enabled FROM focus_schedules');
+  assert.deepEqual({ ...row }, { name: 'Before', lock: 'none', enabled: 0 });
+});
+
+test('a locked save whose status cannot be read after the push is kept as unconfirmed', async () => {
+  const { ctl, client, db } = await setup();
+  const a = await ctl.saveList(list('A'));
+  const orig = client.status;
+  let n = 0;
+  client.status = async () => { if (++n >= 2) throw mkErr('timeout', 'slow'); return orig(); };
+  const r = await ctl.saveSchedule(lockedIn([a.id]));
+  assert.equal(r.ok, true);
+  assert.equal(r.unconfirmed, true);
+  assert.match(r.message, /saved.*may not be enforced yet/);
+  assert.equal(ctl.state.syncPending, true);
+  assert.equal((await db.all('SELECT id FROM focus_schedules')).length, 1);
+});

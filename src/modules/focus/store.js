@@ -249,10 +249,11 @@ export async function saveSchedule(db, input, nowMs, tzOffsetAt) {
     sql: `INSERT INTO focus_schedule_lists(schedule_id, list_id) VALUES (${idSql}, ?)`, params: [...idParams, l],
   }));
   const cols = [name, JSON.stringify(weekdays), start, end, lock, endsOn, unlockDelayMs];
+  // A locked schedule is never paused: saving as Locked also resumes it.
   if (existing) {
     const id = existing.id;
     await db.batch([
-      { sql: 'UPDATE focus_schedules SET list_id = ?, name = ?, weekdays = ?, start_time = ?, end_time = ?, lock = ?, ends_on = ?, unlock_delay_ms = ? WHERE id = ?', params: [listIds[0], ...cols, id] },
+      { sql: 'UPDATE focus_schedules SET list_id = ?, name = ?, weekdays = ?, start_time = ?, end_time = ?, lock = ?, ends_on = ?, unlock_delay_ms = ?, enabled = CASE WHEN ? = \'locked\' THEN 1 ELSE enabled END WHERE id = ?', params: [listIds[0], ...cols, lock, id] },
       { sql: 'DELETE FROM focus_schedule_lists WHERE schedule_id = ?', params: [id] },
       ...linkStmts('?', [id]),
     ]);
