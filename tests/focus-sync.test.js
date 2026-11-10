@@ -225,3 +225,17 @@ test('a locked session without a valid unlock delay is skipped', async () => {
   const r = rec();
   assert.deepEqual(await syncWindows(db, r.client, NOW, utc), { pushed: 0, skipped: 1 });
 });
+
+test('folders are pushed as app_folders; a forbidden folder skips the window and counts it', async () => {
+  const db = await mk();
+  await db.run("INSERT INTO focus_lists(name, mode) VALUES ('G','block')");
+  await db.run("INSERT INTO focus_lists(name, mode) VALUES ('W','block')");
+  await db.run("INSERT INTO focus_items(list_id, kind, value) VALUES (1,'folder','C:\\Games\\Foo')");
+  await db.run("INSERT INTO focus_items(list_id, kind, value) VALUES (2,'folder','C:\\Windows\\System32')");
+  await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (1, ?, ?, 'none')", [NOW - H, NOW + H]);
+  await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (2, ?, ?, 'none')", [NOW - H, NOW + H]);
+  const r = rec();
+  assert.deepEqual(await syncWindows(db, r.client, NOW, utc), { pushed: 1, skipped: 1 });
+  assert.deepEqual(r.pushed[0].map((w) => w.id), ['s1']);
+  assert.deepEqual(r.pushed[0][0].app_folders, ['C:\\Games\\Foo']);
+});

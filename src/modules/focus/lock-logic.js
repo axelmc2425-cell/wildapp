@@ -42,6 +42,8 @@ const MESSAGES = {
   'not-delayable': "This block can't use a waiting period. Use your partner's code to end it early.",
   'no-pending-unlock': 'There is no waiting period running for this block, so there is nothing to cancel.',
   'bad-window': "The helper didn't recognise that block. Refresh the list and try again.",
+  'bad-folder': "One of the folders in this list isn't a valid folder path. Open the list, remove it and pick the folder again with Browse folder.",
+  'forbidden-folder': "One of the folders in this list is part of Windows or this app and can't be blocked. Open the list and remove it.",
   unreachable: "Couldn't reach the helper. Check it is running and try again. The lock stays on.",
   'persist-failed': "The helper couldn't save that change to disk, so it may be lost on restart. Try again.",
 };
@@ -50,6 +52,11 @@ const MESSAGES = {
 export function describeUnlockError(err) {
   try {
     const code = err && typeof err === 'object' ? err.code : undefined;
+    if (code === 'bad-window' && typeof err.message === 'string') {
+      // The helper reports the folder reason inside a bad-window message; match forbidden first.
+      if (err.message.includes('forbidden-folder')) return MESSAGES['forbidden-folder'];
+      if (err.message.includes('bad-folder')) return MESSAGES['bad-folder'];
+    }
     if (typeof code === 'string' && Object.hasOwn(MESSAGES, code)) return MESSAGES[code];
     const message = typeof err === 'string' ? err : err && typeof err === 'object' ? err.message : undefined;
     if (typeof message === 'string' && message.trim()) return message;

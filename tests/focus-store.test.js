@@ -23,7 +23,7 @@ test('saveList stores normalized sites and apps and returns the id', async () =>
   assert.equal(r.ok, true);
   assert.equal(typeof r.id, 'number');
   const lists = await listLists(db);
-  assert.deepEqual(lists, [{ id: r.id, name: 'Study', mode: 'block', sites: ['youtube.com'], apps: ['steam.exe'] }]);
+  assert.deepEqual(lists, [{ id: r.id, name: 'Study', mode: 'block', sites: ['youtube.com'], apps: ['steam.exe'], folders: [] }]);
 });
 
 test('saveList normalizes "https://www.Reddit.com/r/x?y=1" to "reddit.com" and keeps "League of Legends.exe"', async () => {
@@ -81,10 +81,10 @@ test('saveList with an id replaces items atomically (a failing second statement 
   const { id } = await saveList(db, { name: 'A', sites: ['old.com'], apps: ['old.exe'] });
   const failing = { ...db, batch: (stmts) => db.batch([...stmts, { sql: 'INSERT INTO no_such_table VALUES (1)' }]) };
   await assert.rejects(saveList(failing, { id, name: 'B', sites: ['new.com'], apps: [] }));
-  assert.deepEqual(await listLists(db), [{ id, name: 'A', mode: 'block', sites: ['old.com'], apps: ['old.exe'] }]);
+  assert.deepEqual(await listLists(db), [{ id, name: 'A', mode: 'block', sites: ['old.com'], apps: ['old.exe'], folders: [] }]);
   const r = await saveList(db, { id, name: 'B', sites: ['new.com'], apps: [] });
   assert.deepEqual(r, { ok: true, id });
-  assert.deepEqual(await listLists(db), [{ id, name: 'B', mode: 'block', sites: ['new.com'], apps: [] }]);
+  assert.deepEqual(await listLists(db), [{ id, name: 'B', mode: 'block', sites: ['new.com'], apps: [], folders: [] }]);
 });
 
 test('listLists sorts by lowercase name and keeps items separate per list', async () => {
@@ -227,4 +227,38 @@ test('deleteList refuses while a locked block is running', async () => {
   const { id } = await saveList(db, { name: 'L', sites: [], apps: [] });
   await createSessions(db, { listIds: [id], starts: 100, ends: 1000, lock: 'locked', unlockDelayMs: HOUR });
   assert.deepEqual(await deleteList(db, id, 200), { ok: false, reason: 'running' });
+});
+
+test('folders round trip, collapse duplicates and list under folders', async () => {
+  const db = await fresh();
+  const r = await saveList(db, { name: 'F', sites: ['a.com'], apps: ['x.exe'], folders: ['C:/Games/Foo/', 'C:\\Games\\Foo', 'D:\\Stuff'] });
+  assert.equal(r.ok, true);
+  const [l] = await listLists(db);
+  assert.deepEqual(l.folders, ['C:\\Games\\Foo', 'D:\\Stuff']);
+  assert.deepEqual(l.apps, ['x.exe']);
+  assert.deepEqual(l.sites, ['a.com']);
+});
+
+test('an invalid folder gives errors.folders and saves nothing', async () => {
+  const db = await fresh();
+  const r = await saveList(db, { name: 'F', sites: [], apps: [], folders: ['C:\\Windows', 'relative\\x', 'C:\\ok'] });
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.errors.folders.map(e => e.value), ['C:\\Windows', 'relative\\x']);
+  assert.ok(r.errors.folders.every(e => e.message));
+  assert.deepEqual(await listLists(db), []);
+});
+
+test('the 512 cap counts folders', async () => {
+  const db = await fresh();
+  const sites = Array.from({ length: 510 }, (_, i) => `s${i}.com`);
+  const folders = ['C:\\a', 'C:\\b', 'C:\\c'];
+  assert.deepEqual(await saveList(db, { name: 'A', sites, apps: [], folders }), { ok: false, errors: { items: 'A list can hold up to 512 entries.' } });
+  assert.equal((await saveList(db, { name: 'A', sites, apps: [], folders: folders.slice(0, 2) })).ok, true);
+});
+
+test('editing a list replaces its folders', async () => {
+  const db = await fresh();
+  const r = await saveList(db, { name: 'A', sites: [], apps: [], folders: ['C:\\a'] });
+  await saveList(db, { id: r.id, name: 'A', sites: [], apps: [] });
+  assert.deepEqual((await listLists(db))[0].folders, []);
 });

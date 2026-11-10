@@ -34,6 +34,17 @@ const V2 = [
   'ALTER TABLE focus_sessions ADD COLUMN unlock_delay_ms INTEGER',
 ];
 
+// SQLite cannot alter a CHECK constraint, so v3 rebuilds focus_items to allow kind 'folder'.
+const V3 = [
+  `CREATE TABLE focus_items_new (
+     list_id INTEGER NOT NULL,
+     kind TEXT NOT NULL CHECK (kind IN ('site','app','folder')),
+     value TEXT NOT NULL)`,
+  'INSERT INTO focus_items_new(rowid, list_id, kind, value) SELECT rowid, list_id, kind, value FROM focus_items',
+  'DROP TABLE focus_items',
+  'ALTER TABLE focus_items_new RENAME TO focus_items',
+];
+
 export async function migrateFocus(db) {
   await db.run('CREATE TABLE IF NOT EXISTS focus_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
   const rows = await db.all("SELECT value FROM focus_meta WHERE key = 'schema_version'");
@@ -49,6 +60,13 @@ export async function migrateFocus(db) {
     await db.batch([
       ...V2.map(sql => ({ sql })),
       { sql: "INSERT OR REPLACE INTO focus_meta(key, value) VALUES ('schema_version', '2')" },
+    ]);
+    version = 2;
+  }
+  if (version < 3) {
+    await db.batch([
+      ...V3.map(sql => ({ sql })),
+      { sql: "INSERT OR REPLACE INTO focus_meta(key, value) VALUES ('schema_version', '3')" },
     ]);
   }
 }

@@ -1,14 +1,16 @@
 // Expand focus sessions and recurring schedules into concrete windows (pure).
 import { normalizeDomain, normalizeApp } from './match.js';
+import { normalizeFolder } from './folders.js';
 
 const DAY_MS = 86400000;
 const MIN_MS = 60000;
 
-/** @typedef {{ id: number, mode: 'block'|'allow', items: { kind: 'site'|'app', value: string }[] }} List */
+/** @typedef {{ id: number, mode: 'block'|'allow', items: { kind: 'site'|'app'|'folder', value: string }[] }} List */
 
 function listTargets(list) {
   const sites = new Set();
   const apps = new Set();
+  const folders = new Set();
   for (const item of list.items) {
     if (item.kind === 'site') {
       const d = normalizeDomain(item.value);
@@ -16,15 +18,20 @@ function listTargets(list) {
     } else if (item.kind === 'app') {
       const a = typeof item.value === 'string' && item.value.trim() ? normalizeApp(item.value) : null;
       if (a) apps.add(a);
+    } else if (item.kind === 'folder') {
+      const f = normalizeFolder(item.value);
+      if (f) folders.add(f);
     }
   }
-  return { sites: [...sites], apps: [...apps] };
+  return { sites: [...sites], apps: [...apps], folders: [...folders] };
 }
 
 /** @returns {import('./limits.js').Window} */
 export function sessionToWindow(session, list) {
-  const { sites, apps } = listTargets(list);
-  return { id: 's' + session.id, starts: session.starts, ends: session.ends, lock: session.lock, mode: list.mode, sites, apps };
+  const { sites, apps, folders } = listTargets(list);
+  const w = { id: 's' + session.id, starts: session.starts, ends: session.ends, lock: session.lock, mode: list.mode, sites, apps };
+  if (folders.length) w.app_folders = folders;
+  return w;
 }
 
 /**
@@ -39,15 +46,19 @@ export function lockedBlockToWindow(sessions, listsById) {
   const listIds = [...new Set(sessions.map((s) => s.listId))].sort((a, b) => a - b);
   const sites = new Set();
   const apps = new Set();
+  const folders = new Set();
   for (const id of listIds) {
     const t = listTargets(listsById.get(id));
     t.sites.forEach((x) => sites.add(x));
     t.apps.forEach((x) => apps.add(x));
+    t.folders.forEach((x) => folders.add(x));
   }
-  return {
+  const w = {
     id: 'b' + starts + '-' + listIds.join('.'), starts, ends, lock: 'locked', mode: 'block',
     sites: [...sites], apps: [...apps], unlock_delay_ms: unlockDelayMs,
   };
+  if (folders.size) w.app_folders = [...folders];
+  return w;
 }
 
 // Convert wall-clock time (expressed as if it were UTC ms) to a UTC instant.
@@ -75,7 +86,7 @@ function parseTime(t) {
 }
 
 export function expandSchedule(schedule, list, fromMs, horizonMs, tzOffsetAt) {
-  const { sites, apps } = listTargets(list);
+  const { sites, apps, folders } = listTargets(list);
   const toMs = fromMs + horizonMs;
   const startOfDay = parseTime(schedule.start_time);
   const endOfDay = parseTime(schedule.end_time);
@@ -89,10 +100,12 @@ export function expandSchedule(schedule, list, fromMs, horizonMs, tzOffsetAt) {
     const starts = wallToUtc(dayMs + startOfDay, tzOffsetAt);
     const ends = wallToUtc(dayMs + endOfDay + (overnight ? DAY_MS : 0), tzOffsetAt);
     if (!(ends > starts) || starts >= toMs || ends <= fromMs) continue;
-    out.push({
+    const w = {
       id: 'c' + schedule.id + '@' + starts, starts, ends,
       lock: schedule.lock, mode: list.mode, sites: [...sites], apps: [...apps],
-    });
+    };
+    if (folders.length) w.app_folders = [...folders];
+    out.push(w);
   }
   return out;
 }
