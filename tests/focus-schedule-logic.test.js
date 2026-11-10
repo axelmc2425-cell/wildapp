@@ -126,11 +126,11 @@ test('nextOccurrence on the spring-forward day', () => {
 });
 
 test('isLockedActive', () => {
-  assert.equal(isLockedActive({ lock: 'locked', endsOn: '2026-01-06' }, NOW, ny), true); // end date is inclusive
-  assert.equal(isLockedActive({ lock: 'locked', endsOn: '2026-01-05' }, NOW, ny), false);
-  assert.equal(isLockedActive({ lock: 'none', endsOn: '2026-01-31' }, NOW, ny), false);
-  assert.equal(isLockedActive({ lock: 'locked', endsOn: null }, NOW, ny), false);
-  assert.equal(isLockedActive({ lock: 'locked', endsOn: '2026-01-06' }, Date.UTC(2026, 0, 7, 5), ny), false); // 00:00 local next day
+  assert.equal(isLockedActive(rec({ lock: 'locked', endsOn: '2026-01-06' }), NOW, ny), true); // end date is inclusive
+  assert.equal(isLockedActive(rec({ lock: 'locked', endsOn: '2026-01-05' }), NOW, ny), false);
+  assert.equal(isLockedActive(rec({ lock: 'none', endsOn: '2026-01-31' }), NOW, ny), false);
+  assert.equal(isLockedActive(rec({ lock: 'locked', endsOn: null }), NOW, ny), false);
+  assert.equal(isLockedActive(rec({ lock: 'locked', endsOn: '2026-01-06' }), Date.UTC(2026, 0, 7, 5), ny), false); // 00:00 local next day
 });
 
 test('scheduleBlocks returns one block per running locked occurrence', () => {
@@ -155,4 +155,31 @@ test('scheduleBlocks is empty when unlocked, paused, ended or not running', () =
   assert.deepEqual(scheduleBlocks([rec({ ...L, enabled: false })], lists, NOW, ny), []);
   assert.deepEqual(scheduleBlocks([rec({ ...L, endsOn: '2026-01-05' })], lists, NOW, ny), []);
   assert.equal(scheduleBlocks([rec(L), rec({ ...L, id: 8 })], lists, NOW, ny).length, 2);
+});
+
+test('locked overnight tail past endsOn stays running and locked until it ends', () => {
+  // Fri 22:00 - Sat 02:00, ends Friday 2026-01-09.
+  const s = rec({ lock: 'locked', unlockDelayMs: H, endsOn: '2026-01-09', weekdays: [5], start: '22:00', end: '02:00' });
+  const lists = new Map([[1, { name: 'Social' }]]);
+  const midnight = Date.UTC(2026, 0, 10, 5); // Sat 00:00 EST
+  let r = nextOccurrence(s, midnight, ny);
+  assert.equal(r.state, 'running');
+  assert.equal(iso(r.starts), '2026-01-10T03:00:00.000Z');
+  assert.equal(iso(r.ends), '2026-01-10T07:00:00.000Z');
+  assert.equal(isLockedActive(s, midnight, ny), true);
+  assert.equal(scheduleBlocks([s], lists, midnight, ny).length, 1);
+  const after = Date.UTC(2026, 0, 10, 7); // Sat 02:00 EST
+  assert.deepEqual(nextOccurrence(s, after, ny), { state: 'ended' });
+  assert.equal(isLockedActive(s, after, ny), false);
+  assert.equal(scheduleBlocks([s], lists, after, ny).length, 0);
+});
+
+test('non-overnight locked schedule at the end-date boundary', () => {
+  const s = rec({ lock: 'locked', unlockDelayMs: H, endsOn: '2026-01-06' });
+  const evening = Date.UTC(2026, 0, 6, 23); // Tue 18:00, after hours, still the end date
+  assert.equal(isLockedActive(s, evening, ny), true);
+  assert.equal(nextOccurrence(s, evening, ny).state, 'ended');
+  const next = Date.UTC(2026, 0, 7, 5); // Wed 00:00 EST
+  assert.equal(isLockedActive(s, next, ny), false);
+  assert.equal(nextOccurrence(s, next, ny).state, 'ended');
 });

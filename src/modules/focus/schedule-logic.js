@@ -95,20 +95,33 @@ function occurrences(s, listIds, fromMs, horizonMs, tzOffsetAt) {
   return expandSchedule({ ...s, listIds: listIds.length ? [0] : [] }, SYNTH_LIST, fromMs, horizonMs, tzOffsetAt);
 }
 
+// The occurrence (window) running at nowMs, if any; `enabled` is ignored so lock checks need not care.
+function runningOccurrence(s, nowMs, tzOffsetAt) {
+  return occurrences({ ...s, enabled: true }, s.listIds, nowMs - DAY_MS, 2 * DAY_MS, tzOffsetAt)
+    .find((w) => w.starts <= nowMs && nowMs < w.ends);
+}
+
 /** @returns {{ state: 'running'|'upcoming'|'paused'|'ended', starts?: number, ends?: number }} */
 export function nextOccurrence(s, nowMs, tzOffsetAt) {
+  // An overnight occurrence that started on the end date runs to its end, so it beats 'ended'.
+  const run = s.enabled ? runningOccurrence(s, nowMs, tzOffsetAt) : null;
+  if (run) return { state: 'running', starts: run.starts, ends: run.ends };
   if (s.endsOn && nowMs >= localDayEnd(s.endsOn, tzOffsetAt)) return { state: 'ended' };
   if (!s.enabled) return { state: 'paused' };
-  const ws = occurrences(s, s.listIds, nowMs - DAY_MS, NEXT_HORIZON_MS, tzOffsetAt)
-    .filter((w) => w.ends > nowMs).sort((a, b) => a.starts - b.starts);
-  const w = ws[0];
+  const w = occurrences(s, s.listIds, nowMs - DAY_MS, NEXT_HORIZON_MS, tzOffsetAt)
+    .filter((x) => x.ends > nowMs).sort((x, y) => x.starts - y.starts)[0];
   if (!w) return s.endsOn ? { state: 'ended' } : { state: 'upcoming' };
   return { state: w.starts <= nowMs ? 'running' : 'upcoming', starts: w.starts, ends: w.ends };
 }
 
-/** A locked schedule cannot be changed until the end of its end date. */
+/**
+ * A locked schedule cannot be changed until its end date has passed and no occurrence is still
+ * running (an overnight occurrence starting on the end date finishes after midnight).
+ * Takes a full ScheduleRec.
+ */
 export function isLockedActive(s, nowMs, tzOffsetAt) {
-  return s.lock === 'locked' && !!s.endsOn && nowMs < localDayEnd(s.endsOn, tzOffsetAt);
+  if (s.lock !== 'locked' || !s.endsOn) return false;
+  return nowMs < localDayEnd(s.endsOn, tzOffsetAt) || !!runningOccurrence(s, nowMs, tzOffsetAt);
 }
 
 /** Block-shaped objects for running locked occurrences, so the Unlock dialog can treat them like blocks. */
