@@ -7,11 +7,12 @@ class Text_ extends Node_ {
   get textContent() { return this.data; }
 }
 export class El extends Node_ {
-  constructor(tag) { super(); this.tag = tag; this.attrs = {}; this.listeners = {}; this.className = ''; this.value = ''; this.disabled = false; }
+  constructor(tag) { super(); this.tag = tag; this.attrs = {}; this.listeners = {}; this.className = ''; this.value = ''; this.disabled = false; this.style = {}; }
   setAttribute(k, v) { this.attrs[k] = String(v); if (k === 'id') this.id = String(v); }
   getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
   get hidden() { return 'hidden' in this.attrs; }
   set hidden(v) { if (v) this.attrs.hidden = ''; else delete this.attrs.hidden; }
+  get parentElement() { return this.parent; }
   get title() { return this.attrs.title ?? ''; }
   get isConnected() { let n = this; while (n.parent) n = n.parent; return n === document.body; }
   get offsetParent() { return this.isConnected ? document.body : null; }

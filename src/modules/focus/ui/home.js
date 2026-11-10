@@ -5,6 +5,9 @@ import { chipSummary, formatClock, minutesLeft } from './util.js';
 import { bannerFor, formatCountdown } from '../model.js';
 import { STARTERS } from '../starters.js';
 import { windowIdForBlock, pendingUnlockFor, lockedBlockHolding } from '../lock-logic.js';
+import { renderSchedules } from './schedule-list.js';
+import { nextOccurrence, isLockedActive } from '../schedule-logic.js';
+import { makeTzOffsetAt } from '../tz.js';
 
 const SOON = 'Coming in the next step';
 const RUNNING_MSG = 'This list is in a running block. Stop the block first.';
@@ -12,10 +15,12 @@ const FINISHED = 'That block has already finished.';
 
 /**
  * Renders the Focus Room home view. Returns a cleanup that unsubscribes and stops every timer.
- * deps = { subscribe, openListEditor?, openStartDialog?, openPartnerSetup?, openUnlockDialog?, mountHelperDetails? }
+ * deps = { subscribe, openListEditor?, openScheduleEditor?, openStartDialog?, openPartnerSetup?, openUnlockDialog?, mountHelperDetails?, tzOffsetAt? }
  */
 export function mountHome(root, controller, ctx, deps = {}) {
   const now = () => Date.now();
+  const tzOffsetAt = deps.tzOffsetAt || makeTzOffsetAt();
+  let schedMsg = null;   // message about a schedule action
   let alive = true;
   let lastSig = '';
   let local = null;      // { text, retry } - a message from the last action
@@ -41,8 +46,9 @@ export function mountHome(root, controller, ctx, deps = {}) {
   const cardsEl = h('div', { class: 'fr-cards' });
   const welcomeEl = h('div', {});
   const listsEl = h('section', { class: 'fr-lists', 'aria-labelledby': 'fr-lists-title' });
+  const schedsEl = h('section', { class: 'fr-lists fr-schedules', 'aria-labelledby': 'fr-scheds-title' });
   const detailsEl = h('div', {});
-  const page = h('div', { class: 'page fr-home' }, headEl, notesEl, cardsEl, welcomeEl, listsEl, detailsEl);
+  const page = h('div', { class: 'page fr-home' }, headEl, notesEl, cardsEl, welcomeEl, listsEl, schedsEl, detailsEl);
   root.innerHTML = '';
   root.append(page);
 
@@ -171,6 +177,17 @@ export function mountHome(root, controller, ctx, deps = {}) {
     });
   }
 
+  // Display only: a running schedule occurrence the helper no longer holds (unlocked early) stops looking
+  // Locked. Never while a change is unsent or the helper's answer is unknown; nothing is written to the DB.
+  function scheduleBlockReleased(state, b) {
+    if (b.scheduleId === undefined || state.syncPending) return false;
+    const helper = state.helper;
+    if (!helper || helper.kind !== 'ok' || !helper.status || !Array.isArray(helper.status.windows)) return false;
+    const helperNow = Number.isFinite(helper.status.now_ms) ? helper.status.now_ms : null;
+    const held = helper.status.windows.some(w => w && w.id === b.windowId && !(helperNow !== null && Number.isFinite(w.ends) && w.ends <= helperNow));
+    return !held;
+  }
+
   // ---- cards ----
   function blockCard(state, block, idx) {
     const t = now();
@@ -197,8 +214,9 @@ export function mountHome(root, controller, ctx, deps = {}) {
         h('span', { class: 'fr-actions' },
           isLocked && typeof deps.openUnlockDialog === 'function'
             ? h('button', { type: 'button', 'data-fk': `unlock-${idx}`, onclick: () => unlockDialog(block) }, 'Unlock early') : null,
-          h('button', { type: 'button', 'data-fk': `extend-${idx}`, onclick: () => extendDialog(block) }, 'Extend'),
-          isLocked ? null : h('button', { type: 'button', class: 'danger', 'data-fk': `cancel-${idx}`, onclick: () => cancelDialog(block) }, 'Cancel'))),
+          // A schedule occurrence ends with its schedule; extending or cancelling it is not offered.
+          block.scheduleId !== undefined ? null : h('button', { type: 'button', 'data-fk': `extend-${idx}`, onclick: () => extendDialog(block) }, 'Extend'),
+          isLocked || block.scheduleId !== undefined ? null : h('button', { type: 'button', class: 'danger', 'data-fk': `cancel-${idx}`, onclick: () => cancelDialog(block) }, 'Cancel'))),
       pendingAt != null ? h('p', { class: 'fr-pending', role: 'status' }, `Unlocks at ${formatClock(pendingAt)} unless you cancel`) : null,
       state.syncPending && state.helper.kind !== 'ok' && state.helper.kind !== 'persist-failed' ? h('p', { class: 'fr-muted fr-small' }, 'Saved, not yet enforced.') : null);
     const entry = { block, state: block.state, cd, sr, bar, lastMin: -1 };
@@ -325,10 +343,13 @@ export function mountHome(root, controller, ctx, deps = {}) {
       const again = [...root.querySelectorAll('[data-fk]')].find(el => el.getAttribute('data-fk') === fk && !el.disabled);
       if (again && again !== document.activeElement) again.focus();
     };
-    const blocks = state.blocks.filter(b => b.state !== 'finished' && b.ends > t);
+    const blocks = state.blocks.filter(b => b.state !== 'finished' && b.ends > t && !scheduleBlockReleased(state, b));
+    const schedules = state.schedules || [];
     const sig = JSON.stringify([
       bannerFor(state.helper), state.syncPending, state.notice, local, listMsg,
       state.loaded, state.lists, blocks.map(b => [b.key, b.state, b.listNames, b.lock, b.lock === 'locked' && state.helper?.kind === 'ok' ? pendingUnlockFor(state.helper.status, windowIdForBlock(b)) : null]),
+      schedMsg, schedules, schedules.map(sc => [nextOccurrence(sc, t, tzOffsetAt), isLockedActive(sc, t, tzOffsetAt)]),
+      typeof deps.openScheduleEditor,
       typeof deps.openListEditor, typeof deps.openStartDialog, typeof deps.openPartnerSetup, typeof deps.openUnlockDialog,
     ]);
     renderBanner(state);
@@ -369,6 +390,22 @@ export function mountHome(root, controller, ctx, deps = {}) {
       listsEl.append(h('div', { class: 'fr-actions fr-lists-foot' }, newListButton()));
     }
 
+    schedsEl.textContent = '';
+    schedsEl.append(h('h3', { id: 'fr-scheds-title' }, 'Schedules'));
+    if (schedMsg) schedsEl.append(h('p', { class: 'fr-note', role: 'alert' }, schedMsg));
+    if (state.loaded) {
+      schedsEl.append(renderSchedules({ lists: state.lists, schedules }, {
+        nowMs: t, tzOffsetAt, controller, confirm: confirmD,
+        openEditor: typeof deps.openScheduleEditor === 'function'
+          ? (schedule) => deps.openScheduleEditor({ controller, schedule, onDone: () => { schedMsg = null; afterAction(); } })
+          : undefined,
+        onResult: (res) => {
+          schedMsg = res && res.ok === false ? (res.message || 'That did not work.') : null;
+          afterAction();
+        },
+      }));
+    }
+
     restore();
   }
 
@@ -376,6 +413,7 @@ export function mountHome(root, controller, ctx, deps = {}) {
   const unsubscribe = deps.subscribe ? deps.subscribe(() => render()) : () => {};
   const timers = [
     setInterval(tick, 1000),
+    setInterval(() => { lastSig = ''; render(); }, 60000), // schedule rows show times that move on
     setInterval(() => { controller.refreshStatus(); }, 5000),
     setInterval(() => { if (controller.state.syncPending) controller.resync(); }, 30000),
   ];

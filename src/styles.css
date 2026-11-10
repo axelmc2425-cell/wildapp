@@ -259,6 +259,23 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-start > .fr-err { margin: 0; }
 .fr-start > .fr-dialog-actions { position: sticky; bottom: -18px; margin: 0 -20px -18px; padding: 10px 20px 18px; background: var(--panel); border-radius: 0 0 12px 12px; }
 
+/* ---- Focus Room: schedules ---- */
+.fr-schedules { margin-top: 18px; }
+.fr-sched .fr-sched-when { font-weight: 600; overflow-wrap: anywhere; }
+.fr-sched .fr-sched-when.fr-muted { font-weight: 400; margin: 2px 0 0; }
+.fr-sched-status { margin: 6px 0 0; }
+.fr-days { display: flex; flex-wrap: wrap; gap: 6px; }
+.fr-day { min-width: 44px; min-height: 40px; padding: 6px 8px; font-size: 16px; }
+.fr-day[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.fr-timerow { display: flex; gap: 12px; flex-wrap: wrap; }
+.fr-timefield { display: flex; flex-direction: column; gap: 4px; font-weight: 600; font-size: 13px; }
+.fr-sched-editor input[type="time"], .fr-sched-editor input[type="date"] { box-sizing: border-box; min-height: 40px; padding: 7px 10px; font: inherit; font-size: 16px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; color-scheme: light dark; }
+.fr-sched-editor input[type="time"]:focus-visible, .fr-sched-editor input[type="date"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fr-sched-editor .fr-field > label { font-weight: 600; font-size: 13px; }
+.fr-sched-editor > .fr-err { margin: 0; }
+.fr-sched-editor > .fr-dialog-actions { position: sticky; bottom: -18px; margin: 0 -20px -18px; padding: 10px 20px 18px; background: var(--panel); border-radius: 0 0 12px 12px; }
+@media (max-width: 520px) { .fr-sched { flex-wrap: wrap; } }
+
 /* ---- Focus Room: partner setup ---- */
 .fr-dialog:has(.fr-ps) { width: min(520px, 100%); }
 .fr-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 14px; }

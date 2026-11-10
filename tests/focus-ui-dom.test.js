@@ -162,3 +162,202 @@ test('a folder-only list row on the home screen shows a folder chip, not Empty l
     assert.equal(findAll(body, n => n.textContent === 'Empty list').length, 0);
   } finally { stop(); }
 });
+
+// --- schedules ---
+const NOWMS = Date.UTC(2026, 10, 10, 12, 0); // Tue 12:00 UTC
+const isDisabled = (n) => !!n.disabled || n.getAttribute('disabled') !== null;
+const byFk = (root, fk) => findAll(root, n => n.getAttribute('data-fk') === fk)[0];
+const lists2 = [{ id: 1, name: 'Social', sites: ['x.com'], apps: [], folders: [] }, { id: 2, name: 'Games', sites: [], apps: [], folders: [] }];
+const sched = (o) => ({ id: 1, name: '', listIds: [1], weekdays: [1, 2, 3, 4, 5], start: '09:00', end: '17:00', lock: 'none', unlockDelayMs: null, endsOn: null, enabled: true, ...o });
+const utcTz = () => 0;
+
+test('renderSchedules shows rows, status and disabled controls for a locked schedule', async () => {
+  const { renderSchedules } = await import('../src/modules/focus/ui/schedule-list.js');
+  const body = installDom(undefined);
+  const state = { lists: lists2, schedules: [
+    sched({ id: 1, name: 'Work', start: '13:00' }),
+    sched({ id: 2, enabled: false, weekdays: [0, 6] }),
+    sched({ id: 3, lock: 'locked', unlockDelayMs: 3600000, endsOn: '2026-12-01', start: '11:00', end: '17:00' }),
+    sched({ id: 4, lock: 'locked', unlockDelayMs: 3600000, weekdays: [1], endsOn: '2026-11-10', start: '09:00', end: '10:00' }),
+  ] };
+  const opened = [];
+  const el = renderSchedules(state, { nowMs: NOWMS, tzOffsetAt: utcTz, openEditor: (s) => opened.push(s), controller: {}, confirm() {} });
+  body.append(el);
+  const text = (id) => findAll(el, n => n.getAttribute('data-fk') === `sched-row-${id}`)[0].textContent;
+  assert.match(text(1), /Work/);
+  assert.match(text(1), /Weekdays, 1:00 PM to 5:00 PM/);
+  assert.match(text(1), /Social/);
+  assert.match(text(1), /Next: /);
+  assert.match(text(2), /Paused/);
+  assert.match(text(3), /Blocking now until/);
+  assert.match(text(3), /Locked/);
+  assert.match(text(3), /2026-12-01/);
+  assert.match(text(4), /No more occurrences/);
+  for (const k of ['edit', 'toggle', 'delete']) {
+    assert.equal(isDisabled(byFk(el, `sched-${k}-3`)), true, k);
+    assert.ok(byFk(el, `sched-${k}-3`).title.length > 0, k);
+    assert.equal(isDisabled(byFk(el, `sched-${k}-1`)), false, k);
+  }
+  assert.equal(byFk(el, 'sched-toggle-1').textContent, 'Pause');
+  assert.equal(byFk(el, 'sched-toggle-2').textContent, 'Resume');
+  await byFk(el, 'sched-edit-1').click();
+  assert.equal(opened[0].id, 1);
+});
+
+test('renderSchedules empty state and New schedule gating', async () => {
+  const { renderSchedules } = await import('../src/modules/focus/ui/schedule-list.js');
+  installDom(undefined);
+  let opened = 0;
+  const mk = (ls) => renderSchedules({ lists: ls, schedules: [] }, { nowMs: NOWMS, tzOffsetAt: utcTz, openEditor: () => { opened++; }, controller: {}, confirm() {} });
+  const el = mk(lists2);
+  assert.match(el.textContent, /No schedules yet/);
+  await byFk(el, 'new-schedule').click();
+  assert.equal(opened, 1);
+  assert.equal(isDisabled(byFk(mk([]), 'new-schedule')), true);
+});
+
+test('pause calls setScheduleEnabled and delete confirms first', async () => {
+  const { renderSchedules } = await import('../src/modules/focus/ui/schedule-list.js');
+  installDom(undefined);
+  const calls = [];
+  const controller = { setScheduleEnabled: async (id, en) => { calls.push(['en', id, en]); return { ok: true }; }, deleteSchedule: async (id) => { calls.push(['del', id]); return { ok: true }; } };
+  let confirmOpts;
+  const results = [];
+  const el = renderSchedules({ lists: lists2, schedules: [sched({ id: 1 })] }, { nowMs: NOWMS, tzOffsetAt: utcTz, openEditor() {}, controller, confirm: (o) => { confirmOpts = o; }, onResult: (r) => results.push(r) });
+  await byFk(el, 'sched-toggle-1').click();
+  assert.deepEqual(calls, [['en', 1, false]]);
+  assert.equal(results.length, 1);
+  await byFk(el, 'sched-delete-1').click();
+  assert.equal(calls.length, 1);
+  await confirmOpts.onConfirm();
+  assert.deepEqual(calls[1], ['del', 1]);
+});
+
+function homeState(extra) {
+  return { loaded: true, blocks: [], lists: lists2, schedules: [], helper: null, notice: null, syncPending: false, ...extra };
+}
+
+test('home renders the Schedules section and New schedule opens the editor', async () => {
+  const { mountHome } = await import('../src/modules/focus/ui/home.js');
+  const body = installDom(undefined);
+  const opened = [];
+  const controller = { state: homeState({ schedules: [sched({ id: 1, name: 'Work' })] }), refreshStatus() {}, resync() {} };
+  const stop = mountHome(body, controller, {}, { openScheduleEditor: (o) => opened.push(o) });
+  try {
+    assert.ok(findAll(body, n => n.getAttribute('data-fk') === 'sched-row-1').length === 1);
+    await byFk(body, 'new-schedule').click();
+    assert.equal(opened.length, 1);
+    assert.equal(opened[0].controller, controller);
+    assert.equal(opened[0].schedule, undefined);
+    await byFk(body, 'sched-edit-1').click();
+    assert.equal(opened[1].schedule.id, 1);
+  } finally { stop(); }
+});
+
+const schedBlock = (o) => ({ key: 'c1@1', windowId: 'c1@1', lock: 'locked', unlockDelayMs: 3600000, ids: [], listIds: [1], listNames: ['Social'], starts: Date.now() - 1000, ends: Date.now() + 3600000, state: 'running', progress: 0, scheduleId: 1, ...o });
+
+test('schedule block cards keep Unlock early but have no Extend or Cancel', async () => {
+  const { mountHome } = await import('../src/modules/focus/ui/home.js');
+  const body = installDom(undefined);
+  const controller = { state: homeState({ blocks: [schedBlock()] }), refreshStatus() {}, resync() {} };
+  const stop = mountHome(body, controller, {}, { openUnlockDialog() {} });
+  try {
+    assert.ok(byFk(body, 'unlock-0'));
+    assert.equal(byFk(body, 'extend-0'), undefined);
+    assert.equal(byFk(body, 'cancel-0'), undefined);
+  } finally { stop(); }
+});
+
+test('a session block still has Extend', async () => {
+  const { mountHome } = await import('../src/modules/focus/ui/home.js');
+  const body = installDom(undefined);
+  const { scheduleId, ...session } = schedBlock({ key: 's1', windowId: undefined, ids: [1] });
+  const controller = { state: homeState({ blocks: [session] }), refreshStatus() {}, resync() {} };
+  const stop = mountHome(body, controller, {}, {});
+  try { assert.ok(byFk(body, 'extend-0')); } finally { stop(); }
+});
+
+test('a schedule block the helper no longer holds is not shown (display only)', async () => {
+  const { mountHome } = await import('../src/modules/focus/ui/home.js');
+  const mk = (helper, syncPending = false) => ({ state: homeState({ blocks: [schedBlock()], helper, syncPending }), refreshStatus() {}, resync() {} });
+  const status = (windows) => ({ kind: 'ok', status: { decision: {}, windows, partner_set: true, now_ms: 1000, warnings: [] } });
+  const cards = (c) => { const body = installDom(undefined); const stop = mountHome(body, c, {}, {}); const n = findAll(body, x => x.className.includes('fr-block')).length; stop(); return n; };
+  assert.equal(cards(mk(status([]))), 0);
+  assert.equal(cards(mk(status([{ id: 'c1@1', ends: 500 }]))), 0); // pulled back to now: not held
+  assert.equal(cards(mk(status([{ id: 'c1@1', ends: 5000 }]))), 1);
+  assert.equal(cards(mk(status([]), true)), 1); // unsent change: keep showing
+  assert.equal(cards(mk({ kind: 'not-running' })), 1);
+});
+
+const edState = (extra) => ({ state: { lists: lists2, schedules: [], helper: { kind: 'ok', status: {} }, partner: { set: true }, ...extra } });
+const inputs = (root, pred) => findAll(root, n => n.tag === 'input' && pred(n));
+const typeBtn = (root, t) => findAll(root, n => n.tag === 'button' && n.textContent === t)[0];
+
+test('editor shows controls, and Save with no list shows a listIds error without calling the controller', async () => {
+  const { openScheduleEditor } = await import('../src/modules/focus/ui/schedule-editor.js');
+  const body = installDom(undefined);
+  let saved = 0;
+  const controller = { ...edState(), saveSchedule: async () => { saved++; return { ok: true, id: 1 }; } };
+  openScheduleEditor({ controller, now: () => NOWMS, tzOffsetAt: utcTz });
+  assert.equal(inputs(body, n => n.attrs.type === 'time').length, 2);
+  assert.equal(findAll(body, n => n.tag === 'button' && n.attrs['aria-pressed'] !== undefined && n.attrs['data-day'] !== undefined).length, 7);
+  assert.ok(typeBtn(body, 'Weekdays'));
+  assert.ok(typeBtn(body, 'Every day'));
+  await typeBtn(body, 'Save').click();
+  assert.equal(saved, 0);
+  assert.ok(errTexts(body).includes('Choose at least one list.'));
+});
+
+test('Save with valid input calls saveSchedule once with the payload and closes', async () => {
+  const { openScheduleEditor } = await import('../src/modules/focus/ui/schedule-editor.js');
+  const body = installDom(undefined);
+  const sent = [];
+  let done = 0;
+  const controller = { ...edState(), saveSchedule: async (i) => { sent.push(i); return { ok: true, id: 9 }; } };
+  openScheduleEditor({ controller, now: () => NOWMS, tzOffsetAt: utcTz, onDone: () => { done++; } });
+  const box = inputs(body, n => n.attrs.type === 'checkbox' && n.attrs['data-list'] === '2')[0];
+  box.checked = true;
+  await Promise.all(box.listeners.change.map(f => f()));
+  const save = typeBtn(body, 'Save');
+  await Promise.all([save.click(), save.click()]);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0], { name: '', listIds: [2], weekdays: [1, 2, 3, 4, 5], start: '09:00', end: '17:00', lock: 'none', unlockDelayMs: null, endsOn: null });
+  assert.equal(done, 1);
+  assert.equal(findAll(body, n => n.className.includes('fr-dialog')).length, 0);
+});
+
+test('Locked with an empty end date shows the endsOn error; Locked needs the helper', async () => {
+  const { openScheduleEditor } = await import('../src/modules/focus/ui/schedule-editor.js');
+  const body = installDom(undefined);
+  let saved = 0;
+  const controller = { ...edState(), saveSchedule: async () => { saved++; return { ok: true, id: 1 }; } };
+  openScheduleEditor({ controller, now: () => NOWMS, tzOffsetAt: utcTz });
+  const box = inputs(body, n => n.attrs['data-list'] === '1')[0];
+  box.checked = true;
+  await Promise.all(box.listeners.change.map(f => f()));
+  const locked = inputs(body, n => n.attrs.type === 'radio' && n.attrs.value === 'locked')[0];
+  locked.checked = true;
+  await Promise.all(locked.listeners.change.map(f => f()));
+  const endsOn = inputs(body, n => n.attrs.type === 'date')[0];
+  assert.equal(endsOn.value, '2026-12-08');
+  endsOn.value = '';
+  await Promise.all((endsOn.listeners.input || []).map(f => f()));
+  await typeBtn(body, 'Save').click();
+  assert.equal(saved, 0);
+  assert.ok(errTexts(body).includes('A locked schedule needs an end date.'));
+
+  const body2 = installDom(undefined);
+  openScheduleEditor({ controller: { ...edState({ helper: null }), saveSchedule() {} }, now: () => NOWMS, tzOffsetAt: utcTz });
+  const l2 = inputs(body2, n => n.attrs.type === 'radio' && n.attrs.value === 'locked')[0];
+  assert.equal(isDisabled(l2), true);
+  assert.ok(findAll(body2, n => n.textContent === 'The helper must be running to lock a block.').length > 0);
+});
+
+test('server errors from saveSchedule are shown beside the field', async () => {
+  const { openScheduleEditor } = await import('../src/modules/focus/ui/schedule-editor.js');
+  const body = installDom(undefined);
+  const controller = { ...edState(), saveSchedule: async () => ({ ok: false, errors: { name: 'That schedule is locked until 2026-12-01.' } }) };
+  openScheduleEditor({ controller, schedule: sched({ id: 3 }), now: () => NOWMS, tzOffsetAt: utcTz });
+  await typeBtn(body, 'Save').click();
+  assert.ok(errTexts(body).includes('That schedule is locked until 2026-12-01.'));
+});
