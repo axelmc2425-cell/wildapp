@@ -22,6 +22,15 @@ function rec() {
 }
 const NOW = Date.UTC(2026, 0, 5, 12); // Monday
 
+async function addSched(db, { listIds = [1], weekdays = '[1]', start = '09:00', end = '10:00', lock = 'none', delay = null, endsOn = null, enabled = 1 } = {}) {
+  await db.run(
+    "INSERT INTO focus_schedules(list_id, name, weekdays, start_time, end_time, lock, ends_on, unlock_delay_ms, enabled) VALUES (?, 'S', ?, ?, ?, ?, ?, ?, ?)",
+    [listIds[0], weekdays, start, end, lock, endsOn, delay, enabled]);
+  const [{ id }] = await db.all('SELECT MAX(id) AS id FROM focus_schedules');
+  for (const l of listIds) await db.run('INSERT INTO focus_schedule_lists(schedule_id, list_id) VALUES (?, ?)', [id, l]);
+  return id;
+}
+
 test('empty db pushes []', async () => {
   const db = await mk();
   const r = rec();
@@ -35,7 +44,7 @@ test('session and weekly schedule; finished sessions dropped', async () => {
   await db.run("INSERT INTO focus_items(list_id, kind, value) VALUES (1,'site','x.com')");
   await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock, unlock_delay_ms) VALUES (1, ?, ?, 'locked', ?)", [NOW - H, NOW + H, H]);
   await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (1, ?, ?, 'none')", [NOW - 3 * H, NOW - 2 * H]);
-  await db.run("INSERT INTO focus_schedules(list_id, weekdays, start_time, end_time, lock) VALUES (1, '[1]', '09:00', '10:00', 'none')");
+  await addSched(db);
   const r = rec();
   const res = await syncWindows(db, r.client, NOW, utc);
   const ws = r.pushed[0];
@@ -50,17 +59,41 @@ test('session and weekly schedule; finished sessions dropped', async () => {
   assert.ok(ws.every((w) => w.ends > NOW && w.starts < NOW + 30 * DAY));
 });
 
-test('malformed rows and missing lists are skipped and counted', async () => {
+test('missing-list sessions and schedules are skipped and counted', async () => {
   const db = await mk();
   await db.run("INSERT INTO focus_lists(name, mode) VALUES ('L','block')");
   await db.run("INSERT INTO focus_sessions(list_id, starts, ends, lock) VALUES (99, ?, ?, 'none')", [NOW, NOW + H]);
-  await db.run("INSERT INTO focus_schedules(list_id, weekdays, start_time, end_time, lock) VALUES (1, 'not json', '09:00', '10:00', 'none')");
-  await db.run("INSERT INTO focus_schedules(list_id, weekdays, start_time, end_time, lock) VALUES (1, '[1]', 'zz', '10:00', 'none')");
-  await db.run("INSERT INTO focus_schedules(list_id, weekdays, start_time, end_time, lock) VALUES (1, '[1]', '09:00', '10:00', 'none')");
+  await addSched(db, { listIds: [99] });
+  await addSched(db);
   const r = rec();
   const res = await syncWindows(db, r.client, NOW, utc);
-  assert.equal(res.skipped, 3);
+  assert.equal(res.skipped, 2);
   assert.equal(res.pushed, 4);
+});
+
+test('schedule whose only list was deleted is skipped; multi-list schedule unions live lists', async () => {
+  const db = await mk();
+  await db.run("INSERT INTO focus_lists(name, mode) VALUES ('A','block')");
+  await db.run("INSERT INTO focus_lists(name, mode) VALUES ('B','block')");
+  await db.run("INSERT INTO focus_items(list_id, kind, value) VALUES (1,'site','a.com')");
+  await db.run("INSERT INTO focus_items(list_id, kind, value) VALUES (2,'site','b.com')");
+  await addSched(db, { listIds: [1, 2] });
+  await addSched(db, { listIds: [77] });
+  const r = rec();
+  const res = await syncWindows(db, r.client, NOW, utc);
+  assert.deepEqual(res, { pushed: 4, skipped: 1 });
+  assert.deepEqual(r.pushed[0][0].sites.sort(), ['a.com', 'b.com']);
+});
+
+test('locked schedule with a valid delay pushes with unlock_delay_ms; disabled and ended schedules push nothing', async () => {
+  const db = await withList();
+  await addSched(db, { lock: 'locked', delay: H });
+  await addSched(db, { weekdays: '[2]', enabled: 0 });
+  await addSched(db, { weekdays: '[3]', endsOn: '2026-01-01' });
+  const r = rec();
+  const res = await syncWindows(db, r.client, NOW, utc);
+  assert.deepEqual(res, { pushed: 4, skipped: 0 });
+  assert.ok(r.pushed[0].every((w) => w.lock === 'locked' && w.unlock_delay_ms === H));
 });
 
 async function withList() {
@@ -93,13 +126,6 @@ test('horizon and ended boundaries', async () => {
   const res = await syncWindows(db, r.client, NOW, utc);
   assert.deepEqual(res, { pushed: 1, skipped: 0 });
   assert.deepEqual(r.pushed[0].map((w) => w.id), ['s4']);
-});
-
-test('out-of-range weekday skips the schedule', async () => {
-  const db = await withList();
-  await db.run("INSERT INTO focus_schedules(list_id, weekdays, start_time, end_time, lock) VALUES (1, '[1, 9]', '09:00', '10:00', 'none')");
-  const r = rec();
-  assert.deepEqual(await syncWindows(db, r.client, NOW, utc), { pushed: 0, skipped: 1 });
 });
 
 test('frozen, allow-without-apps and bad-item windows are skipped and counted, never pushed', async () => {
