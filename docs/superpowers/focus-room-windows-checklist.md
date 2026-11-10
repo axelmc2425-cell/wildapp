@@ -201,6 +201,11 @@ Use a throwaway folder such as `C:\Games\Foo` containing a copy of a harmless pr
 - [ ] Try to add `C:\Windows` (or `C:\Program Files`) with Browse folder — Expected: refused with "That folder is part of Windows and can't be blocked." and no chip is added
 - [ ] Start a locked block with a folder, reboot Windows without opening the app, then run a program from the folder — Expected: it is closed; reopening Focus Room still shows the locked block
 - [ ] Known limit: run an elevated (Run as administrator) program from the blocked folder whose path the helper cannot read — Expected: it is NOT closed by the folder rule (the helper skips what it cannot inspect); blocking it by file name in Apps still works
+- [ ] In the partner setup dialog, click Save the partner page — Expected: a Windows Save dialog opens with `partner-unlock.html` suggested
+- [ ] Choose the Desktop and Save — Expected: `partner-unlock.html` lands on the Desktop and the dialog shows "Saved to <path>. Send this file to your partner..."
+- [ ] After saving — Expected: Explorer opens with `partner-unlock.html` selected
+- [ ] Cancel the Save dialog — Expected: nothing is written and no message appears
+- [ ] Open the saved page in a browser with the network off — Expected: it loads and works offline
 
 ## 15. Cleanup
 

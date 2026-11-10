@@ -24,3 +24,14 @@ export async function pickZipSavePath(defaultPath) {
   const r = await T().dialog.save({ defaultPath, filters: [{ name: 'MyBrain backup', extensions: ['zip'] }] });
   return r || null;
 }
+
+/** Save dialog; resolves to the chosen full path, or null when cancelled. */
+export async function pickSavePath(defaultName, ext) {
+  const r = await T().dialog.save({ defaultPath: defaultName, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
+  return r || null;
+}
+
+/** Opens the file manager with the file selected (Windows only; rejects elsewhere). */
+export async function revealInFolder(path) {
+  await invoke('reveal_in_folder', { path });
+}

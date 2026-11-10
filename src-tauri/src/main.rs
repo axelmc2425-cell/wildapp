@@ -80,6 +80,27 @@ fn photo_delete(dd: State<DataDir>, file: String) -> Result<(), String> {
     photos::delete_photo_file(&dd.0, &file)
 }
 
+#[tauri::command(async)]
+fn reveal_in_folder(path: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        if !Path::new(&path).exists() {
+            return Err("file not found".into());
+        }
+        // One argument, no shell: Explorer opens with the file selected.
+        std::process::Command::new("explorer.exe")
+            .arg(format!("/select,{}", path))
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Err("not supported".into())
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -102,6 +123,7 @@ fn main() {
             backup_restore,
             read_folder_md,
             write_files,
+            reveal_in_folder,
             photo_import,
             photo_delete,
             focus::focus_helper_call
