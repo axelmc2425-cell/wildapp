@@ -50,6 +50,9 @@ pub struct LockInfo {
 pub struct Decision {
     pub block_sites: Vec<String>,
     pub block_apps: Vec<String>,
+    /// Omitted from JSON when empty so the shared JS decide vectors stay byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub block_folders: Vec<String>,
     pub allow: Option<Allow>,
     pub frozen: bool,
     pub locks: Vec<LockInfo>,

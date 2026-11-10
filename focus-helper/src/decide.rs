@@ -41,6 +41,7 @@ pub fn decide(windows: &[Window], now_ms: i64) -> Decision {
     Decision {
         block_sites: uniq_sorted(blocks.iter().flat_map(|w| w.sites.iter())),
         block_apps: uniq_sorted(blocks.iter().flat_map(|w| w.apps.iter())),
+        block_folders: uniq_sorted(blocks.iter().flat_map(|w| w.app_folders.iter())),
         allow: if allows.is_empty() {
             None
         } else {
@@ -109,4 +110,67 @@ pub fn is_blocked_app(d: &Decision, name: &str) -> bool {
         return !listed;
     }
     false
+}
+
+/// True when `path` is inside (or is) one of `d.block_folders`. Both sides are ASCII-lowercased,
+/// `/` becomes `\`, trailing `\` is stripped; a match is equality or `folder + \` prefix.
+pub fn is_blocked_path(d: &Decision, path: &str) -> bool {
+    let p = norm_path(path);
+    if p.is_empty() {
+        return false;
+    }
+    d.block_folders.iter().any(|f| {
+        let f = norm_path(f);
+        !f.is_empty()
+            && (p == f || (p.len() > f.len() && p.starts_with(&f) && p.as_bytes()[f.len()] == b'\\'))
+    })
+}
+
+fn norm_path(s: &str) -> String {
+    s.trim().to_ascii_lowercase().replace('/', "\\").trim_end_matches('\\').to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn win(id: &str, mode: Mode, folders: &[&str]) -> Window {
+        Window {
+            id: id.into(),
+            starts: 0,
+            ends: 100,
+            lock: Lock::None,
+            mode,
+            sites: vec![],
+            apps: vec![],
+            app_folders: folders.iter().map(|s| s.to_string()).collect(),
+            unlock_delay_ms: None,
+        }
+    }
+
+    #[test]
+    fn block_folders_merged_sorted_deduped() {
+        let ws = [
+            win("a", Mode::Block, &["C:\\Games", "C:\\Apps"]),
+            win("b", Mode::Block, &["C:\\Games", "C:\\Zed"]),
+        ];
+        let d = decide(&ws, 1);
+        assert_eq!(d.block_folders, ["C:\\Apps", "C:\\Games", "C:\\Zed"]);
+    }
+
+    #[test]
+    fn allow_mode_folders_ignored() {
+        let d = decide(&[win("a", Mode::Allow, &["C:\\Games"])], 1);
+        assert!(d.block_folders.is_empty());
+    }
+
+    #[test]
+    fn path_match_boundaries() {
+        let d = decide(&[win("a", Mode::Block, &["C:\\Games"])], 1);
+        assert!(is_blocked_path(&d, "c:/games/x/y.exe"));
+        assert!(is_blocked_path(&d, "C:\\Games\\"));
+        assert!(is_blocked_path(&d, "C:\\GAMES\\a.exe"));
+        assert!(!is_blocked_path(&d, "C:\\GamesX\\a.exe"));
+        assert!(!is_blocked_path(&d, "C:\\Gam"));
+    }
 }

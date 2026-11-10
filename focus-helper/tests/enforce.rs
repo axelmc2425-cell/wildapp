@@ -9,9 +9,19 @@ struct FakeTable {
     fail: Vec<u32>,
 }
 impl FakeTable {
+    fn with_paths(items: &[(u32, &str, Option<&str>)]) -> Self {
+        FakeTable {
+            procs: items
+                .iter()
+                .map(|(p, n, x)| Proc { pid: *p, name: n.to_string(), path: x.map(|s| s.to_string()) })
+                .collect(),
+            killed: RefCell::new(vec![]),
+            fail: vec![],
+        }
+    }
     fn new(names: &[(u32, &str)]) -> Self {
         FakeTable {
-            procs: names.iter().map(|(p, n)| Proc { pid: *p, name: n.to_string() }).collect(),
+            procs: names.iter().map(|(p, n)| Proc { pid: *p, name: n.to_string(), path: None }).collect(),
             killed: RefCell::new(vec![]),
             fail: vec![],
         }
@@ -34,7 +44,7 @@ fn names(v: &[Proc]) -> Vec<&str> {
     v.iter().map(|p| p.name.as_str()).collect()
 }
 fn empty() -> Decision {
-    Decision { block_sites: vec![], block_apps: vec![], allow: None, frozen: false, locks: vec![] }
+    Decision { block_sites: vec![], block_apps: vec![], block_folders: vec![], allow: None, frozen: false, locks: vec![] }
 }
 fn blocking(apps: &[&str]) -> Decision {
     Decision { block_apps: s(apps), ..empty() }
@@ -144,4 +154,52 @@ fn unnamed_and_placeholder_never_killed() {
     let t = FakeTable::new(&[(100, ""), (101, "   "), (102, "<no name> Process 5"), (103, "<unknown>")]);
     assert!(enforce_once(&frozen(&[]), &t, 1).is_empty());
     assert!(t.killed.borrow().is_empty());
+}
+
+fn folders(f: &[&str]) -> Decision {
+    Decision { block_folders: s(f), ..empty() }
+}
+
+#[test]
+fn kills_process_inside_blocked_folder() {
+    let t = FakeTable::with_paths(&[
+        (100, "game.exe", Some("C:\\Games\\Foo\\game.exe")),
+        (101, "code.exe", Some("C:\\Tools\\code.exe")),
+    ]);
+    let r = enforce_once(&folders(&["C:\\Games"]), &t, 1);
+    assert_eq!(names(&r), ["game.exe"]);
+    assert_eq!(*t.killed.borrow(), vec![100]);
+}
+
+#[test]
+fn spares_sibling_folder() {
+    let t = FakeTable::with_paths(&[(100, "a.exe", Some("C:\\GamesX\\a.exe"))]);
+    assert!(enforce_once(&folders(&["C:\\Games"]), &t, 1).is_empty());
+    assert!(t.killed.borrow().is_empty());
+}
+
+#[test]
+fn spares_process_with_unknown_path() {
+    let t = FakeTable::with_paths(&[(100, "a.exe", None)]);
+    assert!(enforce_once(&folders(&["C:\\Games"]), &t, 1).is_empty());
+    assert!(t.killed.borrow().is_empty());
+}
+
+#[test]
+fn critical_app_inside_blocked_folder_survives() {
+    let t = FakeTable::with_paths(&[
+        (100, "explorer.exe", Some("C:\\Games\\explorer.exe")),
+        (4, "game.exe", Some("C:\\Games\\game.exe")),
+        (7, "game.exe", Some("C:\\Games\\self.exe")),
+    ]);
+    let r = enforce_once(&folders(&["C:\\Games"]), &t, 7);
+    assert!(r.is_empty());
+    assert!(t.killed.borrow().is_empty());
+}
+
+#[test]
+fn folder_rule_alone_counts_as_active_window() {
+    assert!(focus_helper::enforce::any_window_active(&folders(&["C:\\Games"])));
+    let t = FakeTable::with_paths(&[(100, "openvpn.exe", Some("C:\\x\\openvpn.exe"))]);
+    assert_eq!(names(&enforce_once(&folders(&["C:\\Games"]), &t, 1)), ["openvpn.exe"]);
 }
