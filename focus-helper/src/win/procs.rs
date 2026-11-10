@@ -15,7 +15,7 @@ use crate::decide::{normalize_app, CRITICAL_APPS};
 use crate::enforce::{Proc, ProcessTable};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -65,13 +65,14 @@ impl ProcessTable for SysinfoTable {
             sys.refresh_processes_specifics(
                 ProcessesToUpdate::All,
                 true,
-                ProcessRefreshKind::nothing(),
+                ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
             );
             sys.processes()
                 .iter()
                 .map(|(pid, p)| Proc {
                     pid: pid.as_u32(),
                     name: p.name().to_string_lossy().into_owned(),
+                    path: p.exe().map(|e| e.to_string_lossy().into_owned()),
                 })
                 .collect()
         };

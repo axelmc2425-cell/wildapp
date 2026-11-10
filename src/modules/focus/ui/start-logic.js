@@ -4,13 +4,15 @@ import { formatClock } from './util.js';
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-/** "14 sites, 3 apps"; zero parts are omitted. */
+/** "14 sites, 3 apps, 1 folder"; zero parts are omitted. */
 export function listSummary(list) {
   const s = Array.isArray(list?.sites) ? list.sites.length : 0;
   const a = Array.isArray(list?.apps) ? list.apps.length : 0;
+  const f = Array.isArray(list?.folders) ? list.folders.length : 0;
   const parts = [];
   if (s > 0) parts.push(plural(s, 'site'));
   if (a > 0) parts.push(plural(a, 'app'));
+  if (f > 0) parts.push(plural(f, 'folder'));
   return parts.length ? parts.join(', ') : 'Empty list';
 }
 

@@ -24,6 +24,9 @@ pub struct Window {
     pub mode: Mode,
     pub sites: Vec<String>,
     pub apps: Vec<String>,
+    /// Absolute Windows folders whose programs are blocked (block mode only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub app_folders: Vec<String>,
     /// Waiting period (ms) before a Locked window can be unlocked without the partner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unlock_delay_ms: Option<i64>,
@@ -47,6 +50,9 @@ pub struct LockInfo {
 pub struct Decision {
     pub block_sites: Vec<String>,
     pub block_apps: Vec<String>,
+    /// Omitted from JSON when empty so the shared JS decide vectors stay byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub block_folders: Vec<String>,
     pub allow: Option<Allow>,
     pub frozen: bool,
     pub locks: Vec<LockInfo>,

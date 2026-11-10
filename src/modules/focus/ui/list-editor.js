@@ -1,16 +1,19 @@
 // List editor dialog: name + website and app chip inputs. Validation lives in entry.js / editor-logic.js.
 import { h } from './dom.js';
 import { openDialog } from './dialog.js';
-import { splitPaste, addEntries, canSave, removeLast } from './editor-logic.js';
+import { splitPaste, addEntries, canSave, removeLast, folderLabel } from './editor-logic.js';
+import { hasNative, pickExeFiles, pickFolder } from '../../../shell/native.js';
 import { formatClock } from './util.js';
 
 let seq = 0;
+const FILE_DIALOG_ERROR = 'Could not open the file dialog. You can still type the program name.';
+const FOLDER_DIALOG_ERROR = 'Could not open the folder dialog.';
 
 /** Opens the editor for a new list (optionally from a preset) or an existing one. */
 export function openListEditor({ controller, list, preset, onDone } = {}) {
   const src = list || preset || {};
   const uid = ++seq;
-  let state = { sites: [...(src.sites || [])], apps: [...(src.apps || [])] };
+  let state = { sites: [...(src.sites || [])], apps: [...(src.apps || [])], folders: [...(src.folders || [])] };
   let saving = false;
   let dlg = null;
 
@@ -25,7 +28,7 @@ export function openListEditor({ controller, list, preset, onDone } = {}) {
   function show(el, msg) { el.textContent = msg || ''; el.hidden = !msg; }
   function refreshSave() { saveBtn.disabled = saving || !canSave({ name: nameInput.value, ...state }); }
 
-  function chipInput(kind, label, hint, placeholder) {
+  function chipInput(kind, label, hint, placeholder, browse) {
     const key = kind === 'site' ? 'sites' : 'apps';
     const id = `fr-ed-${kind}-${uid}`;
     const input = h('input', { type: 'text', id, autocomplete: 'off', spellcheck: 'false', placeholder, 'aria-describedby': `${id}-hint ${id}-msg` });
@@ -44,7 +47,7 @@ export function openListEditor({ controller, list, preset, onDone } = {}) {
       row.hidden = state[key].length === 0;
     }
     function clearMsgs() { show(err, ''); note.textContent = ''; }
-    function commit(pieces) {
+    function commit(pieces, keepInput) {
       const res = addEntries(state, kind, pieces);
       state = res.state;
       clearMsgs();
@@ -52,10 +55,10 @@ export function openListEditor({ controller, list, preset, onDone } = {}) {
       if (res.errors.length) {
         show(err, res.errors.map(e => e.message).filter((m, i, a) => a.indexOf(m) === i).join(' '));
         const failed = res.errors.filter(e => e.value).map(e => e.value);
-        input.value = failed.length === 1 ? failed[0] : failed.join(kind === 'site' ? ' ' : ', ');
+        if (!keepInput) input.value = failed.length === 1 ? failed[0] : failed.join(kind === 'site' ? ' ' : ', ');
         // keep the failing text; chips for the good ones are already added
       } else {
-        input.value = '';
+        if (!keepInput) input.value = '';
         note.textContent = res.notes.join(' · ');
       }
       renderAll();
@@ -81,16 +84,65 @@ export function openListEditor({ controller, list, preset, onDone } = {}) {
       e.preventDefault();
       commit(splitPaste(kind, input.value + text));
     });
+    let inputEl = input;
+    if (browse) {
+      const btn = h('button', { type: 'button', class: 'fr-browse', onclick: async () => {
+        let paths;
+        try { paths = await browse(); }
+        catch { clearMsgs(); show(err, FILE_DIALOG_ERROR); return; }
+        if (!paths || paths.length === 0) return;
+        commit(paths, true);
+      } }, 'Browse files…');
+      inputEl = h('div', { class: 'fr-inputrow' }, input, btn);
+    }
     const field = h('div', { class: 'fr-field' },
       h('label', { for: id }, label),
       h('p', { class: 'fr-hint', id: `${id}-hint` }, hint),
-      input, msg, row);
+      inputEl, msg, row);
     return { field, input, renderChips };
   }
 
+  // Folders are picked, never typed: chips plus one Browse folder button.
+  function folderField() {
+    const id = `fr-ed-folder-${uid}`;
+    const row = h('div', { class: 'fr-chiprow', role: 'list', 'aria-label': 'Folders in this list' });
+    const note = h('span', { class: 'fr-ednote', role: 'status' });
+    const err = h('p', { class: 'fr-err', role: 'alert', hidden: true });
+    const msg = h('div', { id: `${id}-msg`, class: 'fr-msg' }, err, note);
+    function clearMsgs() { show(err, ''); note.textContent = ''; }
+    function renderChips() {
+      row.replaceChildren(...state.folders.map((value) => h('span', { class: 'fr-chip fr-edchip fr-folder', role: 'listitem', title: value },
+        h('span', { class: 'fr-chip-text' }, folderLabel(value)),
+        h('button', { type: 'button', class: 'fr-chipx', 'aria-label': `Remove ${folderLabel(value)}`, onclick: () => {
+          state = { ...state, folders: state.folders.filter(v => v !== value) };
+          clearMsgs(); renderAll();
+        } }, '×'))));
+      row.hidden = state.folders.length === 0;
+    }
+    const btn = h('button', { type: 'button', class: 'fr-browse', id, 'aria-describedby': `${id}-hint ${id}-msg`, onclick: async () => {
+      let path;
+      try { path = await pickFolder('Choose a folder to block'); }
+      catch { clearMsgs(); show(err, FOLDER_DIALOG_ERROR); return; }
+      if (!path) return;
+      const res = addEntries(state, 'folder', [path]);
+      state = res.state;
+      clearMsgs(); show(itemsErr, ''); show(saveErrs, '');
+      if (res.errors.length) show(err, res.errors[0].message);
+      else note.textContent = res.notes.join(' · ');
+      renderAll();
+    } }, 'Browse folder…');
+    const field = h('div', { class: 'fr-field' },
+      h('label', { for: id }, 'Folders'),
+      h('p', { class: 'fr-hint', id: `${id}-hint` }, 'Block every program that runs from a folder, like a game library.'),
+      h('div', { class: 'fr-inputrow' }, btn), msg, row);
+    return { field, renderChips };
+  }
+
   const sites = chipInput('site', 'Websites', 'Add each address you want blocked. www. and m. are included.', 'reddit.com');
-  const apps = chipInput('app', 'Apps', "Use the program's file name, like steam.exe.", 'steam.exe');
-  function renderAll() { sites.renderChips(); apps.renderChips(); refreshSave(); }
+  const native = hasNative();
+  const apps = chipInput('app', 'Apps', "Use the program's file name, like steam.exe.", 'steam.exe', native ? () => pickExeFiles('Choose programs to block') : null);
+  const folders = native ? folderField() : null;
+  function renderAll() { sites.renderChips(); apps.renderChips(); folders?.renderChips(); refreshSave(); }
 
   nameInput.addEventListener('input', () => { show(nameErr, ''); refreshSave(); });
   nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sites.input.focus(); } });
@@ -100,14 +152,14 @@ export function openListEditor({ controller, list, preset, onDone } = {}) {
     saving = true; refreshSave();
     show(nameErr, ''); show(itemsErr, ''); show(saveErrs, '');
     let res;
-    try { res = await controller.saveList({ id: list?.id, name: nameInput.value, sites: state.sites, apps: state.apps }); }
+    try { res = await controller.saveList({ id: list?.id, name: nameInput.value, sites: state.sites, apps: state.apps, folders: state.folders }); }
     catch (e) { res = { ok: false, errors: { name: `Could not save: ${e?.message || e}` } }; }
     saving = false;
     if (res && res.ok) { dlg.close(); onDone?.(); return; }
     const errors = (res && res.errors) || {};
     show(nameErr, Number.isFinite(res?.lockedUntil) ? `That list is part of a locked block until ${formatClock(res.lockedUntil)}.` : errors.name);
     show(itemsErr, errors.items);
-    const lines = [...(errors.sites || []), ...(errors.apps || [])].map(e => `${e.value}: ${e.message}`);
+    const lines = [...(errors.sites || []), ...(errors.apps || []), ...(errors.folders || [])].map(e => `${e.value}: ${e.message}`);
     saveErrs.replaceChildren(...lines.map(l => h('li', {}, l)));
     saveErrs.hidden = lines.length === 0;
     if (!res || (!errors.name && !errors.items && lines.length === 0)) show(itemsErr, 'Could not save this list.');
@@ -116,7 +168,7 @@ export function openListEditor({ controller, list, preset, onDone } = {}) {
 
   const body = h('div', { class: 'fr-editor' },
     h('div', { class: 'fr-field' }, h('label', { for: nameInput.id }, 'Name'), nameInput, nameErr),
-    sites.field, apps.field, itemsErr, saveErrs,
+    sites.field, apps.field, ...(folders ? [folders.field] : []), itemsErr, saveErrs,
     h('div', { class: 'fr-dialog-actions' }, cancelBtn, saveBtn));
   renderAll();
   dlg = openDialog({ title: list ? 'Edit list' : 'New list', body, canClose: () => !saving });

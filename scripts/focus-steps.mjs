@@ -261,6 +261,34 @@ async function editorScenarios(page, shot, h) {
   await page.keyboard.press('Escape'); await closed();
   ok(await page.evaluate(() => document.activeElement.textContent === 'Edit'), 'Esc returns focus to the Edit button');
 
+  // (g) desktop pickers: harness stubs window.__TAURI__ (dialog.open + core), so hasNative() is true
+  await page.click('button:has-text("New list")');
+  await page.waitForSelector('.fr-dialog .fr-editor');
+  ok((await page.locator('.fr-dialog button.fr-browse').count()) === 2, 'both Browse buttons shown when running in the desktop app');
+  ok((await page.locator('.fr-dialog button:has-text("Browse files")').count()) === 1 && (await page.locator('.fr-dialog button:has-text("Browse folder")').count()) === 1, 'Browse files and Browse folder are both present');
+  await page.fill(nameIn, 'Game library');
+  await page.fill(siteIn, 'twitch.tv'); await page.keyboard.press('Enter');
+  await page.evaluate(() => { window.__pickFiles = ['C:\\Program Files\\Steam\\steam.exe', 'D:\\Games\\launcher.exe']; });
+  await page.click('.fr-dialog button:has-text("Browse files")');
+  await page.waitForFunction(() => document.querySelectorAll('.fr-dialog input[id^="fr-ed-app-"]')[0].closest('.fr-field').querySelectorAll('.fr-edchip').length >= 2);
+  ok((await rows('app')).join('|') === 'steam.exe|launcher.exe', `file picks became app chips (${(await rows('app')).join('|')})`);
+  const folderChips = () => page.evaluate(() => [...document.querySelectorAll('.fr-dialog .fr-chip.fr-folder .fr-chip-text')].map(e => e.textContent));
+  for (const d of ['D:\\Games\\Epic', 'C:\\Games\\Foo Bar']) {
+    await page.evaluate((p) => { window.__pickDir = p; }, d);
+    await page.click('.fr-dialog button:has-text("Browse folder")');
+    await page.waitForFunction((n) => document.querySelectorAll('.fr-dialog .fr-chip.fr-folder').length >= n, d.endsWith('Epic') ? 1 : 2);
+  }
+  ok((await folderChips()).length === 2, `two folder chips (${(await folderChips()).join(' | ')})`);
+  await page.evaluate(() => { window.__pickDir = 'C:\\Windows'; });
+  await page.click('.fr-dialog button:has-text("Browse folder")');
+  await page.waitForFunction(() => /part of Windows/.test(document.querySelector('.fr-dialog .fr-field .fr-err:not([hidden])')?.textContent || ''));
+  ok((await folderChips()).length === 2, 'forbidden folder added no chip');
+  ok(await page.evaluate(() => document.querySelector('.fr-dialog .fr-err[role="alert"]:not([hidden])') !== null), 'forbidden-folder error is an alert');
+  ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'no horizontal overflow with folder chips');
+  await shot('focus-12-editor-folders');
+  await page.evaluate(() => { window.__pickDir = null; window.__pickFiles = null; });
+  await page.keyboard.press('Escape'); await closed();
+
   // clean up: no lists left for the later scenarios
   await h.db.run('DELETE FROM focus_items'); await h.db.run('DELETE FROM focus_sessions'); await h.db.run('DELETE FROM focus_lists');
   await page.reload();

@@ -201,6 +201,7 @@ export function detailRows(status, opts) {
   const d = status.decision || {};
   const sites = Array.isArray(d.blockSites) ? d.blockSites.length : 0;
   const apps = Array.isArray(d.blockApps) ? d.blockApps.length : 0;
+  const folders = Array.isArray(d.blockFolders) ? d.blockFolders.length : 0;
   const warnings = Array.isArray(status.warnings) ? status.warnings : [];
   let clock = 'Unknown';
   if (Number.isFinite(status.now_ms)) {
@@ -219,7 +220,7 @@ export function detailRows(status, opts) {
   return [
     { label: 'Helper', value: 'Running' },
     { label: 'Partner key', value: status.partner_set ? (name ? `${name} (key set)` : 'set') : 'not set' },
-    { label: 'Blocking now', value: `${plural(sites, 'site', 'sites')}, ${plural(apps, 'app', 'apps')}` },
+    { label: 'Blocking now', value: `${plural(sites, 'site', 'sites')}, ${plural(apps, 'app', 'apps')}${folders ? `, ${plural(folders, 'folder', 'folders')}` : ''}` },
     { label: 'Windows held', value: String(Array.isArray(status.windows) ? status.windows.filter((w) => !(w && Number.isFinite(w.ends) && Number.isFinite(status.now_ms) && w.ends <= status.now_ms)).length : 0) },
     ...(pendingLines.length ? [{ label: 'Pending unlocks', value: pendingLines.join('; '), lines: pendingLines }] : []),
     { label: 'Warnings', value: warnings.length ? warnings.join('; ') : 'None', ...(warnings.length ? { lines: warnings.map((w) => String(w)) } : {}) },

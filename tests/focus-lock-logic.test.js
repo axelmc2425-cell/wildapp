@@ -31,7 +31,7 @@ test('lockedWarning', () => {
 
 test('describeUnlockError covers every code and never throws', () => {
   const codes = ['bad-format', 'bad-signature', 'wrong-challenge', 'wrong-lock', 'used', 'challenge-expired', 'expired',
-    'no-partner', 'no-such-lock', 'lock-active', 'bad-key', 'not-delayable', 'no-pending-unlock', 'bad-window', 'unreachable', 'persist-failed'];
+    'no-partner', 'no-such-lock', 'lock-active', 'bad-key', 'not-delayable', 'no-pending-unlock', 'bad-window', 'unreachable', 'persist-failed', 'forbidden-folder', 'bad-folder'];
   const seen = new Set();
   for (const code of codes) {
     const s = describeUnlockError(Object.assign(new Error('raw helper text'), { code }));
@@ -121,4 +121,13 @@ test('lockedBlockHolding', () => {
   assert.equal(lockedBlockHolding(blocks, 2), null);
   assert.equal(lockedBlockHolding(blocks, 4).key, 'k');
   assert.equal(lockedBlockHolding(undefined, 4), null);
+});
+
+test('a bad-window rejection carrying a folder reason gets the folder wording', () => {
+  const forb = describeUnlockError({ code: 'bad-window', message: 'forbidden-folder: C:\\Windows' });
+  const bad = describeUnlockError({ code: 'bad-window', message: 'bad-folder' });
+  assert.equal(forb, describeUnlockError({ code: 'forbidden-folder' }));
+  assert.equal(bad, describeUnlockError({ code: 'bad-folder' }));
+  assert.match(forb, /folder/i);
+  assert.notEqual(forb, describeUnlockError({ code: 'bad-window', message: 'x' }));
 });

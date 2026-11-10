@@ -17,6 +17,7 @@ fn win(id: &str, lock: Lock, starts: i64, ends: i64) -> Window {
         mode: Mode::Block,
         sites: vec!["example.com".into()],
         apps: vec!["game.exe".into()],
+        app_folders: vec![],
         unlock_delay_ms: if lock == Lock::Locked { Some(86_400_000) } else { None },
     }
 }

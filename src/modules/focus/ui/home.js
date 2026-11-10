@@ -1,5 +1,6 @@
 import { h } from './dom.js';
 import { openDialog, confirmDialog } from './dialog.js';
+import { folderLabel } from './editor-logic.js';
 import { chipSummary, formatClock, minutesLeft } from './util.js';
 import { bannerFor, formatCountdown } from '../model.js';
 import { STARTERS } from '../starters.js';
@@ -244,8 +245,8 @@ export function mountHome(root, controller, ctx, deps = {}) {
   }
 
   // ---- lists ----
-  function chip(text, isApp) {
-    return h('span', { class: `fr-chip${isApp ? ' fr-app' : ''}`, title: text },
+  function chip(text, isApp, title) {
+    return h('span', { class: `fr-chip${isApp ? ' fr-app' : ''}`, title: title || text },
       h('span', { class: 'fr-chip-text' }, text), isApp ? h('small', { class: 'fr-chip-mark' }, 'app') : null);
   }
 
@@ -253,14 +254,14 @@ export function mountHome(root, controller, ctx, deps = {}) {
     const locked = state.blocks.some(b => b.state === 'running' && b.listIds.includes(list.id));
     const lockedBlock = lockedBlockHolding(state.blocks, list.id);
     const lockMsg = lockedBlock ? `In a locked block until ${formatClock(lockedBlock.ends)}` : null;
-    const items = [...list.sites.map(v => ({ v, app: false })), ...list.apps.map(v => ({ v, app: true }))];
+    const items = [...list.sites.map(v => ({ v, app: false })), ...list.apps.map(v => ({ v, app: true })), ...(list.folders || []).map(v => ({ v, app: false, folder: true }))];
     const { shown, more } = chipSummary(items, 6);
     const editOk = typeof deps.openListEditor === 'function';
     return h('div', { class: 'fr-list' },
       h('div', { class: 'fr-list-main' },
         h('strong', { class: 'fr-list-name', title: list.name }, list.name),
         h('div', { class: 'fr-chips' },
-          shown.map(i => chip(i.v, i.app)),
+          shown.map(i => i.folder ? chip(folderLabel(i.v), false, i.v) : chip(i.v, i.app)),
           more > 0 ? h('span', { class: 'fr-chip fr-more' }, `+${more}`) : null,
           items.length === 0 ? h('span', { class: 'fr-muted fr-small' }, 'Empty list') : null),
         lockMsg ? h('p', { class: 'fr-muted fr-small fr-list-lock' }, h('span', { 'aria-hidden': 'true' }, '🔒 '), lockMsg) : null),

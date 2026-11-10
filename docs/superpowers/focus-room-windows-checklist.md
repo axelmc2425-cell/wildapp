@@ -189,7 +189,26 @@ Nothing here has been run on Windows; these items are the only proof. Use short 
 - [ ] Start a locked block while the service is stopped (only possible with no lock pending: `sc stop MyBrainFocus`, then try to start a Locked block) — Expected: the start is refused with the "helper isn't running" error and no block is created; restart the service afterwards
 - [ ] With a locked block pending its start time in the future, try to change the partner key — Expected: refused
 
-## 14. Cleanup
+## 14. Folder blocking and file pickers
+
+Use a throwaway folder such as `C:\Games\Foo` containing a copy of a harmless program (for example `notepad.exe`), and a sibling `C:\GamesX` with another copy.
+
+- [ ] In a list editor, click Browse files and choose one or more `.exe` files — Expected: the dialog opens filtered to programs (.exe); each pick becomes an app chip with just the file name
+- [ ] Click Browse folder and choose `C:\Games\Foo` — Expected: a folder chip appears (`Foo`, with the full path on hover) and can be removed with its x
+- [ ] Start a block on a list with that folder, then run the copy of the program from `C:\Games\Foo` — Expected: it is closed within a few seconds
+- [ ] While the block runs, run the copy from `C:\GamesX` — Expected: it keeps running (a sibling folder with the same prefix is not blocked)
+- [ ] While the block runs, copy another program into `C:\Games\Foo` (or a subfolder) and run it — Expected: it is closed too (programs installed afterwards are covered)
+- [ ] Try to add `C:\Windows` (or `C:\Program Files`) with Browse folder — Expected: refused with "That folder is part of Windows and can't be blocked." and no chip is added
+- [ ] Start a locked block with a folder, reboot Windows without opening the app, then run a program from the folder — Expected: it is closed; reopening Focus Room still shows the locked block
+- [ ] Known limit: run an elevated (Run as administrator) program from the blocked folder whose path the helper cannot read — Expected: record what happens (the helper runs as LocalSystem and can normally read and close elevated programs; only protected programs return no path and are skipped); blocking it by file name in Apps still works
+- [ ] In the partner setup dialog, click Save the partner page — Expected: a Windows Save dialog opens with `partner-unlock.html` suggested
+- [ ] Choose the Desktop and Save — Expected: `partner-unlock.html` lands on the Desktop and the dialog shows "Saved to <path>. Send this file to your partner..."
+- [ ] After saving — Expected: Explorer opens with `partner-unlock.html` selected
+- [ ] Save the partner page into a folder whose name has spaces (for example `My Files`) — Expected: the file is written there, the message shows the full path, and Show in folder opens Explorer with the file selected
+- [ ] Cancel the Save dialog — Expected: nothing is written and no message appears
+- [ ] Open the saved page in a browser with the network off — Expected: it loads and works offline
+
+## 15. Cleanup
 
 With no lock pending, uninstall MyBrain.
 

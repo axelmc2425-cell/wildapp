@@ -2,6 +2,9 @@
 import { h } from './dom.js';
 import { openDialog } from './dialog.js';
 import { buildPartnerPage } from '../partner-page.js';
+import { hasNative, invoke, pickSavePath, revealInFolder } from '../../../shell/native.js';
+
+const SEND_HINT = 'Send this file to your partner (email, WhatsApp, a USB stick). They open it in a browser.';
 
 let seq = 0;
 
@@ -12,7 +15,8 @@ function downloadPartnerPage() {
   document.body.append(a);
   a.click();
   a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  const t = setTimeout(() => URL.revokeObjectURL(url), 10000);
+  t?.unref?.(); // so a pending revoke timer never keeps a test process alive
 }
 
 /** Opens the dialog. `onDone` runs after the partner was saved and the dialog closed. */
@@ -26,9 +30,30 @@ export function openPartnerSetup({ controller, onDone } = {}) {
   const err = h('p', { class: 'fr-err', role: 'alert', hidden: true });
   const saveBtn = h('button', { type: 'button', class: 'primary' }, 'Save partner');
   const cancelBtn = h('button', { type: 'button' }, 'Cancel');
-  const pageBtn = h('button', { type: 'button', onclick: () => { downloadPartnerPage(); } }, 'Save the partner page');
+  const note = h('p', { class: 'fr-muted fr-saved', role: 'status', hidden: true });
+  const pageBtn = h('button', { type: 'button', onclick: () => savePage() }, 'Save the partner page');
   const saved = controller.state.partner?.set ? controller.state.partner.name : null;
 
+  function showNote(msg) { note.textContent = msg || ''; note.hidden = !msg; }
+  async function savePage() {
+    showNote(''); show('');
+    if (!hasNative()) { downloadPartnerPage(); showNote(SEND_HINT); return; }
+    pageBtn.disabled = true; // one Save dialog at a time
+    try {
+      const path = await pickSavePath('partner-unlock.html', 'html');
+      if (!path) return;
+      const cut = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
+      const dir = cut === 2 && path[1] === ':' ? path.slice(0, 3) : cut > 0 ? path.slice(0, cut) : cut === 0 ? path.slice(0, 1) : '';
+      const name = path.slice(cut + 1);
+      const bytes = Array.from(new TextEncoder().encode(buildPartnerPage()));
+      await invoke('write_files', { dir, files: [{ path: name, bytes }] });
+      showNote(`Saved to ${path}. ${SEND_HINT}`);
+      try { await revealInFolder(path); } catch { /* the saved message stands */ }
+    } catch (e) {
+      const why = String(e?.message || e).replace(/\.+$/, '');
+      show(`Could not save the page: ${why}. Nothing was sent.`);
+    } finally { pageBtn.disabled = saving; }
+  }
   function show(msg) { err.textContent = msg || ''; err.hidden = !msg; }
   function refresh() { saveBtn.disabled = saving || nameInput.value.trim() === '' || keyInput.value.trim() === ''; }
   for (const el of [nameInput, keyInput]) el.addEventListener('input', () => { show(''); refresh(); });
@@ -70,6 +95,7 @@ export function openPartnerSetup({ controller, onDone } = {}) {
         h('div', { class: 'fr-step-title' }, 'Paste what they sent'),
         h('div', { class: 'fr-field' }, h('label', { class: 'fr-fieldlabel', for: nameInput.id }, "Partner's name"), nameInput),
         h('div', { class: 'fr-field' }, h('label', { class: 'fr-fieldlabel', for: keyInput.id }, "Partner's public key"), keyInput))),
+    note,
     err,
     h('div', { class: 'fr-dialog-actions' }, cancelBtn, saveBtn));
   refresh();

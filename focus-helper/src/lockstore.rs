@@ -14,12 +14,12 @@ pub const MAX_UNLOCK_DELAY_MS: i64 = 604_800_000;
 pub const MAX_FROZEN_MS: i64 = 86_400_000;
 /// Most windows accepted in one push, and most stored.
 pub const MAX_WINDOWS: usize = 1024;
-/// Most sites plus apps in one window.
+/// Most sites, apps and folders in one window.
 pub const MAX_ITEMS_PER_WINDOW: usize = 512;
 /// Most open (unexpired) unlock challenges.
 pub const MAX_CHALLENGES: usize = 32;
 /// Current persisted-state format version.
-pub const STORE_VERSION: u32 = 2;
+pub const STORE_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Invalid {
@@ -47,6 +47,10 @@ pub enum PushError {
     Invalid(Invalid),
     /// A site or app entry is empty or contains whitespace, control or forbidden characters.
     BadItem,
+    /// A folder is not an absolute drive-letter path, or has control characters, wildcards or `..`.
+    BadFolder,
+    /// A folder is a drive root, Windows, a Program Files/Users root, or the helper's own folder.
+    ForbiddenFolder,
     /// Frozen windows are not available until sub-project 4 (Ruling 17).
     FrozenUnavailable,
     /// An allow-mode window with no apps would terminate every non-critical app.
@@ -179,6 +183,42 @@ pub fn good_item(s: &str, is_site: bool) -> bool {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FolderProblem {
+    Malformed,
+    Forbidden,
+}
+
+/// Checks a blocked-folder value: an absolute path with a drive letter (`C:\Games\Foo`), no
+/// control characters, wildcards, `.`/`..` or empty segments, a single trailing `\` allowed.
+/// Then refuses folders that must never be blocked (drive root, Windows, Program Files and
+/// Users themselves, the helper's install folder). The forbidden comparison normalizes `/` to
+/// `\` and ASCII-lowercases; the stored value is untouched.
+/// Mirrors `folderProblem` in src/modules/focus/folders.js (shared vectors).
+pub fn folder_problem(s: &str) -> Option<FolderProblem> {
+    if s.chars().any(|c| c.is_control() || matches!(c, '*' | '?' | '<' | '>' | '|' | '"')) {
+        return Some(FolderProblem::Malformed);
+    }
+    let n = s.replace('/', "\\").to_ascii_lowercase();
+    let b = n.as_bytes();
+    if b.len() < 3 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\' {
+        return Some(FolderProblem::Malformed);
+    }
+    let rest = n[3..].strip_suffix('\\').unwrap_or(&n[3..]);
+    let segs: Vec<&str> = if rest.is_empty() { Vec::new() } else { rest.split('\\').collect() };
+    if segs.iter().any(|g| g.is_empty() || *g == "." || *g == ".." || g.contains(':')) {
+        return Some(FolderProblem::Malformed);
+    }
+    let forbidden = match segs.as_slice() {
+        [] => true,
+        ["windows", ..] => true,
+        ["program files"] | ["program files (x86)"] | ["users"] => true,
+        ["program files", "mybrainfocus", ..] => true,
+        _ => false,
+    };
+    forbidden.then_some(FolderProblem::Forbidden)
+}
+
 fn is_locking(w: &Window) -> bool {
     w.lock != Lock::None
 }
@@ -205,11 +245,18 @@ impl LockStore {
             if w.lock == Lock::Frozen {
                 return Err(PushError::FrozenUnavailable);
             }
-            if w.sites.len() + w.apps.len() > MAX_ITEMS_PER_WINDOW {
+            if w.sites.len() + w.apps.len() + w.app_folders.len() > MAX_ITEMS_PER_WINDOW {
                 return Err(PushError::TooMany);
             }
             if !w.sites.iter().all(|s| good_item(s, true)) || !w.apps.iter().all(|a| good_item(a, false)) {
                 return Err(PushError::BadItem);
+            }
+            let problems: Vec<FolderProblem> = w.app_folders.iter().filter_map(|f| folder_problem(f)).collect();
+            if problems.contains(&FolderProblem::Malformed) {
+                return Err(PushError::BadFolder);
+            }
+            if !problems.is_empty() {
+                return Err(PushError::ForbiddenFolder);
             }
             if w.mode == Mode::Allow && w.apps.is_empty() {
                 return Err(PushError::AllowNeedsApps);
@@ -411,5 +458,117 @@ impl LockStore {
             }
         }
         changed
+    }
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+    use crate::model::Mode;
+
+    const NOW: i64 = 1_700_000_000_000;
+    const H: i64 = 3_600_000;
+
+    fn win(id: &str, lock: Lock) -> Window {
+        Window {
+            id: id.into(),
+            starts: NOW - H,
+            ends: NOW + H,
+            lock,
+            mode: Mode::Block,
+            sites: vec![],
+            apps: vec![],
+            app_folders: vec![],
+            unlock_delay_ms: if lock == Lock::Locked { Some(86_400_000) } else { None },
+        }
+    }
+
+    fn with_folders(folders: &[&str]) -> Window {
+        let mut w = win("w", Lock::None);
+        w.app_folders = folders.iter().map(|s| s.to_string()).collect();
+        w
+    }
+
+    fn vectors() -> serde_json::Value {
+        let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/folder-vectors.json");
+        serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn folder_vectors_match_fixture() {
+        let v = vectors();
+        for (key, want) in [
+            ("ok", None),
+            ("malformed", Some(FolderProblem::Malformed)),
+            ("forbidden", Some(FolderProblem::Forbidden)),
+        ] {
+            let list = v[key].as_array().unwrap();
+            assert!(!list.is_empty(), "{key}");
+            for s in list {
+                let s = s.as_str().unwrap();
+                assert_eq!(folder_problem(s), want, "{key}: {s:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn push_rejects_bad_folder() {
+        let mut s = LockStore::default();
+        assert_eq!(s.push(vec![with_folders(&["Games"])], NOW), Err(PushError::BadFolder));
+        assert!(s.windows.is_empty());
+    }
+
+    #[test]
+    fn push_rejects_forbidden_folder() {
+        let mut s = LockStore::default();
+        assert_eq!(s.push(vec![with_folders(&["C:\\Windows"])], NOW), Err(PushError::ForbiddenFolder));
+        // malformed is reported before forbidden
+        assert_eq!(
+            s.push(vec![with_folders(&["C:\\Windows", "Games"])], NOW),
+            Err(PushError::BadFolder)
+        );
+        assert!(s.push(vec![with_folders(&["C:\\Games\\Steam"])], NOW).is_ok());
+    }
+
+    #[test]
+    fn folders_count_toward_item_cap() {
+        let mut w = win("w", Lock::None);
+        w.sites = (0..200).map(|i| format!("s{i}.com")).collect();
+        w.apps = (0..200).map(|i| format!("a{i}.exe")).collect();
+        w.app_folders = (0..113).map(|i| format!("C:\\Games\\g{i}")).collect();
+        let mut s = LockStore::default();
+        assert_eq!(s.push(vec![w.clone()], NOW), Err(PushError::TooMany));
+        w.app_folders.pop();
+        assert!(s.push(vec![w], NOW).is_ok());
+    }
+
+    #[test]
+    fn old_state_without_app_folders_loads() {
+        let json = r#"{"version":2,"windows":[{"id":"w","starts":1,"ends":2,"lock":"none","mode":"block","sites":["a.com"],"apps":[]}]}"#;
+        let s: LockStore = serde_json::from_str(json).unwrap();
+        assert_eq!(s.windows.len(), 1);
+        assert!(s.windows[0].app_folders.is_empty());
+        assert_eq!(STORE_VERSION, 3);
+        // empty folders are not serialized
+        assert!(!serde_json::to_string(&s.windows[0]).unwrap().contains("app_folders"));
+    }
+
+    #[test]
+    fn locked_window_folders_ignored_on_repush() {
+        let (_, pk) = {
+            use crate::unlock::b64u_encode;
+            use p256::ecdsa::SigningKey;
+            let sk = SigningKey::from_bytes(&[9u8; 32].into()).unwrap();
+            let pk = b64u_encode(sk.verifying_key().to_encoded_point(false).as_bytes());
+            (sk, pk)
+        };
+        let mut s = LockStore::default();
+        s.set_partner(&pk, NOW).unwrap();
+        let mut w = win("L", Lock::Locked);
+        w.app_folders = vec!["C:\\Games\\One".into()];
+        s.push(vec![w.clone()], NOW).unwrap();
+        w.app_folders = vec!["C:\\Games\\Two".into()];
+        s.push(vec![w], NOW).unwrap();
+        assert_eq!(s.windows[0].app_folders, vec!["C:\\Games\\One".to_string()]);
     }
 }

@@ -872,3 +872,15 @@ test('unexpected reply types give a plain failure', async () => {
   }
   assert.equal(await rowCount(x.db), 2);
 });
+
+test('saveList passes folders through to the window and reports errors.folders', async () => {
+  const { ctl, calls } = await setup();
+  const a = await ctl.saveList({ name: 'F', sites: [], apps: [], folders: ['C:/Games/Foo/'] });
+  assert.equal(a.ok, true);
+  assert.deepEqual(ctl.state.lists[0].folders, ['C:\\Games\\Foo']);
+  await ctl.startBlock({ listIds: [a.id], minutes: 25 });
+  assert.deepEqual(last(calls)[0].app_folders, ['C:\\Games\\Foo']);
+  const bad = await ctl.saveList({ name: 'G', sites: [], apps: [], folders: ['C:\\Windows'] });
+  assert.equal(bad.ok, false);
+  assert.equal(bad.errors.folders[0].value, 'C:\\Windows');
+});

@@ -117,3 +117,24 @@ test('window id is stable across calls and independent of row order', () => {
   assert.equal(a.id, b.id);
   assert.equal(a.id, 'b1000-2.3.10');
 });
+
+test('folders become app_folders only when non-empty; ids and shapes unchanged otherwise', () => {
+  const l = { id: 1, mode: 'block', items: [{ kind: 'site', value: 'x.com' }, { kind: 'folder', value: 'C:/Games/Foo/' }, { kind: 'folder', value: 'C:\\Games\\Foo' }, { kind: 'folder', value: 'rel' }] };
+  const w = sessionToWindow({ id: 3, starts: 10, ends: 20, lock: 'none' }, l);
+  assert.deepEqual(w.app_folders, ['C:\\Games\\Foo']);
+  assert.ok(!('app_folders' in sessionToWindow({ id: 3, starts: 10, ends: 20, lock: 'none' }, list)));
+  const ws = expandSchedule(sched({}), l, Date.UTC(2026, 0, 5, 5), 7 * 24 * H, nyOffset);
+  assert.ok(ws.every((x) => x.app_folders.length === 1 && x.app_folders[0] === 'C:\\Games\\Foo'));
+  assert.ok(expandSchedule(sched({}), list, Date.UTC(2026, 0, 5, 5), 7 * 24 * H, nyOffset).every((x) => !('app_folders' in x)));
+});
+
+test('a locked block unions folders across lists', () => {
+  const byId = new Map([
+    [1, { id: 1, mode: 'block', items: [{ kind: 'folder', value: 'C:\\A' }, { kind: 'folder', value: 'C:\\B' }] }],
+    [2, { id: 2, mode: 'block', items: [{ kind: 'folder', value: 'C:\\B' }, { kind: 'folder', value: 'C:\\C' }] }],
+    [3, { id: 3, mode: 'block', items: [{ kind: 'site', value: 'x.com' }] }],
+  ]);
+  const s = (listId) => ({ listId, starts: 1000, ends: 2000, unlockDelayMs: 3600000 });
+  assert.deepEqual(lockedBlockToWindow([s(1), s(2)], byId).app_folders, ['C:\\A', 'C:\\B', 'C:\\C']);
+  assert.ok(!('app_folders' in lockedBlockToWindow([s(3)], byId)));
+});

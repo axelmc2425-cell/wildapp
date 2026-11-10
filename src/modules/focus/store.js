@@ -6,7 +6,7 @@ const MAX_ITEMS = 512;
 const MAX_NAME = 60;
 const DAY_MS = 86400000;
 
-/** @typedef {{ id: number, name: string, mode: 'block', sites: string[], apps: string[] }} ListRec */
+/** @typedef {{ id: number, name: string, mode: 'block', sites: string[], apps: string[], folders: string[] }} ListRec */
 /** @typedef {{ id: number, listId: number, starts: number, ends: number, lock: 'none'|'locked'|'frozen', unlockDelayMs: number|null }} SessionRec */
 
 const placeholders = (n) => Array(n).fill('?').join(',');
@@ -15,10 +15,10 @@ const placeholders = (n) => Array(n).fill('?').join(',');
 export async function listLists(db) {
   const lists = await db.all('SELECT id, name, mode FROM focus_lists');
   const items = await db.all('SELECT list_id, kind, value FROM focus_items ORDER BY rowid');
-  const byId = new Map(lists.map(l => [l.id, { id: l.id, name: l.name, mode: 'block', sites: [], apps: [] }]));
+  const byId = new Map(lists.map(l => [l.id, { id: l.id, name: l.name, mode: 'block', sites: [], apps: [], folders: [] }]));
   for (const it of items) {
     const rec = byId.get(it.list_id);
-    if (rec) (it.kind === 'site' ? rec.sites : rec.apps).push(it.value);
+    if (rec) (it.kind === 'site' ? rec.sites : it.kind === 'folder' ? rec.folders : rec.apps).push(it.value);
   }
   return [...byId.values()].sort((a, b) => {
     const x = a.name.toLowerCase(), y = b.name.toLowerCase();
@@ -33,12 +33,12 @@ function checkAll(kind, raws, errors, out) {
     if (r.ok) { if (!out.includes(r.value)) out.push(r.value); }
     else bad.push({ value: raw, message: r.message });
   }
-  if (bad.length) errors[kind === 'site' ? 'sites' : 'apps'] = bad;
+  if (bad.length) errors[kind === 'site' ? 'sites' : kind === 'folder' ? 'folders' : 'apps'] = bad;
 }
 
 /**
- * @param {{ id?: number, name: string, sites: string[], apps: string[] }} input
- * @returns {Promise<{ ok: true, id: number } | { ok: false, errors: { name?: string, items?: string, sites?: {value: string, message: string}[], apps?: {value: string, message: string}[] } }>}
+ * @param {{ id?: number, name: string, sites: string[], apps: string[], folders?: string[] }} input
+ * @returns {Promise<{ ok: true, id: number } | { ok: false, errors: { name?: string, items?: string, sites?: {value: string, message: string}[], apps?: {value: string, message: string}[], folders?: {value: string, message: string}[] } }>}
  */
 export async function saveList(db, input, nowMs = Date.now()) {
   const errors = {};
@@ -57,10 +57,11 @@ export async function saveList(db, input, nowMs = Date.now()) {
       .some(l => l.id !== input.id && l.name.toLowerCase() === lower);
     if (clash) errors.name = 'A list with this name already exists.';
   }
-  const sites = [], apps = [];
+  const sites = [], apps = [], folders = [];
   checkAll('site', input.sites, errors, sites);
   checkAll('app', input.apps, errors, apps);
-  if (!errors.sites && !errors.apps && sites.length + apps.length > MAX_ITEMS) {
+  checkAll('folder', input.folders, errors, folders);
+  if (!errors.sites && !errors.apps && !errors.folders && sites.length + apps.length + folders.length > MAX_ITEMS) {
     errors.items = 'A list can hold up to 512 entries.';
   }
   if (Object.keys(errors).length) return { ok: false, errors };
@@ -68,6 +69,7 @@ export async function saveList(db, input, nowMs = Date.now()) {
   const itemStmts = (listIdSql, listIdParams) => [
     ...sites.map(v => ({ sql: `INSERT INTO focus_items(list_id, kind, value) VALUES (${listIdSql}, 'site', ?)`, params: [...listIdParams, v] })),
     ...apps.map(v => ({ sql: `INSERT INTO focus_items(list_id, kind, value) VALUES (${listIdSql}, 'app', ?)`, params: [...listIdParams, v] })),
+    ...folders.map(v => ({ sql: `INSERT INTO focus_items(list_id, kind, value) VALUES (${listIdSql}, 'folder', ?)`, params: [...listIdParams, v] })),
   ];
 
   if (input.id !== undefined) {

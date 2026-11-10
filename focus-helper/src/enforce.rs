@@ -1,12 +1,14 @@
 //! Process enforcement: decide which running processes to terminate. Portable; the
 //! Windows process table lives in `win::procs`. The caller re-checks about once a second.
-use crate::decide::{is_blocked_app, normalize_app, CRITICAL_APPS};
+use crate::decide::{is_blocked_app, is_blocked_path, normalize_app, CRITICAL_APPS};
 use crate::model::Decision;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proc {
     pub pid: u32,
     pub name: String,
+    /// Full image path when readable; `None` never matches a folder rule.
+    pub path: Option<String>,
 }
 
 pub trait ProcessTable {
@@ -20,10 +22,14 @@ pub const VPN_APPS: &[&str] = &[
     "mullvad-vpn.exe", "surfshark.exe", "tor.exe", "psiphon3.exe", "cloudflare-warp.exe",
 ];
 
-/// A decision has an active block window when it blocks any site or app, is frozen, or has
+/// A decision has an active block window when it blocks any site, app or folder, is frozen, or has
 /// an allow-list. An entirely empty decision has none, so nothing (VPNs included) is killed.
 pub fn any_window_active(d: &Decision) -> bool {
-    !d.block_sites.is_empty() || !d.block_apps.is_empty() || d.frozen || d.allow.is_some()
+    !d.block_sites.is_empty()
+        || !d.block_apps.is_empty()
+        || !d.block_folders.is_empty()
+        || d.frozen
+        || d.allow.is_some()
 }
 
 /// Empty, whitespace-only and placeholder names (sysinfo reports `<no name> ...` when a
@@ -51,7 +57,9 @@ pub fn enforce_once(d: &Decision, table: &dyn ProcessTable, self_pid: u32) -> Ve
         if CRITICAL_APPS.iter().any(|c| normalize_app(c) == n) {
             continue;
         }
-        let blocked = is_blocked_app(d, &p.name) || VPN_APPS.iter().any(|v| *v == n);
+        let blocked = is_blocked_app(d, &p.name)
+            || VPN_APPS.iter().any(|v| *v == n)
+            || p.path.as_deref().map_or(false, |x| is_blocked_path(d, x));
         if blocked && table.kill(p.pid) {
             killed.push(p);
         }

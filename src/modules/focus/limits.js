@@ -1,4 +1,5 @@
 // Focus window model, duration limits and extension rules (pure).
+import { folderProblem } from './folders.js';
 
 /**
  * @typedef {Object} Window
@@ -9,6 +10,7 @@
  * @property {'block'|'allow'} mode
  * @property {string[]} sites
  * @property {string[]} apps
+ * @property {string[]} [app_folders] absolute Windows folders (block mode only)
  * @property {number|null} [unlock_delay_ms] required for `locked` (1 h to 7 days), null/absent otherwise
  */
 
@@ -68,14 +70,18 @@ export function validItem(kind, value) {
   if (kind === 'app') {
     return value.trim() !== '' && !CONTROL_RE.test(value) && !/[^\S ]/.test(value) && !/[/\\:]/.test(value);
   }
+  if (kind === 'folder') return folderProblem(value) === null;
   return false;
 }
 
 /** Item checks the helper applies to every pushed window. @param {Window} w */
 export function validateItems(w) {
   if (!Array.isArray(w.sites) || !Array.isArray(w.apps)) return { ok: false, reason: 'bad-item' };
-  if (w.sites.length + w.apps.length > MAX_ITEMS_PER_WINDOW) return { ok: false, reason: 'too-many' };
-  if (!w.sites.every((s) => validItem('site', s)) || !w.apps.every((a) => validItem('app', a))) {
+  if (w.app_folders != null && !Array.isArray(w.app_folders)) return { ok: false, reason: 'bad-item' };
+  const folders = w.app_folders ?? [];
+  if (w.sites.length + w.apps.length + folders.length > MAX_ITEMS_PER_WINDOW) return { ok: false, reason: 'too-many' };
+  if (!w.sites.every((s) => validItem('site', s)) || !w.apps.every((a) => validItem('app', a))
+    || !folders.every((f) => validItem('folder', f))) {
     return { ok: false, reason: 'bad-item' };
   }
   return { ok: true };
