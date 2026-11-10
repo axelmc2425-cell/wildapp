@@ -35,3 +35,9 @@ test('endsAtText', () => {
   assert.equal(endsAtText(now, 25), `Ends at ${formatClock(now + 25 * 60000)}`);
   assert.equal(endsAtText(now, NaN), '');
 });
+
+test('listSummary counts folders and a folder-only list is not empty', () => {
+  assert.equal(listSummary({ sites: [], apps: [], folders: ['C:\\A'] }), '1 folder');
+  assert.equal(listSummary({ sites: new Array(2), apps: [], folders: ['C:\\A', 'C:\\B'] }), '2 sites, 2 folders');
+  assert.equal(listSummary({ sites: [], apps: [] }), 'Empty list');
+});

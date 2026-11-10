@@ -2,6 +2,7 @@
 import { checkEntry } from '../entry.js';
 
 export const MAX_ENTRIES = 512;
+const DUP_MESSAGE = 'Already in this list.';
 const CAP_MESSAGE = 'A list can hold up to 512 entries.';
 
 const keyOf = (kind) => (kind === 'site' ? 'sites' : kind === 'folder' ? 'folders' : 'apps');
@@ -24,10 +25,15 @@ export function addEntries(state, kind, rawPieces) {
   const next = { sites: [...state.sites], apps: [...state.apps], folders: [...(state.folders || [])] };
   const notes = [];
   const errors = [];
+  const before = new Set(next[key]);
   for (const raw of rawPieces) {
     const res = checkEntry(kind, raw);
     if (!res.ok) { errors.push({ value: raw, message: res.message }); continue; }
-    if (next[key].includes(res.value)) continue;
+    if (next[key].includes(res.value)) {
+      // Already there before this call: say so. Repeats inside one paste collapse silently.
+      if (before.has(res.value) && !errors.some(e => e.message === DUP_MESSAGE)) errors.push({ value: raw, message: DUP_MESSAGE });
+      continue;
+    }
     if (next.sites.length + next.apps.length + next.folders.length >= MAX_ENTRIES) {
       if (!errors.some(e => e.message === CAP_MESSAGE)) errors.push({ value: raw, message: CAP_MESSAGE });
       break;

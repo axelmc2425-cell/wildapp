@@ -99,3 +99,20 @@ test('folderLabel is the last path segment', () => {
   assert.equal(folderLabel('C:\\Games\\Foo'), 'Foo');
   assert.equal(folderLabel('D:\\'), 'D:');
 });
+
+test('a duplicate of an existing entry gets a plain message; repeats in one paste stay silent', () => {
+  const s = { sites: ['a.com'], apps: ['x.exe'], folders: ['C:\\Games\\Foo'] };
+  assert.deepEqual(addEntries(s, 'site', ['A.com']).errors.map(e => e.message), ['Already in this list.']);
+  assert.deepEqual(addEntries(s, 'app', ['x.exe']).errors.map(e => e.message), ['Already in this list.']);
+  const r = addEntries(s, 'folder', ['C:/Games/Foo/']);
+  assert.deepEqual(r.errors.map(e => e.message), ['Already in this list.']);
+  assert.deepEqual(r.state.folders, ['C:\\Games\\Foo']);
+  assert.deepEqual(addEntries(empty(), 'site', ['b.com', 'b.com']).errors, []);
+});
+
+test('UNC and extended-length folder picks get the network path message', () => {
+  const msg = "Network paths aren't supported. Use a folder on a drive letter.";
+  assert.equal(addEntries(empty(), 'folder', ['\\\\server\\share\\x']).errors[0].message, msg);
+  assert.equal(addEntries(empty(), 'folder', ['\\\\?\\C:\\Games']).errors[0].message, msg);
+  assert.equal(addEntries(empty(), 'folder', ['games']).errors[0].message, 'Pick a folder with the Browse folder button.');
+});

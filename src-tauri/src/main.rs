@@ -89,7 +89,7 @@ fn reveal_in_folder(path: String) -> Result<(), String> {
         }
         // One argument, no shell: Explorer opens with the file selected.
         std::process::Command::new("explorer.exe")
-            .arg(format!("/select,{}", path))
+            .args(["/select,", path.as_str()])
             .spawn()
             .map(|_| ())
             .map_err(|e| e.to_string())

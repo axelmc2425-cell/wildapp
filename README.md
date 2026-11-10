@@ -62,7 +62,7 @@ The partner is trust-based: the owner could generate their own key from the same
 
 Never ship a `test-clock` build. The Windows-only behaviour of locks is checked by section 13 of `docs/superpowers/focus-room-windows-checklist.md`.
 
-Folder blocking (desktop app only): a list can block every program that runs from a chosen folder. It matches the running program's own path, so launchers outside the folder, junctions or symlinks into it, and elevated programs the helper cannot inspect are not covered; see section 14 of the Windows checklist.
+Folder blocking (desktop app only): a list can block every program that runs from a chosen folder. It matches the running program's own path, so launchers outside the folder, junctions or symlinks into it, and programs whose path the helper cannot read are not covered; see section 14 of the Windows checklist.
 
 ## Checklist for trying it on Windows
 

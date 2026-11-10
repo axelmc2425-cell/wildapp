@@ -22,6 +22,7 @@ export function checkEntry(kind, raw) {
   }
   if (kind === 'folder') {
     const value = normalizeFolder(text);
+    if (/^(\\\\|\/\/)/.test(text)) return { ok: false, message: "Network paths aren't supported. Use a folder on a drive letter." };
     if (value === null) return { ok: false, message: FOLDER_MALFORMED };
     const problem = folderProblem(value);
     if (problem === 'forbidden') return { ok: false, message: "That folder is part of Windows and can't be blocked." };

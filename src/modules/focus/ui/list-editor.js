@@ -52,12 +52,10 @@ export function openListEditor({ controller, list, preset, onDone } = {}) {
       state = res.state;
       clearMsgs();
       show(itemsErr, ''); show(saveErrs, '');
-      if (res.errors.length && keepInput) {
-        show(err, res.errors.map(e => e.message).filter((m, i, a) => a.indexOf(m) === i).join(' '));
-      } else if (res.errors.length) {
+      if (res.errors.length) {
         show(err, res.errors.map(e => e.message).filter((m, i, a) => a.indexOf(m) === i).join(' '));
         const failed = res.errors.filter(e => e.value).map(e => e.value);
-        input.value = failed.length === 1 ? failed[0] : failed.join(kind === 'site' ? ' ' : ', ');
+        if (!keepInput) input.value = failed.length === 1 ? failed[0] : failed.join(kind === 'site' ? ' ' : ', ');
         // keep the failing text; chips for the good ones are already added
       } else {
         if (!keepInput) input.value = '';

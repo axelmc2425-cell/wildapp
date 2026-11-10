@@ -43,7 +43,7 @@ export function openPartnerSetup({ controller, onDone } = {}) {
       const path = await pickSavePath('partner-unlock.html', 'html');
       if (!path) return;
       const cut = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
-      const dir = cut === 2 && path[1] === ':' ? path.slice(0, 3) : cut > 0 ? path.slice(0, cut) : path.slice(0, 1);
+      const dir = cut === 2 && path[1] === ':' ? path.slice(0, 3) : cut > 0 ? path.slice(0, cut) : cut === 0 ? path.slice(0, 1) : '';
       const name = path.slice(cut + 1);
       const bytes = Array.from(new TextEncoder().encode(buildPartnerPage()));
       await invoke('write_files', { dir, files: [{ path: name, bytes }] });

@@ -135,3 +135,30 @@ test('save sends folders and shows folder errors', async () => {
   assert.deepEqual(sent.folders, ['C:\\Games\\Foo']);
   assert.ok(findAll(body, n => n.tag === 'li').some(n => n.textContent === 'C:\\Games\\Foo: nope'));
 });
+
+test('a duplicate file or folder pick shows Already in this list.', async () => {
+  const body = installDom(tauri(async (o) => (o.directory ? 'C:\\Games\\Foo' : ['C:\\a\\steam.exe'])));
+  openListEditor({ controller: noController });
+  await btnByText(body, 'Browse files…').click();
+  await btnByText(body, 'Browse folder…').click();
+  assert.deepEqual(errTexts(body), []);
+  await btnByText(body, 'Browse files…').click();
+  assert.deepEqual(errTexts(body), ['Already in this list.']);
+  await btnByText(body, 'Browse folder…').click();
+  assert.deepEqual(errTexts(body), ['Already in this list.', 'Already in this list.']); // one per field
+  assert.deepEqual(chipTexts(body), ['steam.exe', 'Foo']);
+});
+
+test('a folder-only list row on the home screen shows a folder chip, not Empty list', async () => {
+  const { mountHome } = await import('../src/modules/focus/ui/home.js');
+  const body = installDom(undefined);
+  const state = { loaded: true, blocks: [], lists: [{ id: 'l1', name: 'Games', sites: [], apps: [], folders: ['C:\\Games\\Foo'] }], helper: null, notice: null, syncPending: false };
+  const controller = { state, refreshStatus() {}, resync() {} };
+  const stop = mountHome(body, controller, {}, {});
+  try {
+    const chipEls = findAll(body, n => n.className === 'fr-chip');
+    assert.deepEqual(chipEls.map(c => c.children[0].textContent), ['Foo']);
+    assert.equal(chipEls[0].title, 'C:\\Games\\Foo');
+    assert.equal(findAll(body, n => n.textContent === 'Empty list').length, 0);
+  } finally { stop(); }
+});

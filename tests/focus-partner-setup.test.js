@@ -83,3 +83,10 @@ test('a reason ending in a period does not double it', async () => {
   const errs = findAll(body, n => n.tag === 'p' && n.className.includes('fr-err') && !n.hidden).map(n => n.textContent);
   assert.deepEqual(errs, ['Could not save the page: disk full. Nothing was sent.']);
 });
+
+test('a bare file name gives an empty dir', async () => {
+  const { body, calls } = mount({ save: async () => 'b.html' });
+  await btn(body, 'Save the partner page').click();
+  assert.equal(calls[0][1].dir, '');
+  assert.equal(calls[0][1].files[0].path, 'b.html');
+});
