@@ -204,6 +204,7 @@ test('saveList refuses editing a list in a running locked block', async () => {
   const r = await saveList(db, { id, name: 'L', sites: ['b.com'], apps: [] }, 200);
   assert.equal(r.ok, false);
   assert.equal(r.errors.name, 'That list is part of a locked block.');
+  assert.equal(r.kind, 'block');
   assert.equal(r.lockedUntil, 100 + 2 * HOUR);
   assert.deepEqual((await listLists(db))[0].sites, ['a.com']);
 });
@@ -379,7 +380,8 @@ test('saveList and deleteList refuse a list held by a locked schedule', async ()
   assert.equal(r.ok, false);
   assert.equal(r.errors.name, 'That list is part of a locked schedule.');
   assert.equal(r.lockedUntil, Date.UTC(2026, 10, 12));
-  assert.deepEqual(await deleteList(db, a, NOW, tz), { ok: false, reason: 'running' });
+  assert.equal(r.kind, 'schedule');
+  assert.deepEqual(await deleteList(db, a, NOW, tz), { ok: false, reason: 'locked-schedule', lockedUntil: Date.UTC(2026, 10, 12) });
   assert.equal((await listLists(db)).length, 1);
 });
 

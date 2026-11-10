@@ -7,7 +7,7 @@ const MIN_MS = 60000;
 
 /** @typedef {{ id: number, mode: 'block'|'allow', items: { kind: 'site'|'app'|'folder', value: string }[] }} List */
 
-function listTargets(list) {
+export function listTargets(list) {
   const sites = new Set();
   const apps = new Set();
   const folders = new Set();

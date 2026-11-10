@@ -921,4 +921,7 @@ async function scheduleScenarios(page, shot, h) {
   ok(/part of a locked schedule until/.test(refusal), `the list editor refuses with a reason (${refusal.replace(/\n/g, ' ').slice(0, 120)})`);
   await shot('focus-42-schedule-locked-refusal');
   await page.keyboard.press('Escape'); await closed();
+
+  // clean up the schedule rows this scenario created
+  await h.db.run('DELETE FROM focus_schedule_lists'); await h.db.run('DELETE FROM focus_schedules');
 }

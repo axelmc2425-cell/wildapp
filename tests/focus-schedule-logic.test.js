@@ -125,6 +125,14 @@ test('nextOccurrence on the spring-forward day', () => {
   assert.equal(iso(r.ends), '2026-03-08T07:30:00.000Z');
 });
 
+test('nextOccurrence on the fall-back day', () => {
+  const s = rec({ weekdays: [0], start: '01:30', end: '03:00' });
+  const r = nextOccurrence(s, Date.UTC(2026, 10, 1, 4), ny); // Sun 00:00 EDT
+  assert.equal(r.state, 'upcoming');
+  assert.equal(iso(r.starts), '2026-11-01T05:30:00.000Z'); // the first 01:30 (EDT)
+  assert.equal(iso(r.ends), '2026-11-01T08:00:00.000Z'); // 03:00 EST, 3.5 real hours later
+});
+
 test('isLockedActive', () => {
   assert.equal(isLockedActive(rec({ lock: 'locked', endsOn: '2026-01-06' }), NOW, ny), true); // end date is inclusive
   assert.equal(isLockedActive(rec({ lock: 'locked', endsOn: '2026-01-05' }), NOW, ny), false);

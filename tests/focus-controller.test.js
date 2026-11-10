@@ -906,7 +906,8 @@ test('saveSchedule lists it on state and pushes its windows', async () => {
 });
 
 test('a running locked occurrence shows in state.blocks and unlocks by its window id', async () => {
-  const { ctl, calls } = await setup();
+  const { ctl, calls, client } = await setup();
+  client.mirror = true;
   const a = await ctl.saveList(list('A'));
   const r = await ctl.saveSchedule(lockedIn([a.id]));
   assert.equal(r.ok, true);
@@ -921,7 +922,8 @@ test('a running locked occurrence shows in state.blocks and unlocks by its windo
 });
 
 test('state.blocks merges schedule blocks sorted by ends', async () => {
-  const { ctl } = await setup();
+  const { ctl, client } = await setup();
+  client.mirror = true;
   const a = await ctl.saveList(list('A'));
   await ctl.saveSchedule(lockedIn([a.id]));
   await ctl.startBlock({ listIds: [a.id], minutes: 25 });
@@ -931,7 +933,8 @@ test('state.blocks merges schedule blocks sorted by ends', async () => {
 });
 
 test('extendBlock and cancelBlock refuse a schedule block and change nothing', async () => {
-  const { ctl, db } = await setup();
+  const { ctl, db, client } = await setup();
+  client.mirror = true;
   const a = await ctl.saveList(list('A'));
   const r = await ctl.saveSchedule(lockedIn([a.id]));
   const key = ctl.state.blocks.find(x => x.scheduleId === r.id).key;
@@ -944,6 +947,7 @@ test('extendBlock and cancelBlock refuse a schedule block and change nothing', a
 
 test('reconcile does not end or remove a schedule block the helper does not list', async () => {
   const { ctl, client, db } = await setup();
+  client.mirror = true;
   const a = await ctl.saveList(list('A'));
   const r = await ctl.saveSchedule(lockedIn([a.id]));
   client.mirror = false; // status lists no windows
@@ -954,7 +958,8 @@ test('reconcile does not end or remove a schedule block the helper does not list
 });
 
 test('setScheduleEnabled and deleteSchedule reload, push, and report refusals', async () => {
-  const { ctl, calls } = await setup();
+  const { ctl, calls, client } = await setup();
+  client.mirror = true;
   const a = await ctl.saveList(list('A'));
   const r = await ctl.saveSchedule(schedIn([a.id]));
   const pushesBefore = calls.pushes.length;
@@ -981,7 +986,8 @@ test('saveSchedule with the helper down still saves and sets syncPending', async
 });
 
 test('saveList and deleteList use the injected tz for locked-schedule holds', async () => {
-  const { ctl } = await setup();
+  const { ctl, client } = await setup();
+  client.mirror = true;
   const a = await ctl.saveList(list('A'));
   await ctl.saveSchedule(lockedIn([a.id]));
   const e = await ctl.saveList({ ...list('A2'), id: a.id });
@@ -989,4 +995,72 @@ test('saveList and deleteList use the injected tz for locked-schedule holds', as
   assert.equal(e.errors.name, 'That list is part of a locked schedule.');
   const d = await ctl.deleteList(a.id);
   assert.equal(d.ok, false);
+});
+
+test('a locked schedule is refused without a partner, before anything is written', async () => {
+  const { ctl, client, db, calls } = await setup();
+  const a = await ctl.saveList(list('A'));
+  client.statusValue = { ...STATUS, partner_set: false };
+  const pushes = calls.pushes.length;
+  const r = await ctl.saveSchedule(lockedIn([a.id]));
+  assert.equal(r.ok, false);
+  assert.match(r.message, /partner/);
+  assert.equal((await db.all('SELECT id FROM focus_schedules')).length, 0);
+  assert.equal(calls.pushes.length, pushes);
+});
+
+test('a locked schedule is refused while the helper is down, but a normal one still saves', async () => {
+  const { ctl, client, db } = await setup();
+  const a = await ctl.saveList(list('A'));
+  client.statusFail = mkErr('unreachable', 'down');
+  const r = await ctl.saveSchedule(lockedIn([a.id]));
+  assert.equal(r.ok, false);
+  assert.match(r.message, /^Nothing was saved\./);
+  assert.equal((await db.all('SELECT id FROM focus_schedules')).length, 0);
+  assert.equal((await ctl.saveSchedule(schedIn([a.id]))).ok, true);
+});
+
+test('a locked save is rolled back when the helper does not hold the first occurrence', async () => {
+  const { ctl, client, db } = await setup();
+  const a = await ctl.saveList(list('A'));
+  client.mirror = false; // status never lists the pushed windows
+  const r = await ctl.saveSchedule(lockedIn([a.id]));
+  assert.equal(r.ok, false);
+  assert.match(r.message, /did not take the lock/);
+  assert.equal((await db.all('SELECT id FROM focus_schedules')).length, 0);
+  assert.equal(ctl.state.schedules.length, 0);
+});
+
+test('a failed locked edit restores the previous schedule', async () => {
+  const { ctl, client, db } = await setup();
+  const a = await ctl.saveList(list('A'));
+  const b = await ctl.saveList(list('B', ['b.com']));
+  const n = await ctl.saveSchedule(schedIn([a.id], { name: 'Before' }));
+  client.mirror = false;
+  const r = await ctl.saveSchedule({ ...lockedIn([b.id], { name: 'After' }), id: n.id });
+  assert.equal(r.ok, false);
+  const [row] = await db.all('SELECT name, lock, enabled FROM focus_schedules');
+  assert.deepEqual({ ...row }, { name: 'Before', lock: 'none', enabled: 1 });
+  assert.deepEqual(ctl.state.schedules[0].listIds, [a.id]);
+});
+
+test('a locked save whose first occurrence is beyond the horizon skips the verification', async () => {
+  const { ctl, client } = await setup();
+  const a = await ctl.saveList(list('A'));
+  client.mirror = false;
+  // The only weekday (Wed) falls after the end date, so no occurrence exists to verify.
+  const r = await ctl.saveSchedule(lockedIn([a.id], { endsOn: '2026-01-06', weekdays: [3] }));
+  assert.equal(r.ok, true);
+});
+
+test('saveSchedule rejects lists whose items together exceed 512', async () => {
+  const { ctl, db } = await setup();
+  const mk = async (name, from) => ctl.saveList({ name, sites: Array.from({ length: 300 }, (_, i) => `s${from + i}.com`), apps: [] });
+  const a = await mk('A', 0);
+  const b = await mk('B', 1000);
+  const r = await ctl.saveSchedule(schedIn([a.id, b.id]));
+  assert.equal(r.ok, false);
+  assert.equal(r.errors.listIds, 'Those lists together have too many items (max 512).');
+  assert.equal((await db.all('SELECT id FROM focus_schedules')).length, 0);
+  assert.equal((await ctl.saveSchedule(schedIn([a.id]))).ok, true);
 });

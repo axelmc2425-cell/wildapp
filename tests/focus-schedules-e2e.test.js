@@ -171,3 +171,19 @@ test('a locked schedule cannot be paused or deleted while it is active', T, asyn
   assert.equal(ctl.state.schedules.length, 1);
   assert.ok((await client.status()).windows.some((w) => w.id === winId(id, startMs)));
 });
+
+test('a locked schedule is refused with no partner set, and nothing reaches the helper', T, async (t) => {
+  const { ctl, client, db } = await setup(t);
+  const l = await ctl.saveList({ name: 'Social', sites: ['reddit.com'], apps: [] });
+  const startMs = Math.ceil((Date.now() + HOUR) / MIN) * MIN;
+  const r = await ctl.saveSchedule({
+    name: 'No partner', listIds: [l.id], weekdays: [0, 1, 2, 3, 4, 5, 6],
+    start: hhmm(startMs), end: hhmm(startMs + 3 * HOUR), lock: 'locked', unlockDelayMs: HOUR, endsOn: ymd(Date.now() + 7 * DAY),
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /partner/);
+  assert.equal((await db.all('SELECT id FROM focus_schedules')).length, 0);
+  assert.equal(ctl.state.schedules.length, 0);
+  const s = await client.status();
+  assert.equal(s.windows.filter((w) => w.lock === 'locked').length, 0);
+});

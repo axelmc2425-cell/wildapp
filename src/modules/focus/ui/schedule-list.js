@@ -5,7 +5,8 @@ import { describeSchedule, nextOccurrence, isLockedActive } from '../schedule-lo
 
 const SOON = 'Coming in the next step';
 
-function statusText(s, nowMs, tzOffsetAt, lockedActive) {
+function statusText(s, nowMs, tzOffsetAt, lockedActive, hasLists) {
+  if (!hasLists) return 'Its list was deleted. It is not blocking.';
   const n = nextOccurrence(s, nowMs, tzOffsetAt);
   if (n.state === 'running') return `Blocking now until ${formatClock(n.ends, nowMs)}`;
   if (n.state === 'upcoming') return n.starts !== undefined ? `Next: ${formatClock(n.starts, nowMs)}` : 'Waiting for the next occurrence';
@@ -22,7 +23,7 @@ function statusText(s, nowMs, tzOffsetAt, lockedActive) {
 export function renderSchedules(state, { nowMs, tzOffsetAt, openEditor, controller, confirm, onResult }) {
   const canEdit = typeof openEditor === 'function';
   const names = new Map(state.lists.map((l) => [l.id, l.name]));
-  const report = (res) => { if (typeof onResult === 'function') onResult(res); };
+  const report = (res, s) => { if (typeof onResult === 'function') onResult(res, s); };
 
   const row = (s) => {
     const lockedActive = isLockedActive(s, nowMs, tzOffsetAt);
@@ -40,7 +41,7 @@ export function renderSchedules(state, { nowMs, tzOffsetAt, openEditor, controll
           listNames.length ? listNames.map((n) => h('span', { class: 'fr-chip', title: n }, h('span', { class: 'fr-chip-text' }, n)))
             : h('span', { class: 'fr-muted fr-small' }, 'No lists')),
         h('p', { class: 'fr-muted fr-small fr-sched-status' },
-          statusText(s, nowMs, tzOffsetAt, lockedActive),
+          statusText(s, nowMs, tzOffsetAt, lockedActive, listNames.length > 0),
           note ? h('span', {}, ' · ', s.lock === 'locked' ? h('span', { 'aria-hidden': 'true' }, '🔒 ') : null, note) : null)),
       h('div', { class: 'fr-actions' },
         h('button', {
@@ -51,7 +52,7 @@ export function renderSchedules(state, { nowMs, tzOffsetAt, openEditor, controll
         h('button', {
           type: 'button', 'data-fk': `sched-toggle-${s.id}`, 'aria-label': `${s.enabled ? 'Pause' : 'Resume'} ${label}`,
           disabled: lockedActive, title: why,
-          onclick: async () => report(await controller.setScheduleEnabled(s.id, !s.enabled)),
+          onclick: async () => report(await controller.setScheduleEnabled(s.id, !s.enabled), s),
         }, s.enabled ? 'Pause' : 'Resume'),
         h('button', {
           type: 'button', class: 'danger', 'data-fk': `sched-delete-${s.id}`, 'aria-label': `Delete ${label}`,
@@ -60,7 +61,7 @@ export function renderSchedules(state, { nowMs, tzOffsetAt, openEditor, controll
             title: 'Delete this schedule?',
             message: `“${label}” will be removed.`,
             confirmLabel: 'Delete', danger: true,
-            onConfirm: async () => report(await controller.deleteSchedule(s.id)),
+            onConfirm: async () => report(await controller.deleteSchedule(s.id), s),
           }),
         }, 'Delete')));
   };

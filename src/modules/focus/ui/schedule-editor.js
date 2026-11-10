@@ -1,7 +1,6 @@
 // "New schedule" / "Edit schedule" dialog.
 import { h } from './dom.js';
 import { openDialog } from './dialog.js';
-import { HELPER_REQUIRED } from './start-dialog.js';
 import { makeTzOffsetAt } from '../tz.js';
 import { UNLOCK_DELAY_PRESETS_H, resolveDelayHours } from '../lock-logic.js';
 import {
@@ -9,18 +8,21 @@ import {
 } from './schedule-editor-logic.js';
 
 const DAYS = [[1, 'Mon', 'Monday'], [2, 'Tue', 'Tuesday'], [3, 'Wed', 'Wednesday'], [4, 'Thu', 'Thursday'], [5, 'Fri', 'Friday'], [6, 'Sat', 'Saturday'], [0, 'Sun', 'Sunday']];
+const HELPER_REQUIRED = 'The helper must be running to lock a schedule.';
 const FIELDS = ['name', 'listIds', 'weekdays', 'times', 'unlock', 'endsOn'];
 let seq = 0;
 
 /** Opens the dialog; `onDone(res)` runs after a successful save. Returns { close() }. */
-export function openScheduleEditor({ controller, schedule, onDone, now = () => Date.now(), tzOffsetAt = makeTzOffsetAt() } = {}) {
+export function openScheduleEditor({ controller, schedule, onDone, openPartnerSetup, subscribe, now = () => Date.now(), tzOffsetAt = makeTzOffsetAt() } = {}) {
   const uid = ++seq;
   const lists = controller.state.lists;
   let draft = initialDraft(schedule, lists);
   let confirmed = false;
   let busy = false;
   let dlg = null;
+  let unsub = () => {};
   const helperOk = () => controller.state.helper?.kind === 'ok';
+  const partnerSet = () => controller.state.partner?.set === true;
   const show = (el, msg) => { el.textContent = msg || ''; el.hidden = !msg; };
   const errEls = {};
   const err = (field) => (errEls[field] = h('p', { class: 'fr-err', id: `fr-sc-err-${field}-${uid}`, role: 'alert', hidden: true }));
@@ -74,6 +76,16 @@ export function openScheduleEditor({ controller, schedule, onDone, now = () => D
     });
   }
   const helperMsg = h('p', { class: 'fr-st-lockmsg fr-muted', id: `fr-sc-helper-${uid}`, hidden: true });
+  const setupBtn = h('button', { type: 'button', onclick: () => {
+    if (busy || typeof openPartnerSetup !== 'function') return;
+    openPartnerSetup({ controller, onDone: () => {
+      refresh();
+      const next = !lockedOpts.hidden ? confirmBox : lockedRadio;
+      if (next && !next.disabled) next.focus();
+    } });
+  } }, 'Set up your partner first');
+  const partnerBox = h('div', { class: 'fr-st-partner', hidden: true },
+    h('p', { class: 'fr-muted' }, 'A locked schedule needs a partner who can end it early if you really must. Set one up first.'), setupBtn);
   const delayChips = UNLOCK_DELAY_PRESETS_H.map((hrs) => h('button', {
     type: 'button', class: 'fr-delaychip', 'aria-pressed': 'false',
     onclick: () => { draft = { ...draft, delayPreset: hrs, delayCustom: '' }; delayInput.value = ''; confirmed = false; refresh(); },
@@ -100,16 +112,20 @@ export function openScheduleEditor({ controller, schedule, onDone, now = () => D
 
   const saveBtn = h('button', { type: 'button', class: 'primary' }, 'Save');
   const cancelBtn = h('button', { type: 'button' }, 'Cancel');
-  cancelBtn.addEventListener('click', () => dlg.close());
+  cancelBtn.addEventListener('click', () => { if (!busy) dlg.close(); });
 
   function refresh() {
     const ok = helperOk();
     const lk = draft.lock === 'locked';
+    // The helper can drop out while the dialog is open: fall back to Normal rather than leave Locked selected.
+    if (!ok && draft.lock === 'locked') { draft = { ...draft, lock: 'none' }; confirmed = false; }
     lockedRadio.disabled = busy || !ok;
     normalRadio.disabled = busy;
     lockedRadio.checked = lk; normalRadio.checked = !lk;
     show(helperMsg, ok ? '' : HELPER_REQUIRED);
     lockedOpts.hidden = !lk;
+    partnerBox.hidden = !(lk && ok && !partnerSet());
+    setupBtn.hidden = typeof openPartnerSetup !== 'function';
     endsLabel.textContent = lk ? 'Ends on (required)' : 'Ends on (optional)';
     const hasCustom = draft.delayCustom.trim() !== '';
     delayChips.forEach((b, i) => b.setAttribute('aria-pressed', String(!hasCustom && draft.delayPreset === UNLOCK_DELAY_PRESETS_H[i])));
@@ -118,6 +134,7 @@ export function openScheduleEditor({ controller, schedule, onDone, now = () => D
     confirmBox.checked = confirmed;
     dayBtns.forEach((b, i) => b.setAttribute('aria-pressed', String(draft.weekdays.includes(DAYS[i][0]))));
     saveBtn.disabled = busy;
+    cancelBtn.disabled = busy;
   }
 
   async function save() {
@@ -126,6 +143,7 @@ export function openScheduleEditor({ controller, schedule, onDone, now = () => D
     const errors = r.ok ? {} : { ...r.errors };
     if (draft.lock === 'locked') {
       if (!helperOk()) errors.unlock = HELPER_REQUIRED;
+      else if (!partnerSet()) errors.unlock = 'Set up your partner first, so someone else can end the lock early if you need.';
       else if (r.ok && !confirmed) errors.unlock = 'Tick the box to confirm the lock.';
     }
     showErrors(errors);
@@ -174,11 +192,12 @@ export function openScheduleEditor({ controller, schedule, onDone, now = () => D
           h('span', { class: 'fr-modetext' }, h('strong', {}, 'Normal'), h('small', { class: 'fr-muted' }, 'You can pause or delete it any time.'))),
         h('label', { class: 'fr-moderow' }, lockedRadio,
           h('span', { class: 'fr-modetext' }, h('strong', {}, 'Locked'), h('small', { class: 'fr-muted' }, 'You cannot change it until the end date.')))),
-      helperMsg, lockedOpts, err('unlock')),
+      helperMsg, partnerBox, lockedOpts, err('unlock')),
     h('div', { class: 'fr-field' }, endsLabel, endsInput, err('endsOn')),
     formErr,
     h('div', { class: 'fr-dialog-actions' }, cancelBtn, saveBtn));
   refresh();
-  dlg = openDialog({ title: schedule ? 'Edit schedule' : 'New schedule', body, canClose: () => !busy });
+  dlg = openDialog({ title: schedule ? 'Edit schedule' : 'New schedule', body, canClose: () => !busy, onClose: () => unsub() });
+  if (typeof subscribe === 'function') { try { unsub = subscribe(() => { if (!busy) refresh(); }) || (() => {}); } catch { /* ignore */ } }
   return { close: () => dlg.close() };
 }

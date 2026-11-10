@@ -350,7 +350,7 @@ test('Locked with an empty end date shows the endsOn error; Locked needs the hel
   openScheduleEditor({ controller: { ...edState({ helper: null }), saveSchedule() {} }, now: () => NOWMS, tzOffsetAt: utcTz });
   const l2 = inputs(body2, n => n.attrs.type === 'radio' && n.attrs.value === 'locked')[0];
   assert.equal(isDisabled(l2), true);
-  assert.ok(findAll(body2, n => n.textContent === 'The helper must be running to lock a block.').length > 0);
+  assert.ok(findAll(body2, n => n.textContent === 'The helper must be running to lock a schedule.').length > 0);
 });
 
 test('server errors from saveSchedule are shown beside the field', async () => {
@@ -360,4 +360,92 @@ test('server errors from saveSchedule are shown beside the field', async () => {
   openScheduleEditor({ controller, schedule: sched({ id: 3 }), now: () => NOWMS, tzOffsetAt: utcTz });
   await typeBtn(body, 'Save').click();
   assert.ok(errTexts(body).includes('That schedule is locked until 2026-12-01.'));
+});
+
+test('a schedule whose lists are all gone says so instead of "Next:"', async () => {
+  const { renderSchedules } = await import('../src/modules/focus/ui/schedule-list.js');
+  const body = installDom(undefined);
+  const el = renderSchedules({ lists: lists2, schedules: [sched({ id: 5, listIds: [99] })] }, { nowMs: NOWMS, tzOffsetAt: utcTz, openEditor() {}, controller: {}, confirm() {} });
+  body.append(el);
+  const t = findAll(el, n => n.getAttribute('data-fk') === 'sched-row-5')[0].textContent;
+  assert.match(t, /Its list was deleted\. It is not blocking\./);
+  assert.doesNotMatch(t, /Next:/);
+});
+
+test('home maps schedule pause/delete refusals and a locked-schedule list delete to plain text', async () => {
+  const { mountHome } = await import('../src/modules/focus/ui/home.js');
+  const body = installDom(undefined);
+  const s = sched({ id: 1, name: 'Work' });
+  const controller = {
+    state: homeState({ schedules: [s] }), refreshStatus() {}, resync() {},
+    setScheduleEnabled: async () => ({ ok: false, reason: 'locked' }),
+    deleteSchedule: async () => ({ ok: false, reason: 'missing' }),
+    deleteList: async () => ({ ok: false, reason: 'locked-schedule', lockedUntil: Date.UTC(2026, 11, 1, 12) }),
+  };
+  const stop = mountHome(body, controller, {}, { openScheduleEditor() {}, openListEditor() {} });
+  try {
+    await byFk(body, 'sched-toggle-1').click();
+    assert.match(body.textContent, /This schedule is locked until \d{4}-|This schedule is locked until its end date\./);
+    controller.setScheduleEnabled = async () => ({ ok: false, reason: 'missing' });
+    await byFk(body, 'sched-toggle-1').click();
+    assert.match(body.textContent, /That schedule no longer exists\./);
+    assert.doesNotMatch(body.textContent, /That did not work/);
+  } finally { stop(); }
+});
+
+test('editor: Locked without a partner shows the partner guidance and blocks Save; Cancel is disabled while busy', async () => {
+  const { openScheduleEditor } = await import('../src/modules/focus/ui/schedule-editor.js');
+  const body = installDom(undefined);
+  let saved = 0; let setups = 0; let notify = () => {}; let unsubbed = 0;
+  const controller = { ...edState({ partner: { set: false } }), saveSchedule: async () => { saved++; return { ok: true, id: 1 }; } };
+  openScheduleEditor({
+    controller, now: () => NOWMS, tzOffsetAt: utcTz,
+    openPartnerSetup: () => { setups++; },
+    subscribe: (fn) => { notify = fn; return () => { unsubbed++; }; },
+  });
+  const box = inputs(body, n => n.attrs['data-list'] === '1')[0];
+  box.checked = true;
+  await Promise.all(box.listeners.change.map(f => f()));
+  const locked = inputs(body, n => n.attrs.type === 'radio' && n.attrs.value === 'locked')[0];
+  locked.checked = true;
+  await Promise.all(locked.listeners.change.map(f => f()));
+  assert.ok(findAll(body, n => n.textContent === 'Set up your partner first').length > 0);
+  await typeBtn(body, 'Set up your partner first').click();
+  assert.equal(setups, 1);
+  await Promise.all(inputs(body, n => n.attrs.id?.startsWith('fr-sc-confirm-')).map(c => { c.checked = true; return Promise.all(c.listeners.change.map(f => f())); }));
+  await typeBtn(body, 'Save').click();
+  assert.equal(saved, 0);
+  assert.ok(errTexts(body).some(t => /partner/.test(t)));
+  // The partner gets set while the dialog is open: Save goes through.
+  controller.state.partner = { set: true };
+  notify();
+  await typeBtn(body, 'Save').click();
+  assert.equal(saved, 1);
+  assert.equal(unsubbed, 1);
+});
+
+test('editor: Cancel is disabled while a save is pending', async () => {
+  const { openScheduleEditor } = await import('../src/modules/focus/ui/schedule-editor.js');
+  const body = installDom(undefined);
+  let release;
+  const controller = { ...edState(), saveSchedule: () => new Promise((r) => { release = r; }) };
+  openScheduleEditor({ controller, now: () => NOWMS, tzOffsetAt: utcTz });
+  const box = inputs(body, n => n.attrs['data-list'] === '1')[0];
+  box.checked = true;
+  await Promise.all(box.listeners.change.map(f => f()));
+  const p = typeBtn(body, 'Save').click();
+  assert.equal(isDisabled(typeBtn(body, 'Cancel')), true);
+  release({ ok: false, message: 'Nothing was saved. x' });
+  await p;
+  assert.equal(isDisabled(typeBtn(body, 'Cancel')), false);
+});
+
+test('list editor picks "schedule" or "block" wording from the refusal kind', async () => {
+  for (const kind of ['schedule', 'block']) {
+    const controller = { saveList: async () => ({ ok: false, errors: { name: 'x' }, kind, lockedUntil: Date.UTC(2026, 11, 1, 12) }) };
+    const body = installDom(undefined);
+    openListEditor({ controller, list: { id: 1, name: 'L', sites: ['a.com'], apps: [], folders: [] } });
+    await btnByText(body, 'Save').click();
+    assert.ok(findAll(body, n => /^That list is part of a locked /.test(n.textContent || '') && n.textContent.length < 80).some(n => n.textContent.includes(`locked ${kind} until`)), kind);
+  }
 });

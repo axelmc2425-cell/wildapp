@@ -11,6 +11,22 @@ import { makeTzOffsetAt } from '../tz.js';
 
 const SOON = 'Coming in the next step';
 const RUNNING_MSG = 'This list is in a running block. Stop the block first.';
+
+function deleteListMsg(res) {
+  if (res.reason === 'running') return RUNNING_MSG;
+  if (res.reason === 'locked-schedule') {
+    return Number.isFinite(res.lockedUntil)
+      ? `This list is part of a locked schedule until ${new Date(res.lockedUntil).toLocaleDateString([], { month: 'short', day: 'numeric' })}.`
+      : 'This list is part of a locked schedule.';
+  }
+  return res.message || 'Could not delete that list.';
+}
+
+function scheduleResultMsg(res, schedule) {
+  if (res.reason === 'locked') return `This schedule is locked until ${schedule?.endsOn ?? 'its end date'}.`;
+  if (res.reason === 'missing') return 'That schedule no longer exists.';
+  return res.message || 'That did not work.';
+}
 const FINISHED = 'That block has already finished.';
 
 /**
@@ -250,6 +266,12 @@ export function mountHome(root, controller, ctx, deps = {}) {
     }
   }
 
+  function partnerSetupDep() {
+    return typeof deps.openPartnerSetup === 'function'
+      ? (o) => deps.openPartnerSetup({ ...o, onDone: (res) => { o.onDone?.(res); afterStarted(res); } })
+      : undefined;
+  }
+
   function startButton(state) {
     const can = typeof deps.openStartDialog === 'function' && state.lists.length > 0;
     const title = typeof deps.openStartDialog !== 'function' ? SOON : state.lists.length === 0 ? 'Create a list first' : null;
@@ -257,7 +279,7 @@ export function mountHome(root, controller, ctx, deps = {}) {
       type: 'button', class: 'primary', 'data-fk': 'start', disabled: !can, title,
       onclick: () => deps.openStartDialog({
         controller, onDone: afterStarted, subscribe: deps.subscribe,
-        openPartnerSetup: typeof deps.openPartnerSetup === 'function' ? (o) => deps.openPartnerSetup({ ...o, onDone: (res) => { o.onDone?.(res); afterStarted(res); } }) : undefined,
+        openPartnerSetup: partnerSetupDep(),
       }),
     }, 'Start a block');
   }
@@ -298,7 +320,7 @@ export function mountHome(root, controller, ctx, deps = {}) {
             confirmLabel: 'Delete', danger: true,
             onConfirm: async () => {
               const res = await controller.deleteList(list.id);
-              if (res && res.ok === false) listMsg = res.reason === 'running' ? RUNNING_MSG : (res.message || 'Could not delete that list.');
+              if (res && res.ok === false) listMsg = deleteListMsg(res);
               else listMsg = null;
               afterAction();
             },
@@ -397,10 +419,13 @@ export function mountHome(root, controller, ctx, deps = {}) {
       schedsEl.append(renderSchedules({ lists: state.lists, schedules }, {
         nowMs: t, tzOffsetAt, controller, confirm: confirmD,
         openEditor: typeof deps.openScheduleEditor === 'function'
-          ? (schedule) => deps.openScheduleEditor({ controller, schedule, onDone: () => { schedMsg = null; afterAction(); } })
+          ? (schedule) => deps.openScheduleEditor({
+            controller, schedule, subscribe: deps.subscribe, openPartnerSetup: partnerSetupDep(),
+            onDone: (res) => { schedMsg = res && typeof res.message === 'string' && res.message ? res.message : null; afterAction(); },
+          })
           : undefined,
-        onResult: (res) => {
-          schedMsg = res && res.ok === false ? (res.message || 'That did not work.') : null;
+        onResult: (res, schedule) => {
+          schedMsg = res && res.ok === false ? scheduleResultMsg(res, schedule) : null;
           afterAction();
         },
       }));

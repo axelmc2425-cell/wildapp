@@ -2,7 +2,7 @@
 import * as store from './store.js';
 import { groupSessions, parseDuration, classifyHelperFailure, describePushProblem } from './model.js';
 import { syncWindows } from './sync.js';
-import { scheduleBlocks } from './schedule-logic.js';
+import { scheduleBlocks, nextOccurrence } from './schedule-logic.js';
 import { makeTzOffsetAt } from './tz.js';
 import { describeUnlockError, windowIdForBlock, pendingUnlockFor, resolveDelayHours } from './lock-logic.js';
 
@@ -252,10 +252,71 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
     });
   }
 
-  const saveSchedule = (input) => scheduleWrite(
-    () => store.saveSchedule(db, input, now(), tzOffsetAt),
-    (msg) => ({ ok: false, errors: { name: msg === 'no such schedule' ? 'That schedule no longer exists.' : `Could not save: ${msg}` } }),
-  );
+  const HORIZON_MS = 30 * 86400000;
+  const SCHEDULE_PARTNER_MSG = "Nothing was saved. Add your partner's key first, so someone else can end it early if you need.";
+
+  // A locked schedule is saved only if the helper will hold it: check the helper and partner first,
+  // push, confirm the first occurrence is on the helper, and undo the save if it is not.
+  function saveSchedule(input) {
+    const lockedInput = !!input && input.lock === 'locked';
+    if (!lockedInput) {
+      return scheduleWrite(
+        () => store.saveSchedule(db, input, now(), tzOffsetAt),
+        (msg) => ({ ok: false, errors: { name: msg === 'no such schedule' ? 'That schedule no longer exists.' : `Could not save: ${msg}` } }),
+      );
+    }
+    return enqueue(async () => {
+      let status;
+      try {
+        status = await client.status();
+      } catch (err) {
+        return { ok: false, message: `Nothing was saved. ${plainReason(err)}` };
+      }
+      if (!status || status.partner_set !== true) return { ok: false, message: SCHEDULE_PARTNER_MSG };
+      let prev = null;
+      let res;
+      try {
+        if (input.id !== undefined) prev = await store.readSchedule(db, input.id);
+        res = await store.saveSchedule(db, input, now(), tzOffsetAt);
+      } catch (e) {
+        const msg = errText(e);
+        return { ok: false, errors: { name: msg === 'no such schedule' ? 'That schedule no longer exists.' : `Could not save: ${msg}` } };
+      }
+      if (!res.ok) return res;
+      const reloaded = await reloadSafe();
+      changed();
+      await doResyncAfter(reloaded);
+      // The first occurrence the helper should now hold, if one falls inside the pushed horizon.
+      const t = now();
+      const rec = (await store.readSchedule(db, res.id).catch(() => null));
+      const n = rec ? nextOccurrence({ ...rec, enabled: true }, t, tzOffsetAt) : null;
+      const ends = n && n.state !== 'ended' && Number.isFinite(n.ends) ? n.ends : null;
+      if (ends === null || !(n.starts < t + HORIZON_MS)) return res;
+      const wid = `c${res.id}@${n.starts}`;
+      let held = null;
+      try {
+        const st = await client.status();
+        held = Array.isArray(st && st.windows) && heldIds(st).has(wid);
+      } catch { held = null; }
+      if (held === true) return res;
+      if (held === null) {
+        syncPending = true;
+        seq++;
+        changed();
+        return { ok: true, id: res.id, unconfirmed: true, message: "Saved, but couldn't confirm the lock with the helper. It may not be active yet. Check the Focus Room." };
+      }
+      let undone = true;
+      try { await store.restoreSchedule(db, res.id, prev); } catch { undone = false; }
+      await reloadSafe();
+      changed();
+      if (!undone) {
+        syncPending = true;
+        return { ok: false, message: 'The helper did not take the lock, and the save could not be undone here. Reopen the Focus Room to check.' };
+      }
+      await doResync();
+      return { ok: false, message: 'Nothing was saved. The helper did not take the lock.' };
+    });
+  }
   const setScheduleEnabled = (id, enabled) => scheduleWrite(
     () => store.setScheduleEnabled(db, id, enabled, now(), tzOffsetAt),
     (msg) => ({ ok: false, reason: 'error', message: `Could not save: ${msg}` }),
