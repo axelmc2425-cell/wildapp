@@ -16,7 +16,7 @@ function downloadPartnerPage() {
   a.click();
   a.remove();
   const t = setTimeout(() => URL.revokeObjectURL(url), 10000);
-  t?.unref?.();
+  t?.unref?.(); // so a pending revoke timer never keeps a test process alive
 }
 
 /** Opens the dialog. `onDone` runs after the partner was saved and the dialog closed. */
@@ -38,19 +38,21 @@ export function openPartnerSetup({ controller, onDone } = {}) {
   async function savePage() {
     showNote(''); show('');
     if (!hasNative()) { downloadPartnerPage(); showNote(SEND_HINT); return; }
+    pageBtn.disabled = true; // one Save dialog at a time
     try {
       const path = await pickSavePath('partner-unlock.html', 'html');
       if (!path) return;
       const cut = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
-      const dir = cut > 0 ? path.slice(0, cut) : '';
+      const dir = cut === 2 && path[1] === ':' ? path.slice(0, 3) : cut > 0 ? path.slice(0, cut) : path.slice(0, 1);
       const name = path.slice(cut + 1);
       const bytes = Array.from(new TextEncoder().encode(buildPartnerPage()));
       await invoke('write_files', { dir, files: [{ path: name, bytes }] });
       showNote(`Saved to ${path}. ${SEND_HINT}`);
       try { await revealInFolder(path); } catch { /* the saved message stands */ }
     } catch (e) {
-      show(`Could not save the page: ${e?.message || e}. Nothing was sent.`);
-    }
+      const why = String(e?.message || e).replace(/\.+$/, '');
+      show(`Could not save the page: ${why}. Nothing was sent.`);
+    } finally { pageBtn.disabled = saving; }
   }
   function show(msg) { err.textContent = msg || ''; err.hidden = !msg; }
   function refresh() { saveBtn.disabled = saving || nameInput.value.trim() === '' || keyInput.value.trim() === ''; }

@@ -57,9 +57,8 @@ test('a failing write shows the reason and does not reveal', async () => {
 
 test('without the desktop app it downloads the blob and shows the hint', async () => {
   const body = installDom(undefined);
-  let revoked = false;
   globalThis.Blob = class { constructor(parts, o) { this.parts = parts; this.type = o.type; } };
-  globalThis.URL = { createObjectURL: () => 'blob:x', revokeObjectURL: () => { revoked = true; } };
+  globalThis.URL = { createObjectURL: () => 'blob:x', revokeObjectURL: () => {} };
   let clicked = null;
   const realCreate = document.createElement;
   document.createElement = (t) => { const e = realCreate(t); if (t === 'a') e.click = () => { clicked = e; }; return e; };
@@ -67,5 +66,20 @@ test('without the desktop app it downloads the blob and shows the hint', async (
   await btn(body, 'Save the partner page').click();
   assert.equal(clicked.getAttribute('download'), 'partner-unlock.html');
   assert.deepEqual(status(body), [HINT]);
-  void revoked;
+});
+
+test('root paths keep the separator in dir', async () => {
+  for (const [path, dir, name] of [['C:\\partner.html', 'C:\\', 'partner.html'], ['/partner.html', '/', 'partner.html']]) {
+    const { body, calls } = mount({ save: async () => path });
+    await btn(body, 'Save the partner page').click();
+    assert.equal(calls[0][1].dir, dir);
+    assert.equal(calls[0][1].files[0].path, name);
+  }
+});
+
+test('a reason ending in a period does not double it', async () => {
+  const { body } = mount({ save: async () => PATH, invoke: () => { throw new Error('disk full.'); } });
+  await btn(body, 'Save the partner page').click();
+  const errs = findAll(body, n => n.tag === 'p' && n.className.includes('fr-err') && !n.hidden).map(n => n.textContent);
+  assert.deepEqual(errs, ['Could not save the page: disk full. Nothing was sent.']);
 });
