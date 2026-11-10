@@ -1,5 +1,5 @@
 // Headless screenshot harness. Runs src/ in Chromium on top of a real SQLite file.
-// Usage: node scripts/shot.mjs <outDir> [--steps path/to/steps.mjs] [--dark] [--helper <focus-helper binary>] [--helper-down]
+// Usage: node scripts/shot.mjs <outDir> [--steps path/to/steps.mjs] [--dark] [--helper <focus-helper binary>] [--scale 2] [--helper-down]
 import http from 'node:http';
 import { readFile, mkdir, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -14,6 +14,8 @@ import { createStdioCall } from './helper-bridge.mjs';
 const args = process.argv.slice(2);
 const outDir = resolve(args[0] || 'shots');
 const dark = args.includes('--dark');
+const scaleIdx = args.indexOf('--scale');
+const scale = scaleIdx >= 0 ? Number(args[scaleIdx + 1]) || 1 : 1;
 const stepsIdx = args.indexOf('--steps');
 const stepsFile = stepsIdx >= 0 ? resolve(args[stepsIdx + 1]) : null;
 const helperIdx = args.indexOf('--helper');
@@ -56,7 +58,7 @@ await migrate(db);
 
 const pw = loadPlaywright();
 const browser = await pw.chromium.launch();
-const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: dark ? 'dark' : 'light', deviceScaleFactor: 1 });
+const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: dark ? 'dark' : 'light', deviceScaleFactor: scale });
 const page = await context.newPage();
 const errors = [];
 page.on('pageerror', e => errors.push('pageerror: ' + e.message));

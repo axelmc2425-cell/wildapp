@@ -251,6 +251,7 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-st-partner { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--fr-muted-bg); }
 .fr-st-partner p { margin: 0; font-size: 13px; }
 .fr-st-lockedopts { display: flex; flex-direction: column; gap: 12px; }
+.fr-sched-editor .fr-st-lockedopts { margin-top: 14px; }
 .fr-lockwarn { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--danger); border-radius: 8px; font-size: 13px; cursor: pointer; }
 .fr-lockwarn input { margin-top: 3px; flex: none; }
 .fr-lockwarn:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
