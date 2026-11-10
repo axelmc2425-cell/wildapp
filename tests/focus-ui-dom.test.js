@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { describeLastSync, detailsSignature } from '../src/modules/focus/ui/helper-details.js';
+import { installDom, findAll } from './helpers/fake-dom.js';
+import { openListEditor } from '../src/modules/focus/ui/list-editor.js';
 import { chipSummary, formatClock, minutesLeft } from '../src/modules/focus/ui/util.js';
 
 test('chipSummary caps and counts the rest', () => {
@@ -50,4 +52,86 @@ test('detailsSignature changes only with visible content', () => {
   assert.notEqual(detailsSignature(ok), detailsSignature({ ...ok, syncPending: true }));
   assert.notEqual(detailsSignature(ok), detailsSignature({ ...ok, lastSync: { pushed: 1, skipped: 0 } }));
   assert.notEqual(detailsSignature(ok), detailsSignature({ ...ok, helper: { kind: 'not-running' } }));
+});
+
+// --- list editor browse buttons ---
+const btnByText = (root, t) => findAll(root, n => n.tag === 'button' && n.textContent === t)[0];
+const chips = (root) => findAll(root, n => n.className.includes('fr-edchip'));
+const chipTexts = (root) => chips(root).map(c => c.children[0].textContent);
+const errTexts = (root) => findAll(root, n => n.tag === 'p' && n.className.includes('fr-err') && !n.hidden).map(n => n.textContent);
+const tauri = (open) => ({ core: { invoke() {} }, dialog: { open } });
+const noController = { saveList: async () => ({ ok: true }) };
+
+test('editor shows both browse buttons in the desktop app', () => {
+  const body = installDom(tauri(async () => null));
+  openListEditor({ controller: noController });
+  assert.ok(btnByText(body, 'Browse files…'));
+  assert.ok(btnByText(body, 'Browse folder…'));
+});
+
+test('editor has no browse buttons or Folders field without the desktop app', () => {
+  const body = installDom(undefined);
+  openListEditor({ controller: noController });
+  assert.equal(btnByText(body, 'Browse files…'), undefined);
+  assert.equal(btnByText(body, 'Browse folder…'), undefined);
+  assert.equal(findAll(body, n => n.tag === 'label' && n.textContent === 'Folders').length, 0);
+});
+
+test('picking two .exe files adds two app chips by file name', async () => {
+  let opts;
+  const body = installDom(tauri(async (o) => { opts = o; return ['C:\\Games\\Steam\\steam.exe', 'D:\\x\\Epic.EXE']; }));
+  openListEditor({ controller: noController });
+  await btnByText(body, 'Browse files…').click();
+  assert.deepEqual(chipTexts(body), ['steam.exe', 'epic.exe']);
+  assert.equal(opts.multiple, true);
+  assert.deepEqual(opts.filters[0].extensions, ['exe']);
+});
+
+test('a cancelled dialog changes nothing and shows nothing', async () => {
+  const body = installDom(tauri(async () => null));
+  openListEditor({ controller: noController });
+  await btnByText(body, 'Browse files…').click();
+  await btnByText(body, 'Browse folder…').click();
+  assert.deepEqual(chipTexts(body), []);
+  assert.deepEqual(errTexts(body), []);
+});
+
+test('a dialog exception shows a plain message', async () => {
+  const body = installDom(tauri(async () => { throw new Error('boom'); }));
+  openListEditor({ controller: noController });
+  await btnByText(body, 'Browse files…').click();
+  assert.deepEqual(errTexts(body), ['Could not open the file dialog. You can still type the program name.']);
+});
+
+test('a picked folder becomes a chip with the name as text and the path as title', async () => {
+  const body = installDom(tauri(async () => 'C:\\Games\\Foo'));
+  openListEditor({ controller: noController });
+  await btnByText(body, 'Browse folder…').click();
+  assert.deepEqual(chipTexts(body), ['Foo']);
+  assert.equal(chips(body)[0].title, 'C:\\Games\\Foo');
+  const name = findAll(body, n => n.tag === 'input' && n.attrs.maxlength === '60')[0];
+  name.value = 'Games';
+  await Promise.all(name.listeners.input.map(f => f()));
+  assert.equal(btnByText(body, 'Save').disabled, false);
+});
+
+test('a forbidden folder shows its message and adds no chip', async () => {
+  const body = installDom(tauri(async () => 'C:\\Windows'));
+  openListEditor({ controller: noController });
+  await btnByText(body, 'Browse folder…').click();
+  assert.deepEqual(chipTexts(body), []);
+  assert.deepEqual(errTexts(body), ["That folder is part of Windows and can't be blocked."]);
+});
+
+test('save sends folders and shows folder errors', async () => {
+  let sent;
+  const controller = { saveList: async (a) => { sent = a; return { ok: false, errors: { folders: [{ value: 'C:\\Games\\Foo', message: 'nope' }] } }; } };
+  const body = installDom(tauri(async () => 'C:\\Games\\Foo'));
+  openListEditor({ controller });
+  await btnByText(body, 'Browse folder…').click();
+  const name = findAll(body, n => n.tag === 'input' && n.attrs.maxlength === '60')[0];
+  name.value = 'Games';
+  await btnByText(body, 'Save').click();
+  assert.deepEqual(sent.folders, ['C:\\Games\\Foo']);
+  assert.ok(findAll(body, n => n.tag === 'li').some(n => n.textContent === 'C:\\Games\\Foo: nope'));
 });

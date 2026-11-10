@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitPaste, addEntries, canSave, removeLast, MAX_ENTRIES } from '../src/modules/focus/ui/editor-logic.js';
+import { splitPaste, addEntries, canSave, removeLast, folderLabel, MAX_ENTRIES } from '../src/modules/focus/ui/editor-logic.js';
 
 const empty = () => ({ sites: [], apps: [] });
 
@@ -60,4 +60,42 @@ test('removeLast drops the last chip and is a no-op when empty', () => {
   const e = empty();
   assert.deepEqual(removeLast(e, 'app'), e);
   assert.deepEqual(removeLast(e, 'site'), e);
+});
+
+test('addEntries adds folders, collapses duplicates and keeps the picked case', () => {
+  const r = addEntries({ ...empty(), folders: [] }, 'folder', ['C:/Games/Foo/', 'C:\\Games\\Foo']);
+  assert.deepEqual(r.state.folders, ['C:\\Games\\Foo']);
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(addEntries(empty(), 'folder', ['D:\\Stuff']).state.folders, ['D:\\Stuff']);
+});
+
+test('addEntries reports forbidden and malformed folders', () => {
+  const r = addEntries({ ...empty(), folders: [] }, 'folder', ['C:\\Windows\\System32']);
+  assert.deepEqual(r.state.folders, []);
+  assert.equal(r.errors[0].message, "That folder is part of Windows and can't be blocked.");
+  assert.equal(addEntries(empty(), 'folder', ['games']).errors[0].message, 'Pick a folder with the Browse folder button.');
+});
+
+test('folders count toward the entry cap', () => {
+  const sites = Array.from({ length: MAX_ENTRIES - 1 }, (_, i) => `s${i}.com`);
+  const r = addEntries({ sites, apps: [], folders: [] }, 'folder', ['C:\\A', 'C:\\B']);
+  assert.deepEqual(r.state.folders, ['C:\\A']);
+  assert.match(r.errors[0].message, /512/);
+});
+
+test('canSave accepts a list with only folders', () => {
+  assert.equal(canSave({ name: 'x', sites: [], apps: [], folders: ['C:\\A'] }), true);
+  assert.equal(canSave({ name: 'x', sites: [], apps: [], folders: [] }), false);
+  assert.equal(canSave({ name: 'x', sites: [], apps: ['a.exe'] }), true);
+});
+
+test('removeLast removes the last folder', () => {
+  const s = { sites: [], apps: [], folders: ['C:\\A', 'C:\\B'] };
+  assert.deepEqual(removeLast(s, 'folder').folders, ['C:\\A']);
+  assert.equal(removeLast({ sites: [], apps: [], folders: [] }, 'folder').folders.length, 0);
+});
+
+test('folderLabel is the last path segment', () => {
+  assert.equal(folderLabel('C:\\Games\\Foo'), 'Foo');
+  assert.equal(folderLabel('D:\\'), 'D:');
 });

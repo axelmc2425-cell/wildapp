@@ -212,3 +212,11 @@ test('detailRows shows the partner name and each pending unlock', () => {
   assert.equal(plain.find((x) => x.label === 'Partner key').value, 'set');
   assert.equal(detailRows({ ...st, partner_set: false }, { partnerName: 'Sam' }).find((x) => x.label === 'Partner key').value, 'not set');
 });
+
+test('detailRows mentions blocked folders, and a missing blockFolders counts as none', () => {
+  const base = { windows: [], partner_set: false, now_ms: 0, warnings: [] };
+  const val = (d) => detailRows({ ...base, decision: d }).find((x) => x.label === 'Blocking now').value;
+  assert.equal(val({ blockSites: ['a'], blockApps: ['x'], blockFolders: ['C:\\G', 'C:\\H'] }), '1 site, 1 app, 2 folders');
+  assert.equal(val({ blockSites: ['a'], blockApps: [], blockFolders: ['C:\\G'] }), '1 site, 0 apps, 1 folder');
+  assert.equal(val({ blockSites: ['a'], blockApps: [] }), '1 site, 0 apps');
+});

@@ -9,6 +9,12 @@ export async function pickFolder(title) {
   return r || null;
 }
 
+export async function pickExeFiles(title) {
+  const r = await T().dialog.open({ multiple: true, title, filters: [{ name: 'Programs', extensions: ['exe'] }] });
+  if (!r) return null;
+  return Array.isArray(r) ? r : [r];
+}
+
 export async function pickZip() {
   const r = await T().dialog.open({ multiple: false, filters: [{ name: 'MyBrain backup', extensions: ['zip'] }] });
   return r || null;
