@@ -157,7 +157,8 @@ export function openListEditor({ controller, list, preset, onDone } = {}) {
     saving = false;
     if (res && res.ok) { dlg.close(); onDone?.(); return; }
     const errors = (res && res.errors) || {};
-    show(nameErr, Number.isFinite(res?.lockedUntil) ? `That list is part of a locked block until ${formatClock(res.lockedUntil)}.` : errors.name);
+    const what = res?.kind === 'schedule' ? 'schedule' : 'block';
+    show(nameErr, Number.isFinite(res?.lockedUntil) ? `That list is part of a locked ${what} until ${formatClock(res.lockedUntil)}.` : errors.name);
     show(itemsErr, errors.items);
     const lines = [...(errors.sites || []), ...(errors.apps || []), ...(errors.folders || [])].map(e => `${e.value}: ${e.message}`);
     saveErrs.replaceChildren(...lines.map(l => h('li', {}, l)));

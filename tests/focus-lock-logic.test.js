@@ -131,3 +131,8 @@ test('a bad-window rejection carrying a folder reason gets the folder wording', 
   assert.match(forb, /folder/i);
   assert.notEqual(forb, describeUnlockError({ code: 'bad-window', message: 'x' }));
 });
+
+test('windowIdForBlock honours an explicit windowId (schedule occurrences)', () => {
+  assert.equal(windowIdForBlock({ windowId: 'c7@1000', starts: 1000, listIds: [1, 2] }), 'c7@1000');
+  assert.equal(windowIdForBlock({ starts: 1000, listIds: [2, 1] }), 'b1000-1.2');
+});

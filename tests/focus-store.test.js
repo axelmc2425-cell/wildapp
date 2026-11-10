@@ -8,6 +8,7 @@ import { migrateFocus } from '../src/modules/focus/schema.js';
 import {
   listLists, saveList, deleteList, createSessions, setSessionsEnd,
   deleteSessions, listSessions, purgeFinished,
+  listSchedules, listSchedulesChecked, saveSchedule, setScheduleEnabled, deleteSchedule, scheduleHoldsList,
 } from '../src/modules/focus/store.js';
 
 async function fresh() {
@@ -203,6 +204,7 @@ test('saveList refuses editing a list in a running locked block', async () => {
   const r = await saveList(db, { id, name: 'L', sites: ['b.com'], apps: [] }, 200);
   assert.equal(r.ok, false);
   assert.equal(r.errors.name, 'That list is part of a locked block.');
+  assert.equal(r.kind, 'block');
   assert.equal(r.lockedUntil, 100 + 2 * HOUR);
   assert.deepEqual((await listLists(db))[0].sites, ['a.com']);
 });
@@ -261,4 +263,147 @@ test('editing a list replaces its folders', async () => {
   const r = await saveList(db, { name: 'A', sites: [], apps: [], folders: ['C:\\a'] });
   await saveList(db, { id: r.id, name: 'A', sites: [], apps: [] });
   assert.deepEqual((await listLists(db))[0].folders, []);
+});
+
+// --- schedules ---
+const NOW = Date.UTC(2026, 10, 10, 12);
+const tz = () => 0;
+const DAYMS = 86400000;
+const ymd = (ms) => new Date(ms).toISOString().slice(0, 10);
+
+async function withList(db, name = 'L') {
+  return (await saveList(db, { name, sites: ['a.com'], apps: [] })).id;
+}
+const sched = (listIds, over = {}) => ({
+  name: 'Work', listIds, weekdays: [3, 1, 1, 2], start: '09:00', end: '17:00',
+  lock: 'none', unlockDelayMs: null, endsOn: null, ...over,
+});
+const lockedSched = (listIds, endsOn, over = {}) =>
+  sched(listIds, { lock: 'locked', unlockDelayMs: 3600000, endsOn, ...over });
+
+test('saveSchedule creates a row and listSchedules round-trips it', async () => {
+  const db = await fresh();
+  const a = await withList(db, 'A'), b = await withList(db, 'B');
+  const r = await saveSchedule(db, sched([b, a]), NOW, tz);
+  assert.equal(r.ok, true);
+  assert.deepEqual(await listSchedules(db), [{
+    id: r.id, name: 'Work', listIds: [a, b].sort((x, y) => x - y), weekdays: [1, 2, 3],
+    start: '09:00', end: '17:00', lock: 'none', unlockDelayMs: null, endsOn: null, enabled: true,
+  }]);
+  const [row] = await db.all('SELECT list_id FROM focus_schedules');
+  assert.equal(row.list_id, Math.min(a, b));
+});
+
+test('saveSchedule returns validation errors', async () => {
+  const db = await fresh();
+  const a = await withList(db);
+  const none = await saveSchedule(db, lockedSched([a], null), NOW, tz);
+  assert.equal(none.ok, false);
+  assert.ok(none.errors.endsOn);
+  const far = await saveSchedule(db, lockedSched([a], ymd(NOW + 91 * DAYMS)), NOW, tz);
+  assert.equal(far.ok, false);
+  assert.ok(far.errors.endsOn);
+  assert.equal((await listSchedules(db)).length, 0);
+});
+
+test('saveSchedule rejects an unknown list', async () => {
+  const db = await fresh();
+  const r = await saveSchedule(db, sched([999]), NOW, tz);
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.listIds);
+});
+
+test('saveSchedule edits an unlocked schedule and keeps enabled', async () => {
+  const db = await fresh();
+  const a = await withList(db, 'A'), b = await withList(db, 'B');
+  const { id } = await saveSchedule(db, sched([a]), NOW, tz);
+  await setScheduleEnabled(db, id, false, NOW, tz);
+  const r = await saveSchedule(db, { ...sched([b]), id, name: 'New' }, NOW, tz);
+  assert.deepEqual(r, { ok: true, id });
+  const [s] = await listSchedules(db);
+  assert.equal(s.name, 'New');
+  assert.deepEqual(s.listIds, [b]);
+  assert.equal(s.enabled, false);
+  assert.equal((await db.all('SELECT * FROM focus_schedule_lists')).length, 1);
+});
+
+test('a locked schedule cannot be edited, disabled or deleted before its end, then can be', async () => {
+  const db = await fresh();
+  const a = await withList(db);
+  const endsOn = ymd(NOW + DAYMS);
+  const { id } = await saveSchedule(db, lockedSched([a], endsOn), NOW, tz);
+  const edit = await saveSchedule(db, { ...lockedSched([a], endsOn), id, name: 'X' }, NOW, tz);
+  assert.equal(edit.ok, false);
+  assert.equal(edit.errors.name, `That schedule is locked until ${endsOn}.`);
+  assert.deepEqual(await setScheduleEnabled(db, id, false, NOW, tz), { ok: false, reason: 'locked' });
+  assert.deepEqual(await deleteSchedule(db, id, NOW, tz), { ok: false, reason: 'locked' });
+  const later = NOW + 3 * DAYMS;
+  assert.deepEqual(await setScheduleEnabled(db, id, false, later, tz), { ok: true });
+  assert.deepEqual(await deleteSchedule(db, id, later, tz), { ok: true });
+  assert.equal((await listSchedules(db)).length, 0);
+  assert.equal((await db.all('SELECT * FROM focus_schedule_lists')).length, 0);
+});
+
+test('missing schedules report missing', async () => {
+  const db = await fresh();
+  assert.deepEqual(await setScheduleEnabled(db, 42, true, NOW, tz), { ok: false, reason: 'missing' });
+  assert.deepEqual(await deleteSchedule(db, 42, NOW, tz), { ok: false, reason: 'missing' });
+});
+
+test('an overnight occurrence running past the end date still holds the schedule', async () => {
+  const db = await fresh();
+  const a = await withList(db);
+  const endsOn = ymd(NOW + DAYMS);           // Wed 2026-11-11
+  const { id } = await saveSchedule(db, lockedSched([a], endsOn, { weekdays: [0, 1, 2, 3, 4, 5, 6], start: '22:00', end: '06:00' }), NOW, tz);
+  const during = Date.UTC(2026, 10, 12, 2); // 02:00 the day after endsOn, inside the tail
+  assert.deepEqual(await deleteSchedule(db, id, during, tz), { ok: false, reason: 'locked' });
+  assert.equal(await scheduleHoldsList(db, a, during, tz), Date.UTC(2026, 10, 12, 6));
+  assert.deepEqual(await deleteSchedule(db, id, Date.UTC(2026, 10, 12, 7), tz), { ok: true });
+});
+
+test('scheduleHoldsList returns the end of an active locked schedule only', async () => {
+  const db = await fresh();
+  const a = await withList(db, 'A'), b = await withList(db, 'B');
+  await saveSchedule(db, lockedSched([a], ymd(NOW + DAYMS), { weekdays: [1] }), NOW, tz);
+  await saveSchedule(db, sched([b]), NOW, tz);
+  assert.equal(await scheduleHoldsList(db, a, NOW, tz), Date.UTC(2026, 10, 12));
+  assert.equal(await scheduleHoldsList(db, b, NOW, tz), null);
+  assert.equal(await scheduleHoldsList(db, a, NOW + 3 * DAYMS, tz), null);
+});
+
+test('saveList and deleteList refuse a list held by a locked schedule', async () => {
+  const db = await fresh();
+  const a = await withList(db);
+  const endsOn = ymd(NOW + DAYMS);
+  await saveSchedule(db, lockedSched([a], endsOn), NOW, tz);
+  const r = await saveList(db, { id: a, name: 'Renamed', sites: [], apps: [] }, NOW, tz);
+  assert.equal(r.ok, false);
+  assert.equal(r.errors.name, 'That list is part of a locked schedule.');
+  assert.equal(r.lockedUntil, Date.UTC(2026, 10, 12));
+  assert.equal(r.kind, 'schedule');
+  assert.deepEqual(await deleteList(db, a, NOW, tz), { ok: false, reason: 'locked-schedule', lockedUntil: Date.UTC(2026, 10, 12) });
+  assert.equal((await listLists(db)).length, 1);
+});
+
+test('deleteList removes only the link when the schedule has other lists, else the schedule', async () => {
+  const db = await fresh();
+  const a = await withList(db, 'A'), b = await withList(db, 'B');
+  const two = (await saveSchedule(db, sched([a, b]), NOW, tz)).id;
+  const one = (await saveSchedule(db, sched([a], { name: 'Solo' }), NOW, tz)).id;
+  assert.deepEqual(await deleteList(db, a, NOW, tz), { ok: true });
+  const left = await listSchedules(db);
+  assert.deepEqual(left.map(s => [s.id, s.listIds]), [[two, [b]]]);
+  assert.ok(!left.some(s => s.id === one));
+  assert.equal((await db.all('SELECT * FROM focus_schedule_lists')).length, 1);
+});
+
+test('listSchedules skips corrupt rows and listSchedulesChecked counts them', async () => {
+  const db = await fresh();
+  await saveList(db, { name: 'L', sites: ['a.com'], apps: [] });
+  const ins = (wd, st = '09:00') => db.run("INSERT INTO focus_schedules(list_id, name, weekdays, start_time, end_time, lock, enabled) VALUES (1, 'S', ?, ?, '10:00', 'none', 1)", [wd, st]);
+  await ins('not json'); await ins('[9]'); await ins('[1]', 'zz'); await ins('[1]');
+  const { schedules, bad } = await listSchedulesChecked(db);
+  assert.equal(bad, 3);
+  assert.deepEqual(schedules.map(s => s.id), [4]);
+  assert.deepEqual((await listSchedules(db)).map(s => s.id), [4]);
 });

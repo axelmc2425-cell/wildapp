@@ -1,12 +1,17 @@
 // Persistence for the Focus Room UI: block lists, their items, and sessions.
 import { checkEntry } from './entry.js';
 import { MAX_DURATION_MS, validateUnlockDelay } from './limits.js';
+import { validateSchedule, isLockedActive, nextOccurrence } from './schedule-logic.js';
+import { localDayEnd, listTargets } from './expand.js';
+import { MAX_ITEMS_PER_WINDOW } from './limits.js';
+import { makeTzOffsetAt } from './tz.js';
 
 const MAX_ITEMS = 512;
 const MAX_NAME = 60;
 const DAY_MS = 86400000;
 
 /** @typedef {{ id: number, name: string, mode: 'block', sites: string[], apps: string[], folders: string[] }} ListRec */
+/** @typedef {{ id: number, name: string, listIds: number[], weekdays: number[], start: string, end: string, lock: 'none'|'locked', unlockDelayMs: number|null, endsOn: string|null, enabled: boolean }} ScheduleRec */
 /** @typedef {{ id: number, listId: number, starts: number, ends: number, lock: 'none'|'locked'|'frozen', unlockDelayMs: number|null }} SessionRec */
 
 const placeholders = (n) => Array(n).fill('?').join(',');
@@ -40,12 +45,16 @@ function checkAll(kind, raws, errors, out) {
  * @param {{ id?: number, name: string, sites: string[], apps: string[], folders?: string[] }} input
  * @returns {Promise<{ ok: true, id: number } | { ok: false, errors: { name?: string, items?: string, sites?: {value: string, message: string}[], apps?: {value: string, message: string}[], folders?: {value: string, message: string}[] } }>}
  */
-export async function saveList(db, input, nowMs = Date.now()) {
+export async function saveList(db, input, nowMs = Date.now(), tzOffsetAt = makeTzOffsetAt()) {
   const errors = {};
   if (input.id !== undefined) {
     const [held] = await db.all("SELECT MAX(ends) AS ends FROM focus_sessions WHERE list_id = ? AND lock <> 'none' AND ends > ?", [input.id, nowMs]);
     if (held && held.ends != null) {
-      return { ok: false, errors: { name: 'That list is part of a locked block.' }, lockedUntil: held.ends };
+      return { ok: false, errors: { name: 'That list is part of a locked block.' }, lockedUntil: held.ends, kind: 'block' };
+    }
+    const heldUntil = await scheduleHoldsList(db, input.id, nowMs, tzOffsetAt);
+    if (heldUntil !== null) {
+      return { ok: false, errors: { name: 'That list is part of a locked schedule.' }, lockedUntil: heldUntil, kind: 'schedule' };
     }
   }
   const name = typeof input.name === 'string' ? input.name.trim() : '';
@@ -93,11 +102,15 @@ export async function saveList(db, input, nowMs = Date.now()) {
   return { ok: true, id: row.id };
 }
 
-/** @returns {Promise<{ok: true} | {ok: false, reason: 'running'}>} */
-export async function deleteList(db, id, nowMs) {
+/** @returns {Promise<{ok: true} | {ok: false, reason: 'running'} | {ok: false, reason: 'locked-schedule', lockedUntil: number}>} */
+export async function deleteList(db, id, nowMs, tzOffsetAt = makeTzOffsetAt()) {
   const running = await db.all('SELECT 1 AS x FROM focus_sessions WHERE list_id = ? AND ends > ? LIMIT 1', [id, nowMs]);
   if (running.length) return { ok: false, reason: 'running' };
+  const heldUntil = await scheduleHoldsList(db, id, nowMs, tzOffsetAt);
+  if (heldUntil !== null) return { ok: false, reason: 'locked-schedule', lockedUntil: heldUntil };
   await db.batch([
+    { sql: 'DELETE FROM focus_schedule_lists WHERE list_id = ?', params: [id] },
+    { sql: 'DELETE FROM focus_schedules WHERE id NOT IN (SELECT schedule_id FROM focus_schedule_lists)' },
     { sql: 'DELETE FROM focus_sessions WHERE list_id = ?', params: [id] },
     { sql: 'DELETE FROM focus_items WHERE list_id = ?', params: [id] },
     { sql: 'DELETE FROM focus_lists WHERE id = ?', params: [id] },
@@ -149,3 +162,147 @@ export async function purgeFinished(db, nowMs, keepMs = DAY_MS) {
   const r = await db.run('DELETE FROM focus_sessions WHERE ends < ?', [nowMs - keepMs]);
   return r.changes;
 }
+
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function parseWeekdays(raw) {
+  try {
+    const w = JSON.parse(raw);
+    return Array.isArray(w) && w.every(d => Number.isInteger(d) && d >= 0 && d <= 6) ? w : null;
+  } catch { return null; }
+}
+
+/**
+ * Like listSchedules, but also counts rows skipped because they are unreadable
+ * (bad weekdays JSON/values or bad start/end times).
+ * @returns {Promise<{ schedules: ScheduleRec[], bad: number }>}
+ */
+export async function listSchedulesChecked(db) {
+  const rows = await db.all('SELECT id, name, weekdays, start_time, end_time, lock, enabled, ends_on, unlock_delay_ms FROM focus_schedules ORDER BY id');
+  const links = await db.all('SELECT schedule_id, list_id FROM focus_schedule_lists ORDER BY list_id');
+  const byId = new Map();
+  let bad = 0;
+  for (const r of rows) {
+    const weekdays = parseWeekdays(r.weekdays);
+    if (!weekdays || !HHMM.test(String(r.start_time)) || !HHMM.test(String(r.end_time))) { bad++; continue; }
+    byId.set(r.id, {
+      id: r.id, name: r.name, listIds: [], weekdays, start: r.start_time, end: r.end_time,
+      lock: r.lock, unlockDelayMs: r.unlock_delay_ms ?? null, endsOn: r.ends_on ?? null, enabled: r.enabled !== 0,
+    });
+  }
+  for (const l of links) byId.get(l.schedule_id)?.listIds.push(l.list_id);
+  return { schedules: [...byId.values()], bad };
+}
+
+/** @returns {Promise<ScheduleRec[]>} ordered by id; unreadable rows are skipped */
+export async function listSchedules(db) {
+  return (await listSchedulesChecked(db)).schedules;
+}
+
+async function getSchedule(db, id) {
+  return (await listSchedules(db)).find(s => s.id === id) ?? null;
+}
+
+/**
+ * End instant of a still-active locked schedule that uses the list (the latest, if several), else null.
+ * @returns {Promise<number|null>}
+ */
+export async function scheduleHoldsList(db, listId, nowMs, tzOffsetAt) {
+  let until = null;
+  for (const s of await listSchedules(db)) {
+    if (!s.listIds.includes(listId) || !isLockedActive(s, nowMs, tzOffsetAt)) continue;
+    let end = localDayEnd(s.endsOn, tzOffsetAt);
+    const run = nextOccurrence({ ...s, enabled: true }, nowMs, tzOffsetAt);
+    if (run.state === 'running' && run.ends > end) end = run.ends;
+    if (until === null || end > until) until = end;
+  }
+  return until;
+}
+
+/**
+ * @param {Omit<ScheduleRec, 'id'|'enabled'> & { id?: number }} input
+ * @returns {Promise<{ ok: true, id: number } | { ok: false, errors: Record<string, string> }>}
+ */
+export async function saveSchedule(db, input, nowMs, tzOffsetAt) {
+  let existing = null;
+  if (input.id !== undefined) {
+    existing = await getSchedule(db, input.id);
+    if (!existing) throw new Error('no such schedule');
+    if (isLockedActive(existing, nowMs, tzOffsetAt)) {
+      return { ok: false, errors: { name: `That schedule is locked until ${existing.endsOn}.` } };
+    }
+  }
+  const v = validateSchedule(input, nowMs, tzOffsetAt);
+  if (!v.ok) return v;
+  const { name, listIds, weekdays, start, end, lock, unlockDelayMs, endsOn } = v.value;
+  const known = new Set((await db.all('SELECT id FROM focus_lists')).map(l => l.id));
+  if (!listIds.every(id => known.has(id))) return { ok: false, errors: { listIds: 'Choose lists that exist.' } };
+  // The helper rejects a window over MAX_ITEMS_PER_WINDOW, and a schedule's windows carry the union of its lists.
+  const itemRows = await db.all(`SELECT list_id, kind, value FROM focus_items WHERE list_id IN (${placeholders(listIds.length)})`, listIds);
+  const union = { id: 0, mode: 'block', items: itemRows.map(r => ({ kind: r.kind, value: r.value })) };
+  const t = listTargets(union);
+  if (t.sites.length + t.apps.length + t.folders.length > MAX_ITEMS_PER_WINDOW) {
+    return { ok: false, errors: { listIds: `Those lists together have too many items (max ${MAX_ITEMS_PER_WINDOW}).` } };
+  }
+
+  const linkStmts = (idSql, idParams) => listIds.map(l => ({
+    sql: `INSERT INTO focus_schedule_lists(schedule_id, list_id) VALUES (${idSql}, ?)`, params: [...idParams, l],
+  }));
+  const cols = [name, JSON.stringify(weekdays), start, end, lock, endsOn, unlockDelayMs];
+  // A locked schedule is never paused: saving as Locked also resumes it.
+  if (existing) {
+    const id = existing.id;
+    await db.batch([
+      { sql: 'UPDATE focus_schedules SET list_id = ?, name = ?, weekdays = ?, start_time = ?, end_time = ?, lock = ?, ends_on = ?, unlock_delay_ms = ?, enabled = CASE WHEN ? = \'locked\' THEN 1 ELSE enabled END WHERE id = ?', params: [listIds[0], ...cols, lock, id] },
+      { sql: 'DELETE FROM focus_schedule_lists WHERE schedule_id = ?', params: [id] },
+      ...linkStmts('?', [id]),
+    ]);
+    return { ok: true, id };
+  }
+  await db.batch([
+    { sql: 'INSERT INTO focus_schedules(list_id, name, weekdays, start_time, end_time, lock, ends_on, unlock_delay_ms, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)', params: [listIds[0], ...cols] },
+    ...linkStmts('(SELECT MAX(id) FROM focus_schedules)', []),
+  ]);
+  const [row] = await db.all('SELECT MAX(id) AS id FROM focus_schedules');
+  return { ok: true, id: row.id };
+}
+
+/** @returns {Promise<{ ok: true } | { ok: false, reason: 'locked'|'missing' }>} */
+export async function setScheduleEnabled(db, id, enabled, nowMs, tzOffsetAt) {
+  const s = await getSchedule(db, id);
+  if (!s) return { ok: false, reason: 'missing' };
+  if (isLockedActive(s, nowMs, tzOffsetAt)) return { ok: false, reason: 'locked' };
+  await db.run('UPDATE focus_schedules SET enabled = ? WHERE id = ?', [enabled ? 1 : 0, id]);
+  return { ok: true };
+}
+
+/** @returns {Promise<{ ok: true } | { ok: false, reason: 'locked'|'missing' }>} */
+export async function deleteSchedule(db, id, nowMs, tzOffsetAt) {
+  const s = await getSchedule(db, id);
+  if (!s) return { ok: false, reason: 'missing' };
+  if (isLockedActive(s, nowMs, tzOffsetAt)) return { ok: false, reason: 'locked' };
+  await db.batch([
+    { sql: 'DELETE FROM focus_schedule_lists WHERE schedule_id = ?', params: [id] },
+    { sql: 'DELETE FROM focus_schedules WHERE id = ?', params: [id] },
+  ]);
+  return { ok: true };
+}
+
+/** Raw undo for a failed locked save (bypasses the lock check): restore `prev`, or remove the schedule when `prev` is null. */
+export async function restoreSchedule(db, id, prev) {
+  if (!prev) {
+    await db.batch([
+      { sql: 'DELETE FROM focus_schedule_lists WHERE schedule_id = ?', params: [id] },
+      { sql: 'DELETE FROM focus_schedules WHERE id = ?', params: [id] },
+    ]);
+    return;
+  }
+  await db.batch([
+    { sql: 'UPDATE focus_schedules SET list_id = ?, name = ?, weekdays = ?, start_time = ?, end_time = ?, lock = ?, ends_on = ?, unlock_delay_ms = ?, enabled = ? WHERE id = ?', params: [prev.listIds[0] ?? 0, prev.name, JSON.stringify(prev.weekdays), prev.start, prev.end, prev.lock, prev.endsOn, prev.unlockDelayMs, prev.enabled ? 1 : 0, id] },
+    { sql: 'DELETE FROM focus_schedule_lists WHERE schedule_id = ?', params: [id] },
+    ...prev.listIds.map(l => ({ sql: 'INSERT INTO focus_schedule_lists(schedule_id, list_id) VALUES (?, ?)', params: [id, l] })),
+  ]);
+}
+
+/** @returns {Promise<ScheduleRec|null>} */
+export const readSchedule = (db, id) => getSchedule(db, id);

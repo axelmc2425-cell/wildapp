@@ -7,7 +7,7 @@ const MIN_MS = 60000;
 
 /** @typedef {{ id: number, mode: 'block'|'allow', items: { kind: 'site'|'app'|'folder', value: string }[] }} List */
 
-function listTargets(list) {
+export function listTargets(list) {
   const sites = new Set();
   const apps = new Set();
   const folders = new Set();
@@ -85,11 +85,40 @@ function parseTime(t) {
   return (h * 60 + m) * MIN_MS;
 }
 
-export function expandSchedule(schedule, list, fromMs, horizonMs, tzOffsetAt) {
-  const { sites, apps, folders } = listTargets(list);
+/** Instant of 00:00 local on the day after `endsOn` ('YYYY-MM-DD', inclusive end date). */
+export function localDayEnd(endsOn, tzOffsetAt) {
+  const [y, m, d] = String(endsOn).split('-').map(Number);
+  return wallToUtc(Date.UTC(y, m - 1, d + 1), tzOffsetAt);
+}
+
+/**
+ * Concrete windows of a recurring schedule overlapping [fromMs, fromMs + horizonMs).
+ * Targets are the union over the schedule's lists (missing lists ignored); a disabled schedule, one
+ * with no live list, or an occurrence starting at or after the end of `endsOn` yields nothing.
+ * @param {{ id: number, listIds: number[], weekdays: number[], start: string, end: string, lock: string,
+ *   unlockDelayMs?: number|null, endsOn?: string|null, enabled: boolean }} schedule
+ * @param {Map<number, List>} listsById
+ */
+export function expandSchedule(schedule, listsById, fromMs, horizonMs, tzOffsetAt) {
+  if (!schedule.enabled) return [];
+  const sites = new Set();
+  const apps = new Set();
+  const folders = new Set();
+  let live = 0;
+  for (const id of schedule.listIds) {
+    const list = listsById.get(id);
+    if (!list) continue;
+    live++;
+    const t = listTargets(list);
+    t.sites.forEach((x) => sites.add(x));
+    t.apps.forEach((x) => apps.add(x));
+    t.folders.forEach((x) => folders.add(x));
+  }
+  if (!live) return [];
   const toMs = fromMs + horizonMs;
-  const startOfDay = parseTime(schedule.start_time);
-  const endOfDay = parseTime(schedule.end_time);
+  const cutoff = schedule.endsOn ? localDayEnd(schedule.endsOn, tzOffsetAt) : Infinity;
+  const startOfDay = parseTime(schedule.start);
+  const endOfDay = parseTime(schedule.end);
   const overnight = endOfDay <= startOfDay;
   const firstDay = Math.floor((fromMs + tzOffsetAt(fromMs) * MIN_MS) / DAY_MS) - 1;
   const lastDay = Math.floor((toMs + tzOffsetAt(toMs) * MIN_MS) / DAY_MS) + 1;
@@ -99,12 +128,13 @@ export function expandSchedule(schedule, list, fromMs, horizonMs, tzOffsetAt) {
     if (!schedule.weekdays.includes(new Date(dayMs).getUTCDay())) continue;
     const starts = wallToUtc(dayMs + startOfDay, tzOffsetAt);
     const ends = wallToUtc(dayMs + endOfDay + (overnight ? DAY_MS : 0), tzOffsetAt);
-    if (!(ends > starts) || starts >= toMs || ends <= fromMs) continue;
+    if (!(ends > starts) || starts >= toMs || ends <= fromMs || starts >= cutoff) continue;
     const w = {
       id: 'c' + schedule.id + '@' + starts, starts, ends,
-      lock: schedule.lock, mode: list.mode, sites: [...sites], apps: [...apps],
+      lock: schedule.lock, mode: 'block', sites: [...sites], apps: [...apps],
     };
-    if (folders.length) w.app_folders = [...folders];
+    if (folders.size) w.app_folders = [...folders];
+    if (schedule.lock === 'locked') w.unlock_delay_ms = schedule.unlockDelayMs ?? null;
     out.push(w);
   }
   return out;

@@ -2,8 +2,10 @@ import { registerModule } from '../../shell/modules.js';
 import { createController } from './controller.js';
 import { createHelperClient, createTauriHelperCall } from './helper-client.js';
 import { makeTzOffsetAt } from './tz.js';
+import { startAutoResync } from './auto-resync.js';
 import { mountHome } from './ui/home.js';
 import { openListEditor } from './ui/list-editor.js';
+import { openScheduleEditor } from './ui/schedule-editor.js';
 import { openStartDialog } from './ui/start-dialog.js';
 import { openPartnerSetup } from './ui/partner-setup.js';
 import { openUnlockDialog } from './ui/unlock-dialog.js';
@@ -49,9 +51,11 @@ registerModule({
   async onStart(ctx) {
     // Start loading but never await it: a slow or hung helper must not block app start.
     // The controller never throws; its onChange updates the UI when load settles.
-    Promise.resolve(getController(ctx).load()).catch(() => {});
+    const ctl = getController(ctx);
+    Promise.resolve(ctl.load()).catch(() => {});
+    startAutoResync(ctl);
   },
   render(root, ctx) {
-    return mountHome(root, getController(ctx), ctx, { subscribe, openListEditor, openStartDialog, openPartnerSetup, openUnlockDialog, mountHelperDetails });
+    return mountHome(root, getController(ctx), ctx, { subscribe, openListEditor, openScheduleEditor, openStartDialog, openPartnerSetup, openUnlockDialog, mountHelperDetails });
   },
 });

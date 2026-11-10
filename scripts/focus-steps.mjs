@@ -1,6 +1,6 @@
 // Focus Room screenshot scenarios (harness steps file). Run:
 //   node scripts/shot.mjs /tmp/focus-shots --helper target/debug/focus-helper --steps scripts/focus-steps.mjs [--dark]
-import { saveList, createSessions } from '../src/modules/focus/store.js';
+import { saveList, createSessions, saveSchedule } from '../src/modules/focus/store.js';
 import { readFileSync } from 'node:fs';
 import { generatePartnerKeys, signUnlock } from '../src/modules/focus/unlock.js';
 import { lockedWarning } from '../src/modules/focus/lock-logic.js';
@@ -12,6 +12,18 @@ const detailMap = (page) => page.evaluate(() => Object.fromEntries([...document.
 const text = (page, sel) => page.evaluate((s) => document.querySelector(s)?.innerText ?? null, sel);
 
 export default async function steps(page, shot, h) {
+  // FOCUS_STEPS_ONLY=schedules: only the schedule scenes (fast, independent of the earlier scenes).
+  if (process.env.FOCUS_STEPS_ONLY === 'schedules') {
+    await page.goto(page.url().split('#')[0] + '#/focus');
+    await page.waitForSelector('.fr-home');
+    partnerKeys = await generatePartnerKeys();
+    const sp = await h.helperCall({ type: 'SetPartner', public_key: partnerKeys.publicKey });
+    ok(sp.type === 'Ok', 'partner set for the locked schedule: ' + JSON.stringify(sp));
+    await h.db.run('DELETE FROM focus_partner'); await h.db.run('INSERT INTO focus_partner(public_key, name) VALUES (?, ?)', [partnerKeys.publicKey, 'Sam']);
+    await page.reload();
+    await scheduleScenarios(page, shot, h);
+    return;
+  }
   // (a) first run
   await page.goto(page.url().split('#')[0] + '#/focus');
   await page.waitForSelector('.fr-welcome');
@@ -161,6 +173,7 @@ async function editorScenarios(page, shot, h) {
   await page.fill(siteIn, 'reddit.com');
   await page.keyboard.press('Enter');
   ok((await rows('site')).filter(v => v === 'reddit.com').length === 1, 'duplicate reddit.com collapses silently');
+  await page.fill(siteIn, ''); // a duplicate keeps its text with a message
   await page.keyboard.type('not a domain');
   const before = (await rows('site')).length;
   await page.keyboard.press('Enter');
@@ -290,6 +303,7 @@ async function editorScenarios(page, shot, h) {
   await page.keyboard.press('Escape'); await closed();
 
   // clean up: no lists left for the later scenarios
+  await h.db.run('DELETE FROM focus_schedule_lists'); await h.db.run('DELETE FROM focus_schedules');
   await h.db.run('DELETE FROM focus_items'); await h.db.run('DELETE FROM focus_sessions'); await h.db.run('DELETE FROM focus_lists');
   await page.reload();
   await page.waitForSelector('.fr-welcome');
@@ -444,6 +458,7 @@ async function startScenarios(page, shot, h) {
   await pendingScenarios(page, shot, h);
   await lockScenarios(page, shot, h);
   await unlockScenarios(page, shot, h);
+  await scheduleScenarios(page, shot, h);
 
   // clean up
   await h.db.run('DELETE FROM focus_items'); await h.db.run('DELETE FROM focus_sessions'); await h.db.run('DELETE FROM focus_lists');
@@ -847,4 +862,66 @@ async function startLocked(page, minutes, delayHours) {
   await page.click('.fr-dialog button.primary');
   await page.waitForFunction(() => !document.querySelector('.fr-dialog'));
   await page.waitForSelector('.fr-block .fr-lock');
+}
+
+// ---- Schedules: section with an unlocked and a locked row, the editor (Locked, end date), the locked-edit refusal ----
+async function scheduleScenarios(page, shot, h) {
+  const closed = () => page.waitForFunction(() => !document.querySelector('.fr-dialog'));
+  const ymd = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const tz = (ms) => -new Date(ms).getTimezoneOffset();
+  await h.db.run('DELETE FROM focus_sessions');
+  await h.db.run('DELETE FROM focus_schedule_lists'); await h.db.run('DELETE FROM focus_schedules');
+  const work = await saveList(h.db, { name: 'Work distractions', sites: ['reddit.com', 'youtube.com'], apps: [] });
+  const night = await saveList(h.db, { name: 'Late night', sites: ['netflix.com'], apps: ['steam.exe'] });
+  ok(work.ok && night.ok, 'lists for the schedule scenes saved');
+  const unl = await saveSchedule(h.db, { name: 'Work hours', listIds: [work.id], weekdays: [1, 2, 3, 4, 5], start: '09:00', end: '17:00', lock: 'none', unlockDelayMs: null, endsOn: null }, Date.now(), tz);
+  ok(unl.ok, 'unlocked schedule saved: ' + JSON.stringify(unl));
+  await page.reload();
+  await page.waitForSelector('.fr-banner.fr-ok', { timeout: 8000 });
+  await page.waitForSelector('.fr-sched');
+
+  // (a) create the locked schedule through the editor
+  await page.click('[data-fk="new-schedule"]');
+  await page.waitForSelector('.fr-dialog .fr-sched-editor');
+  await page.fill('.fr-sched-editor input[id^="fr-sc-name-"]', 'Night lock');
+  await page.locator('.fr-sched-editor .fr-checkrow:has-text("Late night") input').check();
+  await page.click('.fr-sched-editor button:has-text("Every day")');
+  await page.fill('.fr-sched-editor input[id^="fr-sc-start-"]', '23:00');
+  await page.fill('.fr-sched-editor input[id^="fr-sc-end-"]', '06:00');
+  await page.click('.fr-sched-editor .fr-moderow:has-text("Locked")');
+  await page.fill('.fr-sched-editor input[id^="fr-sc-ends-"]', ymd(Date.now() + 14 * 86400000));
+  await page.locator('.fr-sched-editor .fr-lockwarn input').check();
+  ok(await page.evaluate(() => document.querySelector('.fr-dialog').scrollWidth <= document.querySelector('.fr-dialog').clientWidth), 'no horizontal overflow in the schedule editor');
+  await shot('focus-40-schedule-editor-locked');
+  await page.click('.fr-sched-editor button.primary');
+  await closed();
+  await page.waitForSelector('.fr-sched:has-text("Night lock")');
+  ok(true, 'the locked schedule was saved from the editor');
+
+  // (b) the Schedules section: one unlocked, one locked row with Edit/Pause/Delete disabled
+  const rows = await page.evaluate(() => [...document.querySelectorAll('.fr-sched')].map((r) => ({ text: r.innerText, disabled: [...r.querySelectorAll('button')].map((b) => b.disabled), title: r.querySelector('button').title })));
+  ok(rows.length === 2, 'two schedule rows');
+  const lockedRow = rows.find((r) => r.text.includes('Night lock'));
+  const plainRow = rows.find((r) => r.text.includes('Work hours'));
+  ok(lockedRow.disabled.every(Boolean) && /locked until/.test(lockedRow.title), `locked row buttons are disabled with a reason ("${lockedRow.title}")`);
+  ok(plainRow.disabled.every((d) => !d), 'unlocked row buttons are enabled');
+  ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'no horizontal overflow with schedule rows');
+  await page.locator('.fr-schedules').scrollIntoViewIfNeeded();
+  await shot('focus-41-schedules-section');
+
+  // (c) the refusal: a list editor left open while the list becomes part of the locked schedule
+  await page.click('button[aria-label="Edit Work distractions"]');
+  await page.waitForSelector('.fr-dialog .fr-editor');
+  const wl = await h.db.all("SELECT id FROM focus_lists WHERE name = 'Work distractions'");
+  const lk = await saveSchedule(h.db, { name: 'Focus week', listIds: [wl[0].id], weekdays: [1, 2, 3], start: '10:00', end: '12:00', lock: 'locked', unlockDelayMs: 3600000, endsOn: ymd(Date.now() + 10 * 86400000) }, Date.now(), tz);
+  ok(lk.ok, 'second locked schedule written under the open editor: ' + JSON.stringify(lk));
+  await page.click('.fr-dialog button.primary');
+  await page.waitForFunction(() => /locked/.test(document.querySelector('.fr-dialog')?.innerText || ''), null, { timeout: 5000 });
+  const refusal = await text(page, '.fr-dialog');
+  ok(/part of a locked schedule until/.test(refusal), `the list editor refuses with a reason (${refusal.replace(/\n/g, ' ').slice(0, 120)})`);
+  await shot('focus-42-schedule-locked-refusal');
+  await page.keyboard.press('Escape'); await closed();
+
+  // clean up the schedule rows this scenario created
+  await h.db.run('DELETE FROM focus_schedule_lists'); await h.db.run('DELETE FROM focus_schedules');
 }

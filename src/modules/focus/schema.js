@@ -45,6 +45,20 @@ const V3 = [
   'ALTER TABLE focus_items_new RENAME TO focus_items',
 ];
 
+// v4: recurring schedules gain a name, an enabled flag, an end date, an unlock delay and a
+// many-to-many link to lists. The legacy list_id column stays (NOT NULL); new rows write the first list id.
+const V4 = [
+  "ALTER TABLE focus_schedules ADD COLUMN name TEXT NOT NULL DEFAULT ''",
+  'ALTER TABLE focus_schedules ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1',
+  'ALTER TABLE focus_schedules ADD COLUMN ends_on TEXT',
+  'ALTER TABLE focus_schedules ADD COLUMN unlock_delay_ms INTEGER',
+  `CREATE TABLE IF NOT EXISTS focus_schedule_lists (
+     schedule_id INTEGER NOT NULL,
+     list_id INTEGER NOT NULL,
+     PRIMARY KEY (schedule_id, list_id))`,
+  'INSERT OR IGNORE INTO focus_schedule_lists(schedule_id, list_id) SELECT id, list_id FROM focus_schedules',
+];
+
 export async function migrateFocus(db) {
   await db.run('CREATE TABLE IF NOT EXISTS focus_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
   const rows = await db.all("SELECT value FROM focus_meta WHERE key = 'schema_version'");
@@ -67,6 +81,13 @@ export async function migrateFocus(db) {
     await db.batch([
       ...V3.map(sql => ({ sql })),
       { sql: "INSERT OR REPLACE INTO focus_meta(key, value) VALUES ('schema_version', '3')" },
+    ]);
+    version = 3;
+  }
+  if (version < 4) {
+    await db.batch([
+      ...V4.map(sql => ({ sql })),
+      { sql: "INSERT OR REPLACE INTO focus_meta(key, value) VALUES ('schema_version', '4')" },
     ]);
   }
 }

@@ -208,7 +208,20 @@ Use a throwaway folder such as `C:\Games\Foo` containing a copy of a harmless pr
 - [ ] Cancel the Save dialog — Expected: nothing is written and no message appears
 - [ ] Open the saved page in a browser with the network off — Expected: it loads and works offline
 
-## 15. Cleanup
+## 15. Recurring schedules
+
+Use a list with one site you can test (for example `reddit.com`). Set the schedule times a few minutes ahead so you do not have to wait.
+
+- [ ] Create an unlocked schedule that starts in about 3 minutes and ends 10 minutes later, then close Focus Room completely — Expected: at the start time the site is blocked with the app closed, and at the end time it loads again
+- [ ] Create a schedule that crosses midnight (for example 23:55 to 00:10) — Expected: it blocks before midnight, keeps blocking after midnight, and stops at 00:10; its row reads "(overnight)"
+- [ ] Create a locked schedule (Locked, an end date a few days ahead, a 1 hour waiting period) and let one occurrence start — Expected: the site is blocked and a locked card with Unlock early appears
+- [ ] Reboot Windows during a locked occurrence and do not open the app — Expected: the site is still blocked after the reboot; reopening Focus Room shows the locked card and the locked schedule row
+- [ ] Look at the locked schedule row — Expected: Edit, Pause and Delete are disabled with the reason "locked until <date>"; the list it uses cannot be edited or deleted either
+- [ ] During a locked occurrence, unlock it with the partner code — Expected: the site loads again, and the schedule's next occurrence (the next day or the next matching day) still blocks when it starts
+- [ ] Create an unlocked schedule, then choose Pause before its next start — Expected: the row reads "Paused", and nothing is blocked at the next start time; Resume brings it back
+- [ ] Delete an unlocked schedule — Expected: its row goes and no further occurrence blocks
+
+## 16. Cleanup
 
 With no lock pending, uninstall MyBrain.
 
