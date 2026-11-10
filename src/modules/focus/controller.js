@@ -2,6 +2,8 @@
 import * as store from './store.js';
 import { groupSessions, parseDuration, classifyHelperFailure, describePushProblem } from './model.js';
 import { syncWindows } from './sync.js';
+import { scheduleBlocks } from './schedule-logic.js';
+import { makeTzOffsetAt } from './tz.js';
 import { describeUnlockError, windowIdForBlock, pendingUnlockFor, resolveDelayHours } from './lock-logic.js';
 
 const MIN = 60000;
@@ -32,8 +34,9 @@ export const HELPER_UNAVAILABLE_CLIENT = createUnavailableClient(
   'The Focus Room helper is only available in the desktop app.',
 );
 
-export function createController({ db, client, now, tzOffsetAt, onChange }) {
+export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(), onChange }) {
   let lists = [];
+  let schedules = [];
   let sessions = [];
   let helper = { kind: 'unknown', message: 'Checking the helper…' };
   let syncPending = false;
@@ -59,9 +62,17 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
     return p;
   };
 
+  // Session blocks plus running locked schedule occurrences (ids: [], so no session write can act on them).
+  function allBlocks(t) {
+    const byId = new Map(lists.map((l) => [l.id, l]));
+    return [...groupSessions(sessions, lists, t), ...scheduleBlocks(schedules, byId, t, tzOffsetAt)]
+      .sort((x, y) => x.ends - y.ends);
+  }
+
   async function reload() {
     lists = await store.listLists(db);
     sessions = await store.listSessions(db);
+    schedules = await store.listSchedules(db);
     const [p] = await db.all('SELECT name FROM focus_partner LIMIT 1');
     partnerName = p && typeof p.name === 'string' ? p.name : null;
   }
@@ -194,7 +205,7 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
     return enqueue(async () => {
       let res;
       try {
-        res = await store.saveList(db, input, now());
+        res = await store.saveList(db, input, now(), tzOffsetAt);
       } catch (e) {
         const msg = errText(e);
         return { ok: false, errors: { name: msg === 'no such list' ? 'That list no longer exists.' : `Could not save: ${msg}` } };
@@ -211,7 +222,7 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
     return enqueue(async () => {
       let res;
       try {
-        res = await store.deleteList(db, id, now());
+        res = await store.deleteList(db, id, now(), tzOffsetAt);
       } catch (e) {
         return { ok: false, reason: 'error', message: `Could not delete: ${errText(e)}` };
       }
@@ -222,6 +233,37 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
       return res;
     });
   }
+
+  // Shared by the schedule writes: run the store call, then reload, notify and push like deleteList.
+  function scheduleWrite(call, failShape) {
+    return enqueue(async () => {
+      let res;
+      try {
+        res = await call();
+      } catch (e) {
+        const msg = errText(e);
+        return failShape(msg);
+      }
+      if (!res.ok) return res;
+      try { await reload(); } catch { /* state refreshes on the next load */ }
+      changed();
+      await doResync();
+      return res;
+    });
+  }
+
+  const saveSchedule = (input) => scheduleWrite(
+    () => store.saveSchedule(db, input, now(), tzOffsetAt),
+    (msg) => ({ ok: false, errors: { name: msg === 'no such schedule' ? 'That schedule no longer exists.' : `Could not save: ${msg}` } }),
+  );
+  const setScheduleEnabled = (id, enabled) => scheduleWrite(
+    () => store.setScheduleEnabled(db, id, enabled, now(), tzOffsetAt),
+    (msg) => ({ ok: false, reason: 'error', message: `Could not save: ${msg}` }),
+  );
+  const deleteSchedule = (id) => scheduleWrite(
+    () => store.deleteSchedule(db, id, now(), tzOffsetAt),
+    (msg) => ({ ok: false, reason: 'error', message: `Could not delete: ${msg}` }),
+  );
 
   function startBlock(input) {
     return enqueue(async () => {
@@ -250,7 +292,7 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
   async function findLiveBlock(key) {
     await reload();
     const t = now();
-    return groupSessions(sessions, lists, t).find((b) => b.key === key && b.state !== 'finished') || null;
+    return allBlocks(t).find((b) => b.key === key && b.state !== 'finished') || null;
   }
 
   function extendBlock(key, addMinutes) {
@@ -261,12 +303,13 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
       try {
         let block = await findLiveBlock(key);
         if (!block) return { ok: false, message: FINISHED };
+        if (block.scheduleId !== undefined) return { ok: false, message: 'Edit the schedule instead.' };
         const locked = block.lock === 'locked';
         if (locked) {
           // The helper may have just ended this lock (wait expired); extending now would revive it.
           await pollAndReconcile();
           block = await findLiveBlock(key);
-          if (!block) return { ok: false, message: 'This lock has just ended, so it cannot be extended.' };
+          if (!block || block.scheduleId !== undefined) return { ok: false, message: 'This lock has just ended, so it cannot be extended.' };
         }
         const cap = block.starts + (locked ? MAX_LOCKED_MINUTES : MAX_MINUTES) * MIN;
         if (block.ends >= cap) {
@@ -509,11 +552,11 @@ export function createController({ db, client, now, tzOffsetAt, onChange }) {
   return {
     get state() {
       return {
-        loaded, lists, blocks: groupSessions(sessions, lists, now()), helper, syncPending, lastSync, notice,
+        loaded, lists, schedules, blocks: allBlocks(now()), helper, syncPending, lastSync, notice,
         partner: { set: partnerSet, name: partnerSet ? partnerName : null },
       };
     },
-    load, saveList, deleteList, startBlock, extendBlock, cancelBlock, refreshStatus, resync,
+    load, saveList, deleteList, saveSchedule, setScheduleEnabled, deleteSchedule, startBlock, extendBlock, cancelBlock, refreshStatus, resync,
     startLockedBlock, setPartner, requestPartnerChallenge, submitPartnerToken, startDelayedUnlock, cancelDelayedUnlock,
   };
 }
