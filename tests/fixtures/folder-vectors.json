@@ -3,7 +3,8 @@
     "C:\\Games\\Steam",
     "d:\\Apps\\My Game",
     "C:\\Program Files\\Some App",
-    "C:\\Users\\me\\Games"
+    "C:\\Users\\me\\Games",
+    "C:/Games/Foo"
   ],
   "malformed": [
     "Games",
@@ -12,7 +13,8 @@
     "C:\\a\\..\\b",
     "C:\\a\\*",
     "C:\\a\u0007b",
-    ""
+    "",
+    "C:\\Games\\\\"
   ],
   "forbidden": [
     "C:\\",
