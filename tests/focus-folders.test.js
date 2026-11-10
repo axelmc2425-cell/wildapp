@@ -11,7 +11,10 @@ const FORBIDDEN = "That folder is part of Windows and can't be blocked.";
 const MALFORMED = 'Pick a folder with the Browse folder button.';
 
 test('folder_vectors_match_rust_fixture', () => {
-  for (const x of vectors.ok) assert.equal(folderProblem(normalizeFolder(x) ?? x), null, `ok ${JSON.stringify(x)}`);
+  for (const x of vectors.ok) {
+    assert.equal(folderProblem(x), null, `raw ok ${JSON.stringify(x)}`);
+    assert.equal(folderProblem(normalizeFolder(x) ?? x), null, `ok ${JSON.stringify(x)}`);
+  }
   for (const x of vectors.malformed) assert.equal(folderProblem(normalizeFolder(x) ?? x), 'malformed', `malformed ${JSON.stringify(x)}`);
   for (const x of vectors.forbidden) assert.equal(folderProblem(normalizeFolder(x) ?? x), 'forbidden', `forbidden ${JSON.stringify(x)}`);
 });

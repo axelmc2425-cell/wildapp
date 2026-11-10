@@ -24,8 +24,8 @@ export function normalizeFolder(raw) {
  */
 export function folderProblem(value) {
   if (typeof value !== 'string' || BAD_CHARS_RE.test(value)) return 'malformed';
-  const n = value.replace(/\//g, '\\').toLowerCase();
-  if (!/^[a-z]:\\/.test(n)) return 'malformed';
+  const n = value.replace(/\//g, '\\').replace(/[A-Z]/g, (c) => c.toLowerCase());
+  if (!/^[A-Za-z]:\\/.test(n)) return 'malformed';
   let rest = n.slice(3);
   if (rest.endsWith('\\')) rest = rest.slice(0, -1);
   const segs = rest === '' ? [] : rest.split('\\');
