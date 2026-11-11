@@ -80,6 +80,50 @@ test('summarize with today after the range divides by the whole range; before it
   assert.equal(future.perWeekday.every((x) => x === 0), true);
 });
 
+test('rows dated after today are ignored everywhere', () => {
+  const range = rangeFor('week', '2026-11-11'); // today is Wednesday
+  const s = summarize([row('2026-11-14', { a: 700 }, { x: 5 }, 9)], range, '2026-11-11');
+  assert.equal(s.total, 0);
+  assert.equal(s.dailyAverage, 0);
+  assert.equal(s.activeDays, 0);
+  assert.equal(s.topApp, null);
+  assert.deepEqual(s.topSites, []);
+  assert.equal(s.otherBrowsing, 0);
+  assert.equal(s.perDay.length, 7);
+  assert.equal(s.perDay[5].total, 0);
+  assert.deepEqual(s.perDay[5].apps, {});
+  assert.equal(s.perWeekday.every((x) => x === 0), true);
+});
+
+test('duplicate day rows are summed and malformed day strings ignored', () => {
+  const range = rangeFor('week', '2026-11-11');
+  const s = summarize([
+    row('2026-11-10', { a: 10 }), row('2026-11-10', { a: 5, b: 1 }),
+    { day: 'garbage', total: 99, apps: { z: 99 } }, { day: '2026-11-1x', total: 9, apps: {} },
+    { day: 20261110, total: 9, apps: {} }, null,
+  ], range, '2026-11-11');
+  assert.equal(s.total, 16);
+  assert.equal(s.activeDays, 1);
+  assert.deepEqual(s.perDay[1].apps, { a: 15, b: 1 });
+});
+
+test('malformed day keys and unknown periods throw TypeError', () => {
+  assert.throws(() => rangeFor('week', 'garbage'), TypeError);
+  assert.throws(() => rangeFor('month', '2026-02-30'), TypeError);
+  assert.throws(() => rangeFor('year', '2026-1-1'), TypeError);
+  assert.throws(() => addDays('nope', 1), TypeError);
+  assert.throws(() => rangeFor('decade', '2026-05-05'), TypeError);
+  const r = rangeFor('week', '2026-11-11');
+  assert.throws(() => shiftRange('decade', r, 1), TypeError);
+  assert.throws(() => previousRange('decade', r), TypeError);
+  assert.throws(() => previousRange('week', { from: 'bad', to: 'bad', days: 7 }), TypeError);
+});
+
+test('shiftRange year negative', () => {
+  assert.deepEqual(shiftRange('year', rangeFor('year', '2026-05-05'), -3), { from: '2023-01-01', to: '2023-12-31', days: 365 });
+  assert.deepEqual(shiftRange('year', rangeFor('year', '2026-05-05'), -2), { from: '2024-01-01', to: '2024-12-31', days: 366 });
+});
+
 test('summarize empty input gives zeros and null tops', () => {
   const s = summarize([], rangeFor('week', '2026-11-11'), '2026-11-11');
   assert.equal(s.total, 0);
@@ -137,7 +181,8 @@ test('perWeekday averages per weekday over elapsed days only', () => {
   assert.equal(s.perWeekday[2], 25); // Wed: 50 / 2 elapsed Wednesdays (Nov 4, 11)
   assert.equal(s.perWeekday[6], 35); // Sun: 70 / 2 (Nov 1, 8)
   assert.equal(s.perWeekday[3], 0); // Thu: Nov 5 only, empty
-  assert.equal(s.total, 70 + 100 + 300 + 50 + 999); // total still counts rows in range
+  assert.equal(s.total, 70 + 100 + 300 + 50); // the future row is ignored
+  assert.equal(s.dailyAverage, 520 / 11);
 });
 
 test('perWeekday over a leap-year February', () => {
@@ -154,6 +199,12 @@ test('deltaVs', () => {
   assert.deepEqual(deltaVs(200, 150), { pct: -25, direction: 'down' });
   assert.deepEqual(deltaVs(80, 80), { pct: 0, direction: 'same' });
   assert.deepEqual(deltaVs(100, 0), { pct: -100, direction: 'down' });
+  assert.deepEqual(deltaVs(100, 100.0000001), { pct: 0, direction: 'same' });
+  assert.deepEqual(deltaVs(100, 99.9999999), { pct: 0, direction: 'same' });
+  assert.deepEqual(deltaVs(3, 4), { pct: 33, direction: 'up' });
+  assert.deepEqual(deltaVs(100, NaN), { pct: null, direction: 'none' });
+  assert.deepEqual(deltaVs(NaN, 100), { pct: null, direction: 'none' });
+  assert.deepEqual(deltaVs(100, Infinity), { pct: null, direction: 'none' });
 });
 
 test('formatDuration', () => {

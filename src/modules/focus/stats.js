@@ -5,7 +5,18 @@
 const DAY_MS = 86400000;
 const MIN_MS = 60000;
 
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function isDay(day) {
+  if (typeof day !== 'string' || !DAY_RE.test(day)) return false;
+  const [y, m, d] = day.split('-').map(Number);
+  const back = new Date(Date.UTC(y, m - 1, d));
+  if (y < 100) back.setUTCFullYear(y);
+  return back.getUTCFullYear() === y && back.getUTCMonth() === m - 1 && back.getUTCDate() === d;
+}
+
 function parts(day) {
+  if (!isDay(day)) throw new TypeError(`Invalid day key: ${day}`);
   const [y, m, d] = day.split('-').map(Number);
   return { y, m, d };
 }
@@ -34,6 +45,7 @@ export function dayKey(ms, tzOffsetAt) {
 }
 
 export function addDays(day, n) {
+  parts(day);
   return fromNum(toNum(day) + n);
 }
 
@@ -47,7 +59,7 @@ function daysBetween(from, to) {
 }
 
 function monthLength(y, m) {
-  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return [31, y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1];
 }
 
 /** @param {'day'|'week'|'month'|'year'} period @param {string} today day key inside the wanted period */
@@ -68,7 +80,7 @@ export function rangeFor(period, today) {
     from = keyOf(y, 1, 1);
     to = keyOf(y, 12, 31);
   } else {
-    throw new Error(`Unknown period: ${period}`);
+    throw new TypeError(`Unknown period: ${period}`);
   }
   return { from, to, days: daysBetween(from, to) };
 }
@@ -83,7 +95,7 @@ export function shiftRange(period, range, n) {
     return rangeFor('month', keyOf(Math.floor(idx / 12), (idx % 12 + 12) % 12 + 1, 1));
   }
   if (period === 'year') return rangeFor('year', keyOf(y + n, 1, 1));
-  throw new Error(`Unknown period: ${period}`);
+  throw new TypeError(`Unknown period: ${period}`);
 }
 
 export function previousRange(period, range) {
@@ -111,7 +123,8 @@ function addInto(target, src) {
 export function summarize(days, range, today) {
   const byDay = new Map();
   for (const row of days ?? []) {
-    if (!row || typeof row.day !== 'string' || row.day < range.from || row.day > range.to) continue;
+    // Rows after `today` (clock skew) are ignored everywhere so the cards reconcile.
+    if (!row || !isDay(row.day) || row.day < range.from || row.day > range.to || row.day > today) continue;
     const cur = byDay.get(row.day) ?? { total: 0, apps: new Map(), sites: new Map(), other: 0 };
     if (Number.isFinite(row.total) && row.total > 0) cur.total += row.total;
     if (Number.isFinite(row.other_browsing) && row.other_browsing > 0) cur.other += row.other_browsing;
@@ -156,6 +169,7 @@ export function summarize(days, range, today) {
     }
   }
 
+  // Site shares are relative to the identified sites only; other_browsing is not in the denominator.
   const topApps = ranked(apps);
   const topSites = ranked(sites);
   return {
@@ -172,10 +186,12 @@ export function summarize(days, range, today) {
   };
 }
 
-/** `pct` is signed percent change of current against previous; null when previous is 0. */
+/** `pct` is the signed percent change rounded to a whole number, direction taken from it; of current against previous; null when previous is 0. */
 export function deltaVs(previousTotal, currentTotal) {
-  if (!(previousTotal > 0)) return { pct: null, direction: 'none' };
-  const pct = ((currentTotal - previousTotal) / previousTotal) * 100;
+  if (!Number.isFinite(previousTotal) || !Number.isFinite(currentTotal) || !(previousTotal > 0)) {
+    return { pct: null, direction: 'none' };
+  }
+  const pct = Math.round(((currentTotal - previousTotal) / previousTotal) * 100) + 0; // +0 turns -0 into 0
   return { pct, direction: pct > 0 ? 'up' : pct < 0 ? 'down' : 'same' };
 }
 
