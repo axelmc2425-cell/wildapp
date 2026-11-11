@@ -137,7 +137,11 @@ pub fn is_browser(exe: &str) -> bool {
 /// Second-level labels that sit under a two-letter country TLD (`co.uk`).
 const SLD: &[&str] = &["co", "com", "org", "net", "gov", "edu", "ac", "ne", "or", "go"];
 
-/// The site stem of each domain (`reddit.com` -> `reddit`), lowercase, deduped, in order.
+/// Stems shorter than this are ignored.
+const MIN_STEM_LEN: usize = 3;
+
+/// The site stem of each domain (`reddit.com` -> `reddit`), lowercase, deduped, in order;
+/// stems under 3 characters are dropped.
 pub fn stems_from_domains(domains: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for d in domains {
@@ -156,6 +160,10 @@ pub fn stems_from_domains(domains: &[String]) -> Vec<String> {
                 }
             }
         };
+        // Very short stems (`x.com` -> `x`) would false-match ordinary titles.
+        if stem.chars().count() < MIN_STEM_LEN {
+            continue;
+        }
         if !out.iter().any(|s| s == stem) {
             out.push(stem.to_string());
         }

@@ -58,3 +58,27 @@ fn map_is_sane() {
         assert!(seen.insert((label.to_ascii_lowercase(), *name)), "dup {label}/{name}");
     }
 }
+
+fn stems_of(ds: &[&str]) -> Vec<String> {
+    stems_from_domains(&ds.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+}
+
+#[test]
+fn short_stems_are_dropped() {
+    assert!(stems_of(&["x.com"]).is_empty());
+    assert!(stems_of(&["ox.ac.uk"]).is_empty());
+    assert_eq!(stems_of(&["x.com", "abc.com"]), vec!["abc".to_string()]);
+    // The dropped stem must not false-match titles.
+    assert_eq!(match_site("Chapter X", &stems_of(&["x.com"])), None);
+}
+
+#[test]
+fn stem_edge_inputs() {
+    assert!(stems_of(&[""]).is_empty());
+    assert!(stems_of(&["."]).is_empty());
+    assert_eq!(stems_of(&["reddit"]), vec!["reddit".to_string()]);
+    assert_eq!(stems_of(&["reddit.com."]), vec!["reddit".to_string()]);
+    assert_eq!(stems_of(&["Reddit.COM", "reddit.com"]), vec!["reddit".to_string()]);
+    assert_eq!(stems_of(&["example.com.au"]), vec!["example".to_string()]);
+    assert_eq!(stems_of(&["www.cam.ac.uk"]), vec!["cam".to_string()]);
+}
