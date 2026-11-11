@@ -9,6 +9,7 @@ use crate::decide::decide;
 use crate::enforce::{any_window_active, enforce_once, ProcessTable};
 use crate::ipc::{self, Request, Response};
 use crate::lockstore::LockStore;
+use crate::model::Mode;
 use crate::persist;
 use crate::sites::stems_from_domains;
 use crate::usage::{self, DayUsage, Sample, UsageLoad, UsageStore};
@@ -66,6 +67,8 @@ pub struct Daemon {
     usage_path: PathBuf,
     /// Set at load when the usage file was recovered or unreadable; shown in Status.
     usage_warning: Option<String>,
+    /// Set while the latest usage save failed; cleared by the next successful save.
+    usage_error: Option<String>,
     last_sample_mono: Option<i64>,
     last_usage_flush_mono: Option<i64>,
 }
@@ -99,9 +102,13 @@ impl Daemon {
         };
         let (usage, usage_load) = usage::load(usage_path, unix_ms);
         let usage_warning = match usage_load {
-            UsageLoad::Corrupt(p) | UsageLoad::Backup(Some(p)) => {
+            UsageLoad::Corrupt(p) => {
                 Some(format!("usage: unreadable, started empty — previous file kept as {}", p.display()))
             }
+            UsageLoad::Backup(Some(p)) => {
+                Some(format!("usage: loaded from backup — unreadable file kept as {}", p.display()))
+            }
+            UsageLoad::Backup(None) => Some("usage: loaded from backup".to_string()),
             _ => None,
         };
         let clock = EffectiveClock::new(store.high_water_ms);
@@ -121,6 +128,7 @@ impl Daemon {
             usage,
             usage_path: usage_path.to_path_buf(),
             usage_warning,
+            usage_error: None,
             last_sample_mono: None,
             last_usage_flush_mono: None,
         }
@@ -136,6 +144,7 @@ impl Daemon {
             .iter()
             .cloned()
             .chain(self.usage_warning.iter().cloned())
+            .chain(self.usage_error.iter().map(|e| format!("usage: {e}")))
             .chain(self.persist_error.iter().map(|e| format!("persist: {e}")))
             .chain(self.doh_warnings.iter().cloned())
             .chain(self.error_warnings.iter().cloned())
@@ -166,8 +175,14 @@ impl Daemon {
         }
         self.usage.prune();
         match usage::save(&self.usage_path, &self.usage) {
-            Ok(()) => self.usage.mark_clean(),
-            Err(e) => eprintln!("focus-helper: usage save failed: {e}"),
+            Ok(()) => {
+                self.usage.mark_clean();
+                self.usage_error = None;
+            }
+            Err(e) => {
+                eprintln!("focus-helper: usage save failed: {e}");
+                self.usage_error = Some(e.to_string());
+            }
         }
     }
 
@@ -190,14 +205,15 @@ impl Daemon {
         if since < USAGE_SAMPLE_INTERVAL_MS {
             return;
         }
-        self.last_sample_mono = Some(mono_ms);
         let elapsed = (since / 1000) as u64;
+        // Keep the sub-second remainder for the next sample so seconds are not truncated away.
+        self.last_sample_mono = Some(last + elapsed as i64 * 1000);
         let sample = platform.foreground();
         let sites: Vec<String> = self
             .store
             .windows
             .iter()
-            .filter(|w| w.starts <= now && now < w.ends)
+            .filter(|w| w.mode == Mode::Block && w.starts <= now && now < w.ends)
             .flat_map(|w| w.sites.iter().cloned())
             .collect();
         self.usage.record(sample.as_ref(), elapsed, &stems_from_domains(&sites));

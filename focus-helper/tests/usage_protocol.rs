@@ -201,3 +201,90 @@ fn load_derives_usage_path_next_to_state() {
     d.add_usage(DayUsage { day: "2026-11-10".into(), total: 7, ..Default::default() });
     assert!(u.exists());
 }
+
+fn stem_total(window: Value, name: &str) -> Option<u64> {
+    let (s, u) = paths(name);
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake { tracking: true, sample: Some(chrome("Inbox | acmecorp")), ..Fake::default() };
+    let r = call(&mut d, &mut p, &json!({"type":"PushWindows","windows":[window]}).to_string(), 0);
+    assert_eq!(r["type"], "Ok");
+    d.tick(NOW, 0, &mut p);
+    d.tick(NOW + 5_000, 5_000, &mut p);
+    usage(&mut d, &mut p)["days"][0]["sites"]["acmecorp"].as_u64()
+}
+
+#[test]
+fn allow_window_site_is_not_a_stem() {
+    let w = json!({"id":"w","starts":NOW-1000,"ends":NOW+3_600_000,"lock":"none","mode":"allow","sites":["acmecorp.com"],"apps":["code.exe"]});
+    assert_eq!(stem_total(w, "allow"), None);
+}
+
+#[test]
+fn expired_block_window_is_not_a_stem() {
+    let w = json!({"id":"w","starts":NOW-3_600_000,"ends":NOW-1000,"lock":"none","mode":"block","sites":["acmecorp.com"],"apps":[]});
+    assert_eq!(stem_total(w, "expired"), None);
+}
+
+#[test]
+fn active_block_window_is_a_stem() {
+    let w = json!({"id":"w","starts":NOW-1000,"ends":NOW+3_600_000,"lock":"none","mode":"block","sites":["acmecorp.com"],"apps":[]});
+    assert_eq!(stem_total(w, "active"), Some(5));
+}
+
+#[test]
+fn sub_second_remainder_is_carried() {
+    let (s, u) = paths("remainder");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake { tracking: true, sample: Some(chrome("Inbox")), ..Fake::default() };
+    for i in 0..6 {
+        let mono = i * 5_999;
+        d.tick(NOW + mono, mono, &mut p);
+    }
+    // 5 samples spanning 29 995 ms: 29 whole seconds, not 25.
+    assert_eq!(usage(&mut d, &mut p)["days"][0]["total"], 29);
+}
+
+#[test]
+fn get_usage_does_not_write_state() {
+    let (s, u) = paths("nowrite");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake::default();
+    usage(&mut d, &mut p);
+    assert!(!s.exists());
+    std::fs::write(&s, b"{}").unwrap();
+    usage(&mut d, &mut p);
+    assert_eq!(std::fs::read(&s).unwrap(), b"{}");
+}
+
+#[test]
+fn failed_usage_save_warns_then_clears() {
+    let (s, _) = paths("saveerr");
+    let dir = s.with_file_name("missing");
+    let u = dir.join("usage.json");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake::default();
+    d.add_usage(DayUsage { day: "2026-11-10".into(), total: 7, ..Default::default() });
+    let st = call(&mut d, &mut p, r#"{"type":"GetStatus"}"#, 0);
+    assert!(st["warnings"][0].as_str().unwrap().starts_with("usage: "), "{st}");
+    std::fs::create_dir_all(&dir).unwrap();
+    d.flush_usage();
+    let st = call(&mut d, &mut p, r#"{"type":"GetStatus"}"#, 0);
+    assert_eq!(st["warnings"], json!([]));
+}
+
+#[test]
+fn backup_load_warns() {
+    let (s, u) = paths("backup");
+    {
+        let mut d = Daemon::load_with_usage(&s, &u);
+        d.add_usage(DayUsage { day: "2026-11-10".into(), total: 7, ..Default::default() });
+        d.add_usage(DayUsage { day: "2026-11-10".into(), total: 8, ..Default::default() });
+    }
+    std::fs::write(&u, b"garbage").unwrap();
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake::default();
+    let st = call(&mut d, &mut p, r#"{"type":"GetStatus"}"#, 0);
+    let w = st["warnings"][0].as_str().unwrap();
+    assert!(w.starts_with("usage: loaded from backup"), "{w}");
+    assert!(w.contains("usage.json.corrupt-"), "{w}");
+}
