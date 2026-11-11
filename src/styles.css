@@ -330,12 +330,12 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 :root {
   --chart-0: #4f46e5; --chart-1: #0e7490; --chart-2: #b45309; --chart-3: #be185d; --chart-4: #15803d; --chart-5: #6b7280;
   --chart-empty: #e8e6df; --chart-grid: #dedcd5;
-  --chart-heat-1: #b9b5f2; --chart-heat-2: #8a84ec; --chart-heat-3: #5f57e0; --chart-heat-4: #3730a3;
+  --chart-heat-1: #8680e6; --chart-heat-2: #6f68e6; --chart-heat-3: #4a41d8; --chart-heat-4: #2e2790;
 }
 :root[data-theme="dark"] {
   --chart-0: #8b87ff; --chart-1: #22d3ee; --chart-2: #fbbf24; --chart-3: #f472b6; --chart-4: #4ade80; --chart-5: #9aa0a6;
   --chart-empty: #2a2d33; --chart-grid: #33363c;
-  --chart-heat-1: #3b3a7a; --chart-heat-2: #5a56b8; --chart-heat-3: #7b77f0; --chart-heat-4: #b1afff;
+  --chart-heat-1: #6862cc; --chart-heat-2: #7f7bf0; --chart-heat-3: #a09dff; --chart-heat-4: #c9c7ff;
 }
 .fr-chart { display: block; width: 100%; height: auto; max-width: 100%; }
 .fr-chart-label { fill: var(--muted); font: 10px "Segoe UI", system-ui, sans-serif; }
@@ -343,6 +343,22 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-chart-grid { stroke: var(--chart-grid); stroke-width: 1; }
 .fr-chart-heat { min-width: 560px; }
 .fr-chart-scroll { overflow-x: auto; }
+.fr-c0 { fill: var(--chart-0); background: var(--chart-0); }
+.fr-c1 { fill: var(--chart-1); background: var(--chart-1); }
+.fr-c2 { fill: var(--chart-2); background: var(--chart-2); }
+.fr-c3 { fill: var(--chart-3); background: var(--chart-3); }
+.fr-c4 { fill: var(--chart-4); background: var(--chart-4); }
+.fr-c5 { fill: var(--chart-5); background: var(--chart-5); }
+.fr-heat-0 { fill: var(--chart-empty); }
+.fr-heat-1 { fill: var(--chart-heat-1); }
+.fr-heat-2 { fill: var(--chart-heat-2); }
+.fr-heat-3 { fill: var(--chart-heat-3); }
+.fr-heat-4 { fill: var(--chart-heat-4); }
+.fr-bar .fr-seg { stroke: var(--panel); stroke-width: 1; }
+.fr-legend { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; }
+.fr-legend li { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.fr-swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.fr-table-caption { text-align: left; color: var(--muted); font-size: 12px; padding: 0 8px 4px; }
 .fr-bar .fr-seg:hover, .fr-heat-cell:hover { stroke: var(--text); stroke-width: 1; }
 .fr-chart-empty { margin: 0; color: var(--muted); }
 .fr-ranked { display: flex; flex-direction: column; gap: 6px; }

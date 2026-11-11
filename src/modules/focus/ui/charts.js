@@ -26,14 +26,17 @@ export function scale(value, max, size) {
   return Math.min(1, value / max) * size;
 }
 
-/** A round axis maximum (1/2/5/10 times a power of ten, in minutes or hours) at or above `max`; never 0. */
+const NICE_STEPS = [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
+
+/** A round axis maximum (1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8 or 10 times a power of ten, in minutes or hours) at or above `max`; never 0. */
 export function niceMax(max) {
   if (!Number.isFinite(max) || max <= 0) return 3600;
   const unit = max <= 3600 ? 60 : 3600;
   const v = max / unit;
   const mag = 10 ** Math.floor(Math.log10(v));
   const m = v / mag;
-  const step = m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10;
+  // Fine steps keep the tallest bar at 75% or more of the axis (3600 stays 3600, 8000 gives 9000).
+  const step = NICE_STEPS.find(s => m <= s + 1e-9) ?? 10;
   return step * mag * unit;
 }
 
@@ -68,7 +71,8 @@ export function heatGrid(year) {
   return out;
 }
 
-/** Stack segments for one day: the listed apps (bottom up) then `other` for the remainder. */
+/** Stack segments for one day: the listed apps (bottom up) then `other` for the remainder.
+ *  `idx` is the app's rank in `names` (stable colour across days), 5 for `other`. */
 export function stackSegments(row, names) {
   const apps = row?.apps ?? {};
   const segs = [];
@@ -77,16 +81,22 @@ export function stackSegments(row, names) {
   for (const k of Object.keys(apps)) sum += secsOf(apps[k]);
   for (const name of names) {
     const s = secsOf(apps[name]);
-    if (s > 0) { segs.push({ key: name, secs: s, idx: segs.length }); attributed += s; }
+    if (s > 0) { segs.push({ key: name, secs: s, idx: Math.min(4, names.indexOf(name)) }); attributed += s; }
   }
   const total = Math.max(secsOf(row?.total), sum);
   if (total - attributed > 0) segs.push({ key: 'other', secs: total - attributed, idx: 5 });
   return segs;
 }
 
+/** Names of the `topN` (max 5) most-used apps over the days; the helper's overflow key `other` is never a named series. */
+export function topAppNames(perDay, topN = 5) {
+  const n = Math.min(5, Math.max(0, Math.floor(Number.isFinite(topN) ? topN : 5)));
+  return rankApps(Array.isArray(perDay) ? perDay.filter(Boolean) : [], n);
+}
+
 function rankApps(perDay, topN) {
   const sums = new Map();
-  for (const row of perDay) for (const [k, v] of Object.entries(row?.apps ?? {})) if (secsOf(v) > 0) sums.set(k, (sums.get(k) ?? 0) + v);
+  for (const row of perDay) for (const [k, v] of Object.entries(row?.apps ?? {})) if (k !== 'other' && secsOf(v) > 0) sums.set(k, (sums.get(k) ?? 0) + v);
   return [...sums].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).slice(0, topN).map(([k]) => k);
 }
 
@@ -110,7 +120,7 @@ const NO_DATA = 'No data for this period.';
 
 export function stackedDailyBars(perDay, { topN = 5 } = {}) {
   const days = Array.isArray(perDay) ? perDay.filter(Boolean) : [];
-  const names = rankApps(days, Math.min(5, Math.max(0, Math.floor(Number.isFinite(topN) ? topN : 5))));
+  const names = topAppNames(days, topN);
   const totals = days.map(d => Math.max(secsOf(d.total), stackSegments(d, []).reduce((s, x) => s + x.secs, 0)));
   const grand = totals.reduce((a, b) => a + b, 0);
   const W = 640; const H = 220; const L = 44; const R = 8; const T = 10; const B = 24;
@@ -119,7 +129,7 @@ export function stackedDailyBars(perDay, { topN = 5 } = {}) {
   if (days.length === 0 || grand <= 0) return root(W, H, NO_DATA, 'fr-chart-stacked');
   let best = 0;
   totals.forEach((t, i) => { if (t > totals[best]) best = i; });
-  const svg = root(W, H, `Daily screen time over ${days.length} day${days.length === 1 ? '' : 's'}: ${formatDuration(grand)} in total. Busiest day ${days[best].day} with ${formatDuration(totals[best])}.`, 'fr-chart-stacked');
+  const svg = root(W, H, `Daily screen time over ${days.length} day${days.length === 1 ? '' : 's'}: ${formatDuration(grand)} in total. Busiest day ${days[best].day} with ${formatDuration(totals[best])}.${names.length ? ` Top apps: ${names.join(', ')}.` : ''}`, 'fr-chart-stacked');
 
   const max = niceMax(Math.max(...totals));
   for (const f of [0, 0.5, 1]) {
@@ -142,12 +152,22 @@ export function stackedDailyBars(perDay, { topN = 5 } = {}) {
       const sh = scale(s.secs, max, ph);
       if (sh <= 0) continue;
       y -= sh;
-      g.append(svgEl('rect', { x: r1(x), y: r1(y), width: r1(bw), height: r1(sh), fill: chartColor(s.idx), class: 'fr-seg' }));
+      g.append(svgEl('rect', { x: r1(x), y: r1(y), width: r1(bw), height: r1(sh), class: `fr-seg fr-c${s.idx}` }));
     }
     svg.append(g);
     if (i % every === 0) svg.append(text(x + bw / 2, H - 8, 'middle', String(d.day).slice(days.length > 31 ? 5 : 8) || String(d.day)));
   });
   return svg;
+}
+
+// ---- legend ---------------------------------------------------------------------------------
+
+/** Swatch plus app name for each series (and "Other"), so colour is never the only identifier. */
+export function chartLegend(names, { withOther = true } = {}) {
+  const list = (Array.isArray(names) ? names : []).slice(0, 5).map((n, i) => ({ n: String(n), i }));
+  if (withOther && list.length) list.push({ n: 'Other', i: 5 });
+  return h('ul', { class: 'fr-legend', 'aria-label': 'Legend' },
+    ...list.map(({ n, i }) => h('li', {}, h('span', { class: `fr-swatch fr-c${i}`, 'aria-hidden': 'true' }), h('span', { class: 'fr-legend-name' }, n))));
 }
 
 // ---- weekday bars -------------------------------------------------------------------------
@@ -167,7 +187,7 @@ export function weekdayBars(perWeekday) {
     const x = L + i * slot + (slot - bw) / 2;
     const bh = scale(v, max, ph);
     const g = svgEl('g', { class: 'fr-bar' }, title(`${WEEKDAYS[i]}: ${formatDuration(v)} average`),
-      svgEl('rect', { x: r1(x), y: r1(T + ph - bh), width: r1(bw), height: r1(bh), fill: chartColor(0), class: 'fr-seg' }));
+      svgEl('rect', { x: r1(x), y: r1(T + ph - bh), width: r1(bw), height: r1(bh), class: 'fr-seg fr-c0' }));
     svg.append(g, text(x + bw / 2, H - 6, 'middle', WEEKDAYS[i]));
     if (v > 0) svg.append(text(x + bw / 2, T + ph - bh - 4, 'middle', formatDuration(v), 'fr-chart-label fr-chart-value'));
   });
@@ -197,7 +217,7 @@ export function yearHeatmap(perDay, year) {
     if (c.month !== lastMonth && c.dom <= 7) { svg.append(text(L + c.col * STEP, T - 5, 'start', MONTHS[c.month])); lastMonth = c.month; }
     svg.append(svgEl('rect', {
       x: L + c.col * STEP, y: T + c.row * STEP, width: CELL, height: CELL, rx: 2,
-      fill: lvl === 0 ? 'var(--chart-empty)' : `var(--chart-heat-${lvl})`, class: 'fr-heat-cell',
+      class: `fr-heat-cell fr-heat-${lvl}`,
     }, title(`${c.day}: ${formatDuration(s)}`)));
   }
   return svg;
@@ -219,22 +239,25 @@ export function rankedBars(items, { unit = 'time' } = {}) {
     const secs = secsOf(r.secs);
     const share = Number.isFinite(r.share) && r.share >= 0 ? r.share : secs / sum;
     const pct = Math.round(share * 100);
+    const pctText = share > 0 && pct === 0 ? '<1%' : `${pct}%`;
+    const name = String(r.name ?? '');
     const fill = h('div', { class: 'fr-rank-fill' });
     fill.style.width = `${r1(max > 0 ? (secs / max) * 100 : 0)}%`;
     wrap.append(h('div', { class: 'fr-rank-row', role: 'listitem' },
-      h('span', { class: 'fr-rank-name' }, String(r.name ?? '')),
+      h('span', { class: 'fr-rank-name', title: name }, name),
       h('div', { class: 'fr-rank-track' }, fill),
       h('span', { class: 'fr-rank-time' }, fmt(secs)),
-      h('span', { class: 'fr-rank-pct' }, `${pct}%`)));
+      h('span', { class: 'fr-rank-pct' }, pctText)));
   }
   return wrap;
 }
 
 // ---- data table -----------------------------------------------------------------------------
 
-export function dataTable(rows, columns) {
+export function dataTable(rows, columns, caption = '') {
   const cols = Array.isArray(columns) ? columns : [];
   return h('table', { class: 'fr-table' },
+    caption ? h('caption', { class: 'fr-table-caption' }, String(caption)) : null,
     h('thead', {}, h('tr', {}, ...cols.map(c => h('th', { scope: 'col' }, String(c.label ?? c.key ?? ''))))),
     h('tbody', {}, ...(Array.isArray(rows) ? rows : []).map(row => h('tr', {}, ...cols.map((c) => {
       const v = row?.[c.key];

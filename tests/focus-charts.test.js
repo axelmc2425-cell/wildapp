@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { installDom, findAll, walk } from './helpers/fake-dom.js';
 import {
   chartColor, niceMax, scale, heatLevel, heatGrid, stackSegments, stackedDailyBars,
-  rankedBars, weekdayBars, yearHeatmap, dataTable,
+  rankedBars, weekdayBars, topAppNames, chartLegend, yearHeatmap, dataTable,
 } from '../src/modules/focus/ui/charts.js';
 
 installDom();
@@ -161,7 +161,8 @@ test('yearHeatmap draws exactly the days of the year', () => {
   assert.equal(svg.getAttribute('role'), 'img');
   const cell = withClass(svg, 'fr-heat-cell').find(c => byTag(c, 'title')[0].textContent.startsWith('2026-03-01'));
   assert.match(byTag(cell, 'title')[0].textContent, /1h 0m/);
-  assert.equal(cell.getAttribute('fill'), 'var(--chart-heat-4)');
+  assert.ok(cls(cell).split(' ').includes('fr-heat-4'));
+  assert.equal(cell.getAttribute('fill'), null);
   assert.equal(withClass(yearHeatmap([], 2024), 'fr-heat-cell').length, 366);
   assertClean(svg);
 });
@@ -184,4 +185,86 @@ test('dataTable is a plain table', () => {
   assert.equal(byTag(t, 'tr').length, 3);
   assert.deepEqual(byTag(t, 'td').map(c => c.textContent), ['x', '90s', 'y', '']);
   assertClean(dataTable([], []));
+});
+
+test('stack colours follow app rank, not position among non-zero apps', () => {
+  const names = ['a', 'b', 'c'];
+  const d1 = stackSegments({ total: 300, apps: { a: 100, b: 100, c: 100 } }, names);
+  const d2 = stackSegments({ total: 200, apps: { a: 0, b: 100, c: 100 } }, names);
+  assert.deepEqual(d1.map(s => s.idx), [0, 1, 2]);
+  assert.deepEqual(d2.map(s => [s.key, s.idx]), [['b', 1], ['c', 2]]);
+  const svg = stackedDailyBars([day('2026-11-01', 300, { a: 100, b: 100, c: 100 }), day('2026-11-02', 200, { b: 100, c: 100 })]);
+  const g2 = withClass(svg, 'fr-bar')[1];
+  assert.deepEqual(byTag(g2, 'rect').map(r => cls(r)), ['fr-seg fr-c0', 'fr-seg fr-c1']); // b and c are ranks 0 and 1 overall
+});
+
+test('stack segment heights sum to the day total and stay in the plot', () => {
+  const svg = stackedDailyBars(week);
+  const groups = withClass(svg, 'fr-bar');
+  const plotH = 220 - 10 - 24;
+  const totals = week.map(d => Math.max(d.total, Object.values(d.apps).reduce((a, b) => a + b, 0)));
+  groups.forEach((g, i) => {
+    const rects = byTag(g, 'rect');
+    const sum = rects.reduce((s, r) => s + Number(r.getAttribute('height')), 0);
+    const top = Math.min(...rects.map(r => Number(r.getAttribute('y'))), Infinity);
+    if (totals[i] === 0) return assert.equal(rects.length, 0);
+    assert.ok(Math.abs(sum - (totals[i] / niceMax(Math.max(...totals))) * plotH) < 0.1 * rects.length + 0.1, `day ${i}`);
+    assert.ok(top >= 10 - 0.1 && sum <= plotH + 0.1);
+  });
+});
+
+test('niceMax is tight: never over-rounds past ~75%', () => {
+  assert.equal(niceMax(3600), 3600);
+  assert.equal(niceMax(8000), 9000);
+  for (let v = 30; v < 400000; v = Math.ceil(v * 1.013)) {
+    const m = niceMax(v);
+    assert.ok(m >= v && v / m >= 0.7, `${v} -> ${m}`);
+  }
+});
+
+test('legend names apps with swatches and Other; aria-label names top apps', () => {
+  const names = topAppNames(week, 5);
+  assert.equal(names.length, 5);
+  const lg = chartLegend(names);
+  const items = byTag(lg, 'li');
+  assert.equal(items.length, 6);
+  assert.equal(items.at(-1).textContent, 'Other');
+  assert.ok(cls(items[0].children[0]).includes('fr-c0') && cls(items.at(-1).children[0]).includes('fr-c5'));
+  assert.equal(items[0].textContent, 'Code');
+  assert.match(stackedDailyBars(week).getAttribute('aria-label'), /Top apps: Code/);
+  assert.equal(byTag(chartLegend([]), 'li').length, 0);
+  assert.equal(byTag(chartLegend(['<b>x</b>']), 'b').length, 0);
+});
+
+test('the helper overflow key other is not a named series', () => {
+  const rows = [day('2026-11-02', 500, { other: 400, Code: 100 })];
+  assert.deepEqual(topAppNames(rows, 5), ['Code']);
+  const segs = stackSegments(rows[0], ['Code']);
+  assert.deepEqual(segs.map(s => [s.key, s.secs]), [['Code', 100], ['other', 400]]);
+});
+
+test('rankedBars: full name in title, tiny share shows <1%', () => {
+  const el = rankedBars([{ name: 'A very long name', secs: 10000, share: 0.999 }, { name: 'tiny', secs: 1, share: 0.001 }]);
+  assert.equal(withClass(el, 'fr-rank-name')[0].getAttribute('title'), 'A very long name');
+  assert.deepEqual(withClass(el, 'fr-rank-pct').map(n => n.textContent), ['100%', '<1%']);
+});
+
+test('heatGrid for Sunday-start and leap Sunday-start years', () => {
+  const g23 = heatGrid(2023); // 2023-01-01 is a Sunday
+  assert.equal(g23.length, 365);
+  assert.deepEqual([g23[0].col, g23[0].row], [0, 6]);
+  assert.equal(Math.max(...g23.map(c => c.col)) + 1, 53);
+  const g12 = heatGrid(2012); // leap, starts on a Sunday
+  assert.equal(g12.length, 366);
+  assert.equal(Math.max(...g12.map(c => c.col)) + 1, 54);
+  assert.equal(new Set(g12.map(c => `${c.col},${c.row}`)).size, 366);
+  const svg = yearHeatmap([], 2012);
+  assert.equal(withClass(svg, 'fr-heat-cell').length, 366);
+  assertClean(svg);
+});
+
+test('dataTable caption', () => {
+  const t = dataTable([{ a: 1 }], [{ key: 'a', label: 'A' }], 'Daily time');
+  assert.equal(byTag(t, 'caption')[0].textContent, 'Daily time');
+  assert.equal(byTag(dataTable([], []), 'caption').length, 0);
 });
