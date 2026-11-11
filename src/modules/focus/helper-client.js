@@ -36,6 +36,7 @@ export function createHelperClient(call) {
     setPartner: (publicKey) => send({ type: 'SetPartner', public_key: publicKey }),
     requestDelayedUnlock: (windowId) => send({ type: 'RequestDelayedUnlock', window_id: windowId }),
     cancelDelayedUnlock: (windowId) => send({ type: 'CancelDelayedUnlock', window_id: windowId }),
+    getUsage: (fromDay, toDay) => send({ type: 'GetUsage', from_day: fromDay, to_day: toDay }),
     /** Recovery from a bogus far-future clock; refused (`lock-active`) while any lock is pending. */
     resetClock: () => send({ type: 'ResetClock' }),
   };
