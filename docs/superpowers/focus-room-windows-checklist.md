@@ -47,7 +47,6 @@ Terms: "service" = a background Windows program; "ACL" = the permission list on 
 ## 1. Install and service hardening
 
 - [ ] Run the installer as Administrator — Expected: it completes with no error dialog
-- [ ] Open `HKLM\Software\Microsoft\Windows\CurrentVersion\Run` — Expected: the `MyBrainFocusSampler` value is gone (also after a plain uninstall without `--purge-state`)
 - [ ] Run `sc query MyBrainFocus` and `sc query MyBrainFocusWatchdog` — Expected: both exist and are RUNNING
 - [ ] Run `sc qc MyBrainFocus` and `sc qc MyBrainFocusWatchdog` — Expected: START_TYPE is AUTO_START and SERVICE_START_NAME is LocalSystem
 - [ ] Check BINARY_PATH_NAME in the `sc qc` output — Expected: it points at `C:\Program Files\MyBrainFocus\focus-helper.exe` (not a per-user folder)
@@ -228,7 +227,9 @@ A small sampler process (`focus-helper sampler`) runs in your signed-in session 
 
 - [ ] After install, sign out and sign back in — Expected: Task Manager (Details tab) shows `focus-helper.exe` running in your user session (not as SYSTEM) with the `sampler` argument, and no window or console appears
 - [ ] Check `HKLM\Software\Microsoft\Windows\CurrentVersion\Run` — Expected: a value `MyBrainFocusSampler` with the quoted installed exe path followed by `sampler`
-- [ ] End the sampler process in Task Manager and wait 20 seconds, then work in a program — Expected: the helper status shows usage tracking off and nothing is counted; after the next sign-in tracking resumes
+- [ ] End the sampler process in Task Manager and wait 20 seconds, then work in a program — Expected: `focus-helper send "{\"type\":\"GetStatus\"}"` shows `usage_tracking` false and nothing is counted; after the next sign-in tracking resumes
+- [ ] With the sampler running (signed in since install), run the installer again as Administrator — Expected: it succeeds (running samplers are stopped first); sign out and in once to bring the sampler back
+- [ ] With the sampler running, uninstall — Expected: it succeeds and `C:\Program Files\MyBrainFocus` is removed
 - [ ] With two Windows users signed in at once (fast user switching), work in one — Expected: time is not double counted (the usage total grows by about the real elapsed time)
 
 - [ ] Work in a program (for example Notepad) for a couple of minutes, then open the usage view — Expected: that program's time is counted

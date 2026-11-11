@@ -55,11 +55,6 @@ fn report(exe: &str, title: Option<&str>, idle: u64) -> String {
     json!({"type":"ReportForeground","exe":exe,"title":title,"idle_secs":idle,"day":"2026-11-11"}).to_string()
 }
 
-/// Sends the report at monotonic `mono` ms.
-fn rep(d: &mut Daemon, p: &mut Fake, line: &str, mono: i64) -> Value {
-    call(d, p, line, mono)
-}
-
 fn call(d: &mut Daemon, p: &mut Fake, line: &str, mono: i64) -> Value {
     serde_json::from_str(&d.handle_line(line, NOW + mono, mono, [0; 16], p)).unwrap()
 }
@@ -75,11 +70,11 @@ fn status_reports_usage_tracking() {
     let mut p = Fake;
     let st = r#"{"type":"GetStatus"}"#;
     assert_eq!(call(&mut d, &mut p, st, 0)["usage_tracking"], false, "no sampler yet");
-    assert_eq!(rep(&mut d, &mut p, &chrome("Inbox"), 1_000)["type"], "Ok");
+    assert_eq!(call(&mut d, &mut p, &chrome("Inbox"), 1_000)["type"], "Ok");
     assert_eq!(call(&mut d, &mut p, st, 1_000)["usage_tracking"], true);
     assert_eq!(call(&mut d, &mut p, st, 16_000)["usage_tracking"], true, "exactly 15 s after is still tracking");
     assert_eq!(call(&mut d, &mut p, st, 16_001)["usage_tracking"], false, "no report for more than 15 s");
-    rep(&mut d, &mut p, &chrome("Inbox"), 20_000);
+    call(&mut d, &mut p, &chrome("Inbox"), 20_000);
     assert_eq!(call(&mut d, &mut p, st, 20_000)["usage_tracking"], true, "a new report resumes it");
 }
 
@@ -89,7 +84,7 @@ fn reports_every_five_seconds() {
     let mut d = Daemon::load_with_usage(&s, &u);
     let mut p = Fake;
     for mono in [0, 5_000, 10_000] {
-        assert_eq!(rep(&mut d, &mut p, &chrome("Inbox"), mono)["type"], "Ok");
+        assert_eq!(call(&mut d, &mut p, &chrome("Inbox"), mono)["type"], "Ok");
     }
     // The first report only anchors.
     let r = usage(&mut d, &mut p);
@@ -102,7 +97,7 @@ fn first_report_records_nothing() {
     let (s, u) = paths("first");
     let mut d = Daemon::load_with_usage(&s, &u);
     let mut p = Fake;
-    rep(&mut d, &mut p, &chrome("Inbox"), 0);
+    call(&mut d, &mut p, &chrome("Inbox"), 0);
     assert_eq!(usage(&mut d, &mut p)["days"], json!([]));
 }
 
@@ -111,16 +106,33 @@ fn reports_less_than_four_seconds_apart_count_once() {
     let (s, u) = paths("double");
     let mut d = Daemon::load_with_usage(&s, &u);
     let mut p = Fake;
-    rep(&mut d, &mut p, &chrome("Inbox"), 0);
+    call(&mut d, &mut p, &chrome("Inbox"), 0);
     // Two signed-in users: each sampler reports every 5 s, interleaved 1 s apart.
-    rep(&mut d, &mut p, &chrome("Inbox"), 5_000);
-    rep(&mut d, &mut p, &chrome("Inbox"), 6_000);
-    rep(&mut d, &mut p, &chrome("Inbox"), 10_000);
-    rep(&mut d, &mut p, &chrome("Inbox"), 11_000);
+    call(&mut d, &mut p, &chrome("Inbox"), 5_000);
+    call(&mut d, &mut p, &chrome("Inbox"), 6_000);
+    call(&mut d, &mut p, &chrome("Inbox"), 10_000);
+    call(&mut d, &mut p, &chrome("Inbox"), 11_000);
     assert_eq!(usage(&mut d, &mut p)["days"][0]["total"], 10);
     // The anchor stays at 10 s: a report 3.999 s later counts nothing.
-    rep(&mut d, &mut p, &chrome("Inbox"), 13_999);
+    call(&mut d, &mut p, &chrome("Inbox"), 13_999);
     assert_eq!(usage(&mut d, &mut p)["days"][0]["total"], 10);
+}
+
+#[test]
+fn four_second_boundary() {
+    let total = |name: &str, monos: &[i64]| {
+        let (s, u) = paths(name);
+        let mut d = Daemon::load_with_usage(&s, &u);
+        let mut p = Fake;
+        for m in monos {
+            call(&mut d, &mut p, &chrome("Inbox"), *m);
+        }
+        usage(&mut d, &mut p)["days"][0]["total"].as_u64().unwrap_or(0)
+    };
+    assert_eq!(total("b4000", &[0, 4_000]), 4, "exactly 4 s counts");
+    assert_eq!(total("b3999", &[0, 3_999]), 0, "3.999 s counts nothing");
+    assert_eq!(total("b3999late", &[0, 3_999, 8_000]), 8, "the ignored report is not lost");
+    assert_eq!(total("b3900", &[0, 3_900, 8_000]), 8);
 }
 
 #[test]
@@ -134,14 +146,13 @@ fn no_reports_means_nothing_counted_even_with_ticks() {
     assert_eq!(usage(&mut d, &mut p)["days"], json!([]));
 }
 
-
 #[test]
 fn suspend_gap_capped() {
     let (s, u) = paths("gap");
     let mut d = Daemon::load_with_usage(&s, &u);
     let mut p = Fake;
-    rep(&mut d, &mut p, &chrome("Inbox"), 0);
-    rep(&mut d, &mut p, &chrome("Inbox"), 600_000);
+    call(&mut d, &mut p, &chrome("Inbox"), 0);
+    call(&mut d, &mut p, &chrome("Inbox"), 600_000);
     assert_eq!(usage(&mut d, &mut p)["days"][0]["total"], 15);
 }
 
@@ -153,8 +164,8 @@ fn block_list_stem_used() {
     let w = json!({"id":"w","starts":NOW-1000,"ends":NOW+3_600_000,"lock":"none","mode":"block","sites":["acmecorp.com"],"apps":[]});
     let r = call(&mut d, &mut p, &json!({"type":"PushWindows","windows":[w]}).to_string(), 0);
     assert_eq!(r["type"], "Ok");
-    rep(&mut d, &mut p, &chrome("Inbox | acmecorp"), 0);
-    rep(&mut d, &mut p, &chrome("Inbox | acmecorp"), 5_000);
+    call(&mut d, &mut p, &chrome("Inbox | acmecorp"), 0);
+    call(&mut d, &mut p, &chrome("Inbox | acmecorp"), 5_000);
     let r = usage(&mut d, &mut p);
     assert_eq!(r["days"][0]["sites"]["acmecorp"], 5);
 }
@@ -191,8 +202,8 @@ fn usage_persists_and_flushes() {
     {
         let mut d = Daemon::load_with_usage(&s, &u);
         let mut p = Fake;
-        rep(&mut d, &mut p, &chrome("Inbox"), 0);
-        rep(&mut d, &mut p, &chrome("Inbox"), 5_000);
+        call(&mut d, &mut p, &chrome("Inbox"), 0);
+        call(&mut d, &mut p, &chrome("Inbox"), 5_000);
         assert!(!u.exists(), "not saved before the minute is up");
         d.flush_usage();
     }
@@ -208,11 +219,11 @@ fn usage_saved_once_a_minute_when_dirty() {
     let mut d = Daemon::load_with_usage(&s, &u);
     let mut p = Fake;
     for mono in (0..60_000).step_by(5_000) {
-        rep(&mut d, &mut p, &chrome("Inbox"), mono);
+        call(&mut d, &mut p, &chrome("Inbox"), mono);
         d.tick(NOW + mono, mono, &mut p);
     }
     assert!(!u.exists(), "still inside the first minute");
-    rep(&mut d, &mut p, &chrome("Inbox"), 60_000);
+    call(&mut d, &mut p, &chrome("Inbox"), 60_000);
     d.tick(NOW + 60_000, 60_000, &mut p);
     assert!(u.exists());
 }
@@ -243,8 +254,8 @@ fn stem_total(window: Value, name: &str) -> Option<u64> {
     let mut p = Fake;
     let r = call(&mut d, &mut p, &json!({"type":"PushWindows","windows":[window]}).to_string(), 0);
     assert_eq!(r["type"], "Ok");
-    rep(&mut d, &mut p, &chrome("Inbox | acmecorp"), 0);
-    rep(&mut d, &mut p, &chrome("Inbox | acmecorp"), 5_000);
+    call(&mut d, &mut p, &chrome("Inbox | acmecorp"), 0);
+    call(&mut d, &mut p, &chrome("Inbox | acmecorp"), 5_000);
     usage(&mut d, &mut p)["days"][0]["sites"]["acmecorp"].as_u64()
 }
 
@@ -272,7 +283,7 @@ fn sub_second_remainder_is_carried() {
     let mut d = Daemon::load_with_usage(&s, &u);
     let mut p = Fake;
     for i in 0..6 {
-        rep(&mut d, &mut p, &chrome("Inbox"), i * 5_999);
+        call(&mut d, &mut p, &chrome("Inbox"), i * 5_999);
     }
     // 5 reports after the anchor, spanning 29 995 ms: 29 whole seconds, not 25.
     assert_eq!(usage(&mut d, &mut p)["days"][0]["total"], 29);
@@ -283,8 +294,8 @@ fn idle_report_counts_nothing() {
     let (s, u) = paths("idle");
     let mut d = Daemon::load_with_usage(&s, &u);
     let mut p = Fake;
-    rep(&mut d, &mut p, &report("chrome.exe", None, 301), 0);
-    rep(&mut d, &mut p, &report("chrome.exe", None, 301), 5_000);
+    call(&mut d, &mut p, &report("chrome.exe", None, 301), 0);
+    call(&mut d, &mut p, &report("chrome.exe", None, 301), 5_000);
     assert_eq!(usage(&mut d, &mut p)["days"], json!([]));
 }
 
@@ -323,11 +334,11 @@ fn report_foreground_does_not_write_state() {
     let (s, u) = paths("reportnowrite");
     let mut d = Daemon::load_with_usage(&s, &u);
     let mut p = Fake;
-    rep(&mut d, &mut p, &chrome("Inbox"), 0);
-    rep(&mut d, &mut p, &chrome("Inbox"), 5_000);
+    call(&mut d, &mut p, &chrome("Inbox"), 0);
+    call(&mut d, &mut p, &chrome("Inbox"), 5_000);
     assert!(!s.exists());
     std::fs::write(&s, b"{}").unwrap();
-    rep(&mut d, &mut p, &chrome("Inbox"), 10_000);
+    call(&mut d, &mut p, &chrome("Inbox"), 10_000);
     assert_eq!(std::fs::read(&s).unwrap(), b"{}");
 }
 
@@ -374,4 +385,23 @@ fn backup_load_warns() {
     let w = st["warnings"][0].as_str().unwrap();
     assert!(w.starts_with("usage: loaded from backup"), "{w}");
     assert!(w.contains("usage.json.corrupt-"), "{w}");
+}
+
+#[test]
+fn future_block_window_is_not_a_stem() {
+    let w = json!({"id":"w","starts":NOW+60_000,"ends":NOW+3_600_000,"lock":"none","mode":"block","sites":["acmecorp.com"],"apps":[]});
+    assert_eq!(stem_total(w, "future"), None);
+}
+
+#[test]
+fn usage_file_contains_no_title_text() {
+    let (s, u) = paths("notitle");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    call(&mut d, &mut p, &chrome("SecretTitleXyzzy - Mozilla"), 0);
+    call(&mut d, &mut p, &chrome("SecretTitleXyzzy - Mozilla"), 5_000);
+    d.flush_usage();
+    let text = std::fs::read_to_string(&u).unwrap();
+    assert!(text.contains("chrome.exe"));
+    assert!(!text.contains("Xyzzy") && !text.contains("Secret"), "{text}");
 }

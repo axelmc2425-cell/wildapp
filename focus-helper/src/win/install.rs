@@ -26,7 +26,7 @@ fn ilog(msg: &str) {
     log(msg);
     install_log(msg);
 }
-use crate::win::{paths, scm};
+use crate::win::{paths, procs, scm};
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Watchdog first.
@@ -152,6 +152,8 @@ fn mutate(existing: &[(Role, ServiceState)]) -> Result<(), String> {
     // Stopped services (the only case when a lock is pending) are merely disabled; running ones
     // exist here only when no lock is pending.
     disable_and_stop(existing)?;
+    // Running samplers hold the installed exe open; stop them so it can be replaced.
+    stop_samplers_for(&target_exe);
 
     // Copy our own exe to the admin-only Program Files location; services run THAT copy, never
     // a per-user directory (a SYSTEM service on a user-writable exe would be an escalation hole).
@@ -173,8 +175,6 @@ fn mutate(existing: &[(Role, ServiceState)]) -> Result<(), String> {
         paths::sc(&logic::sc_failure_args(role)).map_err(|e| e.to_string())?;
         paths::sc(&logic::sc_failureflag_args(role)).map_err(|e| e.to_string())?;
     }
-    // The sampler runs the installed copy in each user's session from the next sign-in on.
-    set_sampler_run(&target_exe)?;
     // Start while the descriptor still lets us, then restrict it.
     for role in [Role::Main, Role::Watchdog] {
         scm::start_if_stopped(role).map_err(|e| format!("cannot start {}: {e}", role.service_name()))?;
@@ -182,7 +182,17 @@ fn mutate(existing: &[(Role, ServiceState)]) -> Result<(), String> {
     for role in [Role::Main, Role::Watchdog] {
         paths::sc(&logic::sc_sdset_args(role, SERVICE_SDDL)).map_err(|e| e.to_string())?;
     }
+    // Last step, so a failed install leaves no Run value: the sampler runs the installed copy
+    // in each user's session from the next sign-in on.
+    set_sampler_run(&target_exe)?;
     Ok(())
+}
+
+fn stop_samplers_for(exe: &str) {
+    let n = procs::stop_samplers(exe);
+    if n > 0 {
+        ilog(&format!("stopped {n} running sampler process(es)"));
+    }
 }
 
 /// Registers the per-user sampler to start at every sign-in (idempotent: overwrites the value).
@@ -270,12 +280,16 @@ pub fn uninstall(purge_state: bool) -> Result<(), CmdError> {
         }
     }
 
-    if let Err(e) = remove_sampler_run() {
-        problems.push(e);
+    // Only when every service is gone: if one was restored above, the sampler stays registered.
+    if problems.is_empty() {
+        if let Err(e) = remove_sampler_run() {
+            problems.push(e);
+        }
     }
 
-    // Best effort: our own exe may be running from here.
+    // Best effort: our own exe may be running from here. Samplers hold the exe open: stop them.
     let install_dir = paths::install_dir();
+    stop_samplers_for(&paths::install_exe());
     admin_write(&install_dir);
     let _ = std::fs::remove_dir_all(&install_dir);
 

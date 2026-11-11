@@ -261,6 +261,34 @@ pub fn sampler_run_command(exe: &str) -> String {
     format!("\"{exe}\" sampler")
 }
 
+/// A running process as far as `sampler_pids` needs to know.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcInfo {
+    pub pid: u32,
+    /// Full image path when readable.
+    pub exe: Option<String>,
+    /// Command line split into arguments, program first.
+    pub cmd: Vec<String>,
+}
+
+fn same_path(a: &str, b: &str) -> bool {
+    a.replace('/', "\\").eq_ignore_ascii_case(&b.replace('/', "\\"))
+}
+
+/// Pids of the per-user `sampler` processes that run the installed exe, which install and
+/// uninstall must stop before replacing or deleting it. A process qualifies only when its
+/// image is `installed_exe` AND its first argument after the program is `sampler`. Our own
+/// process and the service processes are never returned.
+pub fn sampler_pids(procs: &[ProcInfo], installed_exe: &str, own_pid: u32, service_pids: &[u32]) -> Vec<u32> {
+    procs
+        .iter()
+        .filter(|p| p.pid != own_pid && !service_pids.contains(&p.pid))
+        .filter(|p| p.exe.as_deref().is_some_and(|e| same_path(e, installed_exe)))
+        .filter(|p| p.cmd.get(1).is_some_and(|a| a == "sampler"))
+        .map(|p| p.pid)
+        .collect()
+}
+
 /// `%ProgramFiles%\MyBrainFocus\focus-helper.exe`
 pub fn install_exe(program_files: &str) -> String {
     format!(r"{}\{}", install_dir(program_files), EXE_NAME)
@@ -425,6 +453,28 @@ mod tests {
 
     fn w(lock: Lock, starts: i64, ends: i64) -> Window {
         Window { id: "w".into(), starts, ends, lock, mode: Mode::Block, sites: vec![], apps: vec![], app_folders: vec![], unlock_delay_ms: None }
+    }
+
+    fn pi(pid: u32, exe: Option<&str>, args: &[&str]) -> ProcInfo {
+        ProcInfo { pid, exe: exe.map(String::from), cmd: args.iter().map(|a| a.to_string()).collect() }
+    }
+
+    #[test]
+    fn sampler_pids_selection() {
+        let exe = r"C:\Program Files\MyBrainFocus\focus-helper.exe";
+        let procs = [
+            pi(10, Some(exe), &[exe, "sampler"]),
+            pi(11, Some(r"c:\program files\mybrainfocus\FOCUS-HELPER.EXE"), &["x", "sampler"]), // case differs
+            pi(12, Some(exe), &[exe, "sampler"]),                                                 // own pid
+            pi(13, Some(exe), &[exe, "service"]),                                                 // different args
+            pi(14, Some(exe), &[exe, "sampler"]),                                                 // service pid
+            pi(15, Some(r"C:\Users\a\Downloads\focus-helper.exe"), &["x", "sampler"]),       // other exe
+            pi(16, None, &["x", "sampler"]),                                                      // unreadable image
+            pi(17, Some(exe), &[exe]),                                                            // no args
+            pi(18, Some(exe), &[exe, "send", "sampler"]),                                         // sampler not first
+        ];
+        assert_eq!(sampler_pids(&procs, exe, 12, &[14]), vec![10, 11]);
+        assert!(sampler_pids(&[], exe, 1, &[]).is_empty());
     }
 
     #[test]
