@@ -625,7 +625,8 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
       let kind = 'unknown';
       try { kind = classifyHelperFailure(err).kind; } catch { /* keep unknown */ }
       const down = (err && err.code === 'unreachable') || ['not-running', 'timeout', 'unavailable'].includes(kind);
-      return { ok: false, down: !!down, message: errText(err) };
+      const unavailable = kind === 'unavailable' || /desktop app/i.test(errText(err));
+      return { ok: false, down: !!down, unavailable, code: err && err.code, message: errText(err) };
     }
   }
 

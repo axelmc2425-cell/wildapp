@@ -155,7 +155,8 @@ test('year view wraps the heatmap in a scroll container', async () => {
   await tick();
   const scroll = findAll(body, (n) => n.className.includes('fr-chart-scroll'))[0];
   assert.ok(scroll);
-  assert.ok(findAll(scroll, (n) => n.className && String(n.className).includes('fr-chart-heat')).length >= 1 || scroll.children.length === 1);
+  assert.equal(scroll.children.length, 1);
+  assert.match(String(scroll.children[0].getAttribute('class')), /fr-chart-heat/);
   stop();
 });
 
@@ -201,4 +202,98 @@ test('back button calls onBack', async () => {
   await btn(body, '← Back').click();
   assert.equal(back, 1);
   stop();
+});
+
+test('delta card text for down, same and none', async () => {
+  const mk = (cur, prev) => setup({ usage: (from) => ({ ok: true, days: from === '2026-11-09' ? [row('2026-11-09', cur)] : prev ? [row('2026-11-03', prev)] : [] }) });
+  let t = mk(1800, 3600); await tick();
+  assert.match(text(t.body), /−50%/); assert.match(text(t.body), /Less than last week/); t.stop();
+  t = mk(3600, 3600); await tick();
+  assert.match(text(t.body), /No change/); t.stop();
+  t = mk(3600, 0); await tick();
+  assert.match(text(t.body), /Nothing recorded last week/); t.stop();
+});
+
+test('bad-request shows a friendly update message without Retry', async () => {
+  const { body, stop } = setup({ usage: () => ({ ok: false, down: false, code: 'bad-request', message: 'unknown variant `GetUsage`' }) });
+  await tick();
+  assert.match(text(body), /doesn't report usage yet\. Update the helper\./);
+  assert.doesNotMatch(text(body), /unknown variant/);
+  assert.equal(btn(body, 'Retry'), undefined);
+  stop();
+});
+
+test('browser build says usage is desktop-app only', async () => {
+  const { body, stop } = setup({ helper: { kind: 'unavailable' }, usage: () => ({ ok: false, down: true, unavailable: true, message: 'x' }) });
+  await tick();
+  assert.match(text(body), /Usage is only available in the desktop app\./);
+  assert.doesNotMatch(text(body), /MyBrainFocus/);
+  stop();
+});
+
+test('Retry shows loading, ignores clicks in flight, and a failed retry returns to the error state', async () => {
+  let n = 0; const waiting = [];
+  const { body, calls, stop } = setup({ usage: () => { n++; return n <= 2 ? { ok: false, down: false, message: 'boom' } : new Promise((res) => waiting.push(res)); } });
+  await tick();
+  assert.match(text(body), /boom/);
+  calls.length = 0;
+  const retry = btn(body, 'Retry');
+  await retry.click();
+  assert.match(text(body), /Loading/);
+  await retry.click(); // stale button, request in flight
+  assert.equal(calls.length, 2);
+  assert.equal(btn(body, 'Retry'), undefined);
+  for (const r of waiting) r({ ok: false, down: false, message: 'boom again' });
+  await tick();
+  assert.match(text(body), /boom again/);
+  assert.ok(btn(body, 'Retry'));
+  stop();
+});
+
+test('previous-range failure on refresh keeps the cached previous days', async () => {
+  let failPrev = false;
+  const { body, stop } = setup({ usage: (from) => (from === '2026-11-09' ? { ok: true, days: [row('2026-11-09', 3600)] } : failPrev ? { ok: false, message: 'x' } : { ok: true, days: [row('2026-11-03', 1800)] }) });
+  await tick();
+  assert.match(text(body), /\+100%/);
+  failPrev = true;
+  await btn(body, 'Week').click();
+  await tick();
+  assert.match(text(body), /\+100%/);
+  assert.doesNotMatch(text(body), /could not be loaded/);
+  stop();
+});
+
+test('the stats view refreshes helper status every 5 s and clears that timer on cleanup', async () => {
+  const fns = new Map(); const cleared = [];
+  const si = globalThis.setInterval; const ci = globalThis.clearInterval;
+  let id = 0;
+  globalThis.setInterval = (fn, ms) => { id++; fns.set(id, [fn, ms]); return id; };
+  globalThis.clearInterval = (i) => { cleared.push(i); };
+  try {
+    let refreshed = 0;
+    const { controller, stop } = setup();
+    controller.refreshStatus = async () => { refreshed++; };
+    const five = [...fns.values()].find(([, ms]) => ms === 5000);
+    assert.ok(five);
+    five[0]();
+    assert.equal(refreshed, 1);
+    stop();
+    assert.equal(cleared.length, fns.size);
+  } finally { globalThis.setInterval = si; globalThis.clearInterval = ci; }
+});
+
+test('module render switches home <-> stats and Back restores home', async () => {
+  const body = installDom(undefined);
+  await import('../src/modules/focus/index.js');
+  const { getModule } = await import('../src/shell/modules.js');
+  const stop = getModule('focus').render(body, { db: {} });
+  try {
+    assert.match(text(body), /Focus Room/);
+    await btn(body, 'Stats').click();
+    assert.ok(btn(body, '← Back'));
+    assert.equal(btn(body, 'Stats'), undefined);
+    await btn(body, '← Back').click();
+    assert.ok(btn(body, 'Stats'));
+    assert.equal(btn(body, '← Back'), undefined);
+  } finally { stop(); }
 });

@@ -43,6 +43,8 @@ export function mountStatsPage(root, controller, deps = {}) {
   let asTable = false;
   let status = 'loading'; // 'loading' | 'ok' | 'down' | 'error'
   let message = '';
+  let errCode = null;
+  let unavailable = false;
   let seq = 0; // newest request wins
   let statusKey = null; // the range key `status` describes
   let lastSig = null;
@@ -76,12 +78,14 @@ export function mountStatsPage(root, controller, deps = {}) {
     const [a, b] = await Promise.all([safeUsage(cur.from, cur.to), safeUsage(prev.from, prev.to)]);
     if (!alive) return;
     if (a.ok && Array.isArray(a.days)) {
-      cache.set(key, { days: a.days, prevDays: b.ok && Array.isArray(b.days) ? b.days : null, at: now() });
+      const old = cache.get(key);
+      cache.set(key, { days: a.days, prevDays: b.ok && Array.isArray(b.days) ? b.days : (old ? old.prevDays : null), at: now() });
     }
     if (mine !== seq) return; // a newer request has taken over
+    errCode = null; unavailable = false;
     if (a.ok && Array.isArray(a.days)) { status = 'ok'; message = ''; }
-    else if (a.down) { status = 'down'; message = a.message || ''; }
-    else { status = 'error'; message = (a && a.message) || 'Unknown error'; }
+    else if (a.down) { status = 'down'; message = a.message || ''; unavailable = !!a.unavailable; }
+    else { status = 'error'; message = (a && a.message) || 'Unknown error'; errCode = a.code || null; }
     render();
   }
 
@@ -173,6 +177,9 @@ export function mountStatsPage(root, controller, deps = {}) {
     const entry = cache.get(keyOf());
     if (!entry) {
       if (status === 'down') {
+        if (unavailable || helperKind() === 'unavailable') {
+          return h('div', { class: 'fr-statnote', 'data-fk': 'down' }, h('strong', {}, 'Usage is only available in the desktop app.'));
+        }
         return h('div', { class: 'fr-statnote', 'data-fk': 'down' },
           h('strong', {}, "The helper isn't running"),
           h('p', {}, 'Usage comes from the Focus Room helper, so there is nothing to show yet. Install the helper (run the MyBrain installer) or, if it is installed, start the MyBrainFocus service. This page fills in once it is running.'));
@@ -191,15 +198,19 @@ export function mountStatsPage(root, controller, deps = {}) {
   }
 
   function errorView() {
+    if (errCode === 'bad-request') {
+      return h('div', { class: 'fr-statnote fr-err-box', role: 'alert', 'data-fk': 'error' },
+        h('strong', {}, "This helper version doesn't report usage yet. Update the helper."));
+    }
     return h('div', { class: 'fr-statnote fr-err-box', role: 'alert', 'data-fk': 'error' },
       h('strong', {}, "Couldn't load usage"),
       h('p', {}, message || 'Unknown error'),
-      h('button', { type: 'button', class: 'fr-retry', 'data-fk': 'retry', onclick: () => load() }, 'Retry'));
+      h('button', { type: 'button', class: 'fr-retry', 'data-fk': 'retry', onclick: () => { if (status === 'loading') return; status = 'loading'; message = ''; load(); } }, 'Retry'));
   }
 
   function signature() {
     const entry = cache.get(keyOf());
-    return JSON.stringify([period, range, asTable, status, message, trackingOff(), helperKind(), todayKey(), entry ? [entry.days, entry.prevDays, status === 'down' ? entry.at : 0] : null]);
+    return JSON.stringify([period, range, asTable, status, message, errCode, unavailable, trackingOff(), helperKind(), todayKey(), entry ? [entry.days, entry.prevDays, status === 'down' ? entry.at : 0] : null]);
   }
 
   function render() {
@@ -238,7 +249,9 @@ export function mountStatsPage(root, controller, deps = {}) {
     lastTracking = tracking; lastKind = kind;
     if (recovered) load(); else render();
   }) : () => {};
-  const timers = [setInterval(() => { if (alive && !trackingOff()) load(); }, REFRESH_MS)];
+  const timers = [
+    setInterval(() => { try { Promise.resolve(controller.refreshStatus && controller.refreshStatus()).catch(() => {}); } catch { /* ignore */ } }, 5000),
+    setInterval(() => { if (alive && !trackingOff()) load(); }, REFRESH_MS)];
 
   load();
 
