@@ -122,3 +122,45 @@ fn advance_clock_is_rejected_without_feature() {
     drop(stdin);
     assert_eq!(child.wait().unwrap().code(), Some(0));
 }
+
+#[cfg(feature = "test-clock")]
+#[test]
+fn add_usage_then_get_usage_persists_across_restart() {
+    let dir = std::env::temp_dir().join(format!("focus-stdio-usage-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state = dir.join("state.json");
+    let run = |lines: &[String]| -> Vec<Value> {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_focus-helper"))
+            .args(["stdio", "--state"])
+            .arg(&state)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        let mut replies = Vec::new();
+        for l in lines {
+            writeln!(stdin, "{l}").unwrap();
+            stdin.flush().unwrap();
+            let mut r = String::new();
+            out.read_line(&mut r).unwrap();
+            replies.push(serde_json::from_str(&r).unwrap());
+        }
+        drop(stdin);
+        assert_eq!(child.wait().unwrap().code(), Some(0));
+        replies
+    };
+    let get = r#"{"type":"GetUsage","from_day":"2026-11-01","to_day":"2026-11-30"}"#.to_string();
+    let add = json!({"type":"AddUsage","day":{"day":"2026-11-10","total":90,"apps":{"chrome.exe":90},"sites":{},"other_browsing":90}}).to_string();
+    let r = run(&[add, get.clone()]);
+    assert_eq!(r[0]["type"], "Ok");
+    assert_eq!(r[1]["type"], "Usage");
+    assert_eq!(r[1]["days"][0]["total"], 90);
+    assert!(dir.join("usage.json").exists());
+    let r = run(&[get]);
+    assert_eq!(r[0]["days"][0]["apps"]["chrome.exe"], 90);
+    let st = run(&[r#"{"type":"GetStatus"}"#.to_string()]);
+    assert_eq!(st[0]["usage_tracking"], false);
+}

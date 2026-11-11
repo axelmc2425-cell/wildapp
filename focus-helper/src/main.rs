@@ -75,6 +75,22 @@ fn advance_clock(line: &str, skew_ms: &mut i64) -> Option<String> {
     }
 }
 
+/// Test-only: `{"type":"AddUsage","day":{...DayUsage}}` seeds (and saves) a usage day.
+#[cfg(feature = "test-clock")]
+fn add_usage(line: &str, daemon: &mut Daemon) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("type")?.as_str()? != "AddUsage" {
+        return None;
+    }
+    match v.get("day").cloned().and_then(|d| serde_json::from_value::<focus_helper::usage::DayUsage>(d).ok()) {
+        Some(day) => {
+            daemon.add_usage(day);
+            Some(r#"{"type":"Ok"}"#.to_string())
+        }
+        None => Some(r#"{"type":"Error","code":"bad-request","message":"AddUsage needs a day object"}"#.to_string()),
+    }
+}
+
 fn stdio(state: PathBuf) -> ExitCode {
     let mut daemon = Daemon::load(&state);
     let mut platform = NullPlatform;
@@ -96,6 +112,13 @@ fn stdio(state: PathBuf) -> ExitCode {
             }
             continue;
         }
+        #[cfg(feature = "test-clock")]
+        if let Some(reply) = add_usage(&line, &mut daemon) {
+            if writeln!(stdout, "{reply}").and_then(|_| stdout.flush()).is_err() {
+                break;
+            }
+            continue;
+        }
         counter += 1;
         #[cfg(feature = "test-clock")]
         let wall = wall_ms().saturating_add(skew_ms);
@@ -107,6 +130,7 @@ fn stdio(state: PathBuf) -> ExitCode {
             break;
         }
     }
+    daemon.flush_usage();
     ExitCode::SUCCESS
 }
 

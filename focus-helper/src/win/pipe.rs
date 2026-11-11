@@ -79,7 +79,7 @@ fn mono_ms(start: Instant) -> i64 {
 /// Run the daemon until stop is requested. Returns an error if the pipe cannot be created
 /// (for example another process already owns the name); the SCM then restarts the service.
 pub async fn serve(state_path: PathBuf, flags: Arc<Flags>) -> io::Result<()> {
-    let shared = Rc::new(RefCell::new(Shared { daemon: Daemon::load(&state_path), platform: WindowsPlatform::new() }));
+    let shared = Rc::new(RefCell::new(Shared { daemon: Daemon::load_with_usage(&state_path, &paths::usage_file()), platform: WindowsPlatform::new() }));
     let start = Instant::now();
     let clients = Rc::new(Cell::new(0usize));
     // Only the very first instance may fail the service (someone else owns the name).
@@ -120,6 +120,7 @@ pub async fn serve(state_path: PathBuf, flags: Arc<Flags>) -> io::Result<()> {
                     last_persist_warning = persist_warning;
                 }
                 if flags.stop_requested.load(Ordering::SeqCst) {
+                    daemon.flush_usage();
                     return Ok(());
                 }
             }

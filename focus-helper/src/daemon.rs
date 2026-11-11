@@ -10,6 +10,8 @@ use crate::enforce::{any_window_active, enforce_once, ProcessTable};
 use crate::ipc::{self, Request, Response};
 use crate::lockstore::LockStore;
 use crate::persist;
+use crate::sites::stems_from_domains;
+use crate::usage::{self, DayUsage, Sample, UsageLoad, UsageStore};
 
 /// While block sites are active, re-assert the hosts file this often (effective ms): repairs
 /// edits and ACL changes made behind the helper's back. A no-op when nothing differs.
@@ -17,6 +19,11 @@ pub const HOSTS_REAPPLY_INTERVAL_MS: i64 = 30_000;
 
 /// Persist at least this often, in effective-clock milliseconds.
 pub const PERSIST_INTERVAL_MS: i64 = 30_000;
+
+/// Foreground sampling period, in monotonic milliseconds.
+pub const USAGE_SAMPLE_INTERVAL_MS: i64 = 5_000;
+/// Usage is written at most this often (monotonic ms) while dirty.
+pub const USAGE_FLUSH_INTERVAL_MS: i64 = 60_000;
 
 pub trait Platform {
     /// Render the managed hosts block for `sites` (empty removes it and unlocks the file).
@@ -26,6 +33,14 @@ pub trait Platform {
     fn clear_doh_off(&mut self) -> io::Result<()>;
     fn flush_dns(&mut self) -> io::Result<()>;
     fn process_table(&self) -> &dyn ProcessTable;
+    /// The foreground program right now, if this platform can tell.
+    fn foreground(&mut self) -> Option<Sample> {
+        None
+    }
+    /// Whether `foreground` is implemented (reported in Status).
+    fn usage_tracking(&self) -> bool {
+        false
+    }
 }
 
 pub struct Daemon {
@@ -47,10 +62,21 @@ pub struct Daemon {
     persist_error: Option<String>,
     /// Set at load when state came from the backup or could not be read; shown in Status.
     state_warning: Option<String>,
+    usage: UsageStore,
+    usage_path: PathBuf,
+    /// Set at load when the usage file was recovered or unreadable; shown in Status.
+    usage_warning: Option<String>,
+    last_sample_mono: Option<i64>,
+    last_usage_flush_mono: Option<i64>,
 }
 
 impl Daemon {
+    /// Usage lives in `usage.json` next to the state file.
     pub fn load(state_path: &Path) -> Daemon {
+        Daemon::load_with_usage(state_path, &state_path.with_file_name("usage.json"))
+    }
+
+    pub fn load_with_usage(state_path: &Path, usage_path: &Path) -> Daemon {
         let (store, source) = persist::load_with_report(state_path);
         let unix_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -71,6 +97,13 @@ impl Daemon {
             }
             _ => None,
         };
+        let (usage, usage_load) = usage::load(usage_path, unix_ms);
+        let usage_warning = match usage_load {
+            UsageLoad::Corrupt(p) | UsageLoad::Backup(Some(p)) => {
+                Some(format!("usage: unreadable, started empty — previous file kept as {}", p.display()))
+            }
+            _ => None,
+        };
         let clock = EffectiveClock::new(store.high_water_ms);
         Daemon {
             store,
@@ -85,6 +118,11 @@ impl Daemon {
             last_saved_ms: None,
             persist_error: None,
             state_warning,
+            usage,
+            usage_path: usage_path.to_path_buf(),
+            usage_warning,
+            last_sample_mono: None,
+            last_usage_flush_mono: None,
         }
     }
 
@@ -97,6 +135,7 @@ impl Daemon {
         self.state_warning
             .iter()
             .cloned()
+            .chain(self.usage_warning.iter().cloned())
             .chain(self.persist_error.iter().map(|e| format!("persist: {e}")))
             .chain(self.doh_warnings.iter().cloned())
             .chain(self.error_warnings.iter().cloned())
@@ -120,6 +159,56 @@ impl Daemon {
         }
     }
 
+    /// Writes the usage store now if it has unsaved changes.
+    pub fn flush_usage(&mut self) {
+        if !self.usage.dirty() {
+            return;
+        }
+        self.usage.prune();
+        match usage::save(&self.usage_path, &self.usage) {
+            Ok(()) => self.usage.mark_clean(),
+            Err(e) => eprintln!("focus-helper: usage save failed: {e}"),
+        }
+    }
+
+    /// Test seeding: replaces the day and saves immediately.
+    pub fn add_usage(&mut self, day: DayUsage) {
+        self.usage.add_day(day);
+        self.flush_usage();
+    }
+
+    fn sample_usage(&mut self, now: i64, mono_ms: i64, platform: &mut dyn Platform) {
+        if !platform.usage_tracking() {
+            return;
+        }
+        let Some(last) = self.last_sample_mono else {
+            self.last_sample_mono = Some(mono_ms);
+            self.last_usage_flush_mono = Some(mono_ms);
+            return;
+        };
+        let since = mono_ms - last;
+        if since < USAGE_SAMPLE_INTERVAL_MS {
+            return;
+        }
+        self.last_sample_mono = Some(mono_ms);
+        let elapsed = (since / 1000) as u64;
+        let sample = platform.foreground();
+        let sites: Vec<String> = self
+            .store
+            .windows
+            .iter()
+            .filter(|w| w.starts <= now && now < w.ends)
+            .flat_map(|w| w.sites.iter().cloned())
+            .collect();
+        self.usage.record(sample.as_ref(), elapsed, &stems_from_domains(&sites));
+        if self.usage.dirty()
+            && self.last_usage_flush_mono.is_none_or(|f| mono_ms - f >= USAGE_FLUSH_INTERVAL_MS)
+        {
+            self.last_usage_flush_mono = Some(mono_ms);
+            self.flush_usage();
+        }
+    }
+
     pub fn handle_line(
         &mut self,
         line: &str,
@@ -129,6 +218,18 @@ impl Daemon {
         platform: &mut dyn Platform,
     ) -> String {
         let resp = match serde_json::from_str::<Request>(line) {
+            Ok(Request::GetUsage { from_day, to_day }) => match self.usage.range(&from_day, &to_day) {
+                Ok(days) => Response::Usage { days },
+                Err(e) => Response::Error {
+                    code: "bad-request".into(),
+                    message: match e {
+                        usage::RangeError::BadDay => "days must be YYYY-MM-DD",
+                        usage::RangeError::Reversed => "from_day is after to_day",
+                        usage::RangeError::TooLong => "range is longer than 400 days",
+                    }
+                    .into(),
+                },
+            },
             Ok(req) => {
                 let is_status = req == Request::GetStatus;
                 let (mut resp, expired) = ipc::handle_changed(&mut self.store, &mut self.clock, req, wall_ms, mono_ms, nonce);
@@ -139,8 +240,9 @@ impl Daemon {
                         let now = self.clock.now(wall_ms, mono_ms);
                         self.apply(now, platform);
                     }
-                    if let Response::Status { warnings, .. } = &mut resp {
+                    if let Response::Status { warnings, usage_tracking, .. } = &mut resp {
                         *warnings = self.warnings();
+                        *usage_tracking = platform.usage_tracking();
                     }
                 } else {
                     let failed = self.save();
@@ -177,6 +279,7 @@ impl Daemon {
         self.store.prune_tombstones(now);
         let expired = self.store.expire_pending(now);
         self.apply(now, platform);
+        self.sample_usage(now, mono_ms, platform);
         if self.persist_error.is_some() || expired {
             self.save();
             return;

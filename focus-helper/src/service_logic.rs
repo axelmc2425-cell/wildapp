@@ -15,6 +15,7 @@ pub const PIPE_NAME: &str = r"\\.\pipe\mybrain-focus";
 pub const DIR_NAME: &str = "MyBrainFocus";
 pub const EXE_NAME: &str = "focus-helper.exe";
 pub const STATE_FILE: &str = "state.json";
+pub const USAGE_FILE: &str = "usage.json";
 
 /// Pipe DACL: SYSTEM and Administrators full control. Interactive users (IU: anyone logged on at
 /// the console or over RDP, not services or network logons) get explicit rights
@@ -131,8 +132,10 @@ pub fn install_state_dir_action(exists: bool, is_reparse: bool) -> InstallStateD
 }
 
 /// Files the helper itself keeps in the state directory.
-pub const EXPECTED_STATE_FILES: [&str; 5] =
-    ["state.json", "state.json.bak", "state.json.tmp", "service.log", "service.log.old"];
+pub const EXPECTED_STATE_FILES: [&str; 8] = [
+    "state.json", "state.json.bak", "state.json.tmp", "usage.json", "usage.json.bak", "usage.json.tmp",
+    "service.log", "service.log.old",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChildAction {
@@ -262,6 +265,11 @@ pub fn state_dir(program_data: &str) -> String {
 
 pub fn state_file(program_data: &str) -> PathBuf {
     PathBuf::from(format!(r"{}\{}", state_dir(program_data), STATE_FILE))
+}
+
+/// Usage history, a sibling of the state file.
+pub fn usage_file(program_data: &str) -> PathBuf {
+    PathBuf::from(format!(r"{}\{}", state_dir(program_data), USAGE_FILE))
 }
 
 /// `%SystemRoot%\System32\<exe>`: always an absolute path, never a PATH lookup.
@@ -462,6 +470,8 @@ mod tests {
         assert_eq!(install_dir(r"C:\Program Files\"), r"C:\Program Files\MyBrainFocus");
         assert_eq!(state_dir(r"C:\ProgramData"), r"C:\ProgramData\MyBrainFocus");
         assert_eq!(state_file(r"C:\ProgramData"), PathBuf::from(r"C:\ProgramData\MyBrainFocus\state.json"));
+        assert_eq!(usage_file(r"C:\ProgramData"), PathBuf::from(r"C:\ProgramData\MyBrainFocus\usage.json"));
+        assert_eq!(classify_child("usage.json", false, false), ChildAction::ResetAcl);
         assert_eq!(system32_exe(r"C:\Windows", "sc.exe"), r"C:\Windows\System32\sc.exe");
     }
 

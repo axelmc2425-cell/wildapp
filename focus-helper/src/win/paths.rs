@@ -103,6 +103,10 @@ pub fn state_file() -> PathBuf {
     service_logic::state_file(&program_data())
 }
 
+pub fn usage_file() -> PathBuf {
+    service_logic::usage_file(&program_data())
+}
+
 /// Run an absolute-path tool, returning an error carrying its output on failure.
 pub fn run_exe(exe: PathBuf, args: &[String]) -> io::Result<()> {
     let out = Command::new(&exe).args(args).output()?;

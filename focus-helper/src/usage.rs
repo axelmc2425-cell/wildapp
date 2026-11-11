@@ -35,7 +35,7 @@ pub const MAX_RANGE_DAYS: i64 = 400;
 
 const OTHER: &str = "other";
 
-#[derive(Serialize, Deserialize, Default, Clone, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Default, Clone, PartialEq, Eq, Debug)]
 pub struct DayUsage {
     pub day: String,
     pub total: u64,
