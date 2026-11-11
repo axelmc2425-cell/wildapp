@@ -157,9 +157,10 @@ fn prune_730() {
         }
     }
     u.prune();
-    let kept: usize = u.range("2022-01-01", "2023-01-31").unwrap().len()
+    let kept = u.range("2022-01-01", "2023-01-31").unwrap().len()
         + u.range("2023-02-01", "2024-02-29").unwrap().len()
         + u.range("2024-03-01", "2024-12-31").unwrap().len();
+    assert_eq!(kept, 730);
     // the 71st seeded day is the oldest kept, the 800th the newest
     assert!(u.range("2022-01-01", "2022-03-14").unwrap().is_empty());
     assert_eq!(u.range("2022-03-15", "2022-03-15").unwrap().len(), 1);
@@ -198,7 +199,7 @@ fn fresh_and_backup_loads() {
     save(&p, &st).unwrap();
     std::fs::remove_file(&p).unwrap();
     let (l, how) = load(&p, 1);
-    assert_eq!(how, UsageLoad::Backup);
+    assert_eq!(how, UsageLoad::Backup(None));
     assert_eq!(l, st);
 }
 
@@ -228,4 +229,92 @@ fn dirty_flag() {
     assert!(u.dirty());
     u.mark_clean();
     assert!(!u.dirty());
+}
+
+#[test]
+fn prune_exactly_730_keeps_all() {
+    let mut u = UsageStore::new();
+    // 730 days: 26 months of 28 days plus 2 days
+    let mut n = 0;
+    'o: for y in 2022..=2025 {
+        for m in 1..=12u32 {
+            for d in 1..=28u32 {
+                if n == 730 {
+                    break 'o;
+                }
+                u.add_day(day(&format!("{y}-{m:02}-{d:02}"), 1));
+                n += 1;
+            }
+        }
+    }
+    u.prune();
+    let kept = u.range("2022-01-01", "2023-01-31").unwrap().len()
+        + u.range("2023-02-01", "2024-02-29").unwrap().len()
+        + u.range("2024-03-01", "2024-12-31").unwrap().len();
+    assert_eq!(kept, 730);
+    assert_eq!(u.range("2022-01-01", "2022-01-01").unwrap().len(), 1);
+}
+
+#[test]
+fn corrupt_main_with_good_backup() {
+    let dir = tmpdir("mainbad");
+    let p = dir.join("usage.json");
+    let mut st = UsageStore::new();
+    st.add_day(day("2026-01-01", 9));
+    save(&p, &st).unwrap();
+    save(&p, &st).unwrap();
+    std::fs::write(&p, b"nope").unwrap();
+    let (l, how) = load(&p, 77);
+    assert_eq!(l, st);
+    let q = match how {
+        UsageLoad::Backup(Some(q)) => q,
+        other => panic!("{other:?}"),
+    };
+    assert!(q.to_string_lossy().ends_with("usage.json.corrupt-77"));
+    assert_eq!(std::fs::read(&q).unwrap(), b"nope");
+    assert!(!p.exists());
+}
+
+#[test]
+fn corrupt_backup_only_is_corrupt() {
+    let dir = tmpdir("bakbad");
+    let p = dir.join("usage.json");
+    std::fs::write(dir.join("usage.json.bak"), b"nope").unwrap();
+    let (u, how) = load(&p, 5);
+    assert_eq!(u, UsageStore::new());
+    match how {
+        UsageLoad::Corrupt(c) => assert!(c.to_string_lossy().ends_with("usage.json.bak.corrupt-5")),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn other_version_is_quarantined() {
+    let dir = tmpdir("ver");
+    let p = dir.join("usage.json");
+    std::fs::write(&p, br#"{"version":2,"days":[]}"#).unwrap();
+    let (u, how) = load(&p, 9);
+    assert_eq!(u, UsageStore::new());
+    match how {
+        UsageLoad::Corrupt(c) => {
+            assert!(c.exists());
+            assert_eq!(std::fs::read(&c).unwrap(), br#"{"version":2,"days":[]}"#);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(!p.exists());
+}
+
+#[test]
+fn failed_quarantine_is_still_corrupt_not_fresh() {
+    let dir = tmpdir("noquar");
+    let p = dir.join("usage.json");
+    std::fs::write(&p, b"nope").unwrap();
+    // A non-empty directory at the target name makes the rename fail.
+    let target = dir.join("usage.json.corrupt-3");
+    std::fs::create_dir_all(target.join("x")).unwrap();
+    let (u, how) = load(&p, 3);
+    assert_eq!(u, UsageStore::new());
+    assert_eq!(how, UsageLoad::Corrupt(p.clone()));
+    assert_eq!(std::fs::read(&p).unwrap(), b"nope");
 }

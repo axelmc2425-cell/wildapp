@@ -229,9 +229,12 @@ pub enum UsageLoad {
     /// No state files: a fresh start.
     Fresh,
     Main,
-    /// The main file was missing or unparseable; the `.bak` parsed.
-    Backup,
-    /// Nothing parsed: the (first) unparseable file was kept at this path; the store is empty.
+    /// The main file was missing or unparseable; the `.bak` parsed. Carries the path an
+    /// unparseable main file was quarantined to (or left at, if the rename failed).
+    Backup(Option<PathBuf>),
+    /// State files exist but none parsed; the store is empty. Carries the path the first
+    /// unparseable file was quarantined to, or its original path if the rename failed, so
+    /// it is never reported as `Fresh` and the caller knows not to trust a later overwrite.
     Corrupt(PathBuf),
 }
 
@@ -239,27 +242,23 @@ pub enum UsageLoad {
 /// `<name>.corrupt-<unix_ms>` so a later save can never overwrite it.
 pub fn load(path: &Path, unix_ms: i64) -> (UsageStore, UsageLoad) {
     let bak = with_suffix(path, ".bak");
-    let main = read_store(path);
-    let backup = if main.is_none() { read_store(&bak) } else { None };
-    let mut moved: Vec<PathBuf> = Vec::new();
-    if main.is_none() {
-        for p in [path.to_path_buf(), bak.clone()] {
-            // The backup is only quarantined when it is itself unparseable.
-            if p.exists() && read_store(&p).is_none() {
-                let target = with_suffix(&p, &format!(".corrupt-{unix_ms}"));
-                if fs::rename(&p, &target).is_ok() {
-                    moved.push(target);
-                }
-            }
-        }
-    }
-    if let Some(s) = main {
+    if let Some(s) = read_store(path) {
         return (s, UsageLoad::Main);
     }
-    if let Some(s) = backup {
-        return (s, UsageLoad::Backup);
+    // The main file is missing or unparseable. Quarantine each existing unparseable file
+    // (the backup only when it is itself unparseable). A failed rename leaves the original path.
+    let mut kept: Vec<PathBuf> = Vec::new();
+    let backup = read_store(&bak);
+    for p in [path.to_path_buf(), bak.clone()] {
+        if p.exists() && read_store(&p).is_none() {
+            let target = with_suffix(&p, &format!(".corrupt-{unix_ms}"));
+            kept.push(if fs::rename(&p, &target).is_ok() { target } else { p });
+        }
     }
-    match moved.into_iter().next() {
+    if let Some(s) = backup {
+        return (s, UsageLoad::Backup(kept.into_iter().next()));
+    }
+    match kept.into_iter().next() {
         Some(p) => (UsageStore::new(), UsageLoad::Corrupt(p)),
         None => (UsageStore::new(), UsageLoad::Fresh),
     }
