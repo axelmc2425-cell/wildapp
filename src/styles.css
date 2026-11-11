@@ -325,3 +325,37 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-dialog:has(.fr-un) { width: min(520px, 100%); }
 .fr-card-heading { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
 .fr-un-code { resize: none; overflow-wrap: anywhere; line-height: 1.4; }
+
+/* ---- Focus Room charts ---- */
+:root {
+  --chart-0: #4f46e5; --chart-1: #0e7490; --chart-2: #b45309; --chart-3: #be185d; --chart-4: #15803d; --chart-5: #6b7280;
+  --chart-empty: #e8e6df; --chart-grid: #dedcd5;
+  --chart-heat-1: #b9b5f2; --chart-heat-2: #8a84ec; --chart-heat-3: #5f57e0; --chart-heat-4: #3730a3;
+}
+:root[data-theme="dark"] {
+  --chart-0: #8b87ff; --chart-1: #22d3ee; --chart-2: #fbbf24; --chart-3: #f472b6; --chart-4: #4ade80; --chart-5: #9aa0a6;
+  --chart-empty: #2a2d33; --chart-grid: #33363c;
+  --chart-heat-1: #3b3a7a; --chart-heat-2: #5a56b8; --chart-heat-3: #7b77f0; --chart-heat-4: #b1afff;
+}
+.fr-chart { display: block; width: 100%; height: auto; max-width: 100%; }
+.fr-chart-label { fill: var(--muted); font: 10px "Segoe UI", system-ui, sans-serif; }
+.fr-chart-value { fill: var(--text); }
+.fr-chart-grid { stroke: var(--chart-grid); stroke-width: 1; }
+.fr-chart-heat { min-width: 560px; }
+.fr-chart-scroll { overflow-x: auto; }
+.fr-bar .fr-seg:hover, .fr-heat-cell:hover { stroke: var(--text); stroke-width: 1; }
+.fr-chart-empty { margin: 0; color: var(--muted); }
+.fr-ranked { display: flex; flex-direction: column; gap: 6px; }
+.fr-rank-row { display: grid; grid-template-columns: minmax(70px, 28%) 1fr auto 3.4em; gap: 4px 10px; align-items: center; font-size: 13px; }
+.fr-rank-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.fr-rank-track { height: 10px; background: var(--chart-empty); border-radius: 5px; overflow: hidden; }
+.fr-rank-fill { height: 100%; background: var(--chart-0); border-radius: 5px; min-width: 2px; }
+.fr-rank-time { color: var(--muted); text-align: right; white-space: nowrap; }
+.fr-rank-pct { text-align: right; font-variant-numeric: tabular-nums; }
+.fr-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.fr-table th, .fr-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.fr-table th { color: var(--muted); font-weight: 600; }
+@media (max-width: 480px) {
+  .fr-rank-row { grid-template-columns: 1fr auto 3.4em; }
+  .fr-rank-track { grid-column: 1 / -1; grid-row: 2; }
+}
