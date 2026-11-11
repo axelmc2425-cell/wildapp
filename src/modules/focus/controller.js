@@ -26,7 +26,7 @@ export function createUnavailableClient(message) {
   };
   return {
     pushWindows: fail, status: fail, requestChallenge: fail, submitToken: fail, setPartner: fail,
-    requestDelayedUnlock: fail, cancelDelayedUnlock: fail,
+    requestDelayedUnlock: fail, cancelDelayedUnlock: fail, getUsage: fail,
   };
 }
 
@@ -610,6 +610,26 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
     });
   }
 
+  /**
+   * Usage rows for an inclusive day range. Runs OUTSIDE the write queue (a slow or absent helper must not
+   * stall writes) and never throws. `down` is true when the helper could not be reached at all.
+   */
+  async function getUsage(fromDay, toDay) {
+    try {
+      const res = await client.getUsage(fromDay, toDay);
+      if (!res || res.type !== 'Usage' || !Array.isArray(res.days)) {
+        return { ok: false, down: false, message: 'The helper sent an unexpected reply.' };
+      }
+      return { ok: true, days: res.days };
+    } catch (err) {
+      let kind = 'unknown';
+      try { kind = classifyHelperFailure(err).kind; } catch { /* keep unknown */ }
+      const down = (err && err.code === 'unreachable') || ['not-running', 'timeout', 'unavailable'].includes(kind);
+      const unavailable = kind === 'unavailable' || /desktop app/i.test(errText(err));
+      return { ok: false, down: !!down, unavailable, code: err && err.code, message: errText(err) };
+    }
+  }
+
   return {
     get state() {
       return {
@@ -618,6 +638,6 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
       };
     },
     load, saveList, deleteList, saveSchedule, setScheduleEnabled, deleteSchedule, startBlock, extendBlock, cancelBlock, refreshStatus, resync,
-    startLockedBlock, setPartner, requestPartnerChallenge, submitPartnerToken, startDelayedUnlock, cancelDelayedUnlock,
+    getUsage, startLockedBlock, setPartner, requestPartnerChallenge, submitPartnerToken, startDelayedUnlock, cancelDelayedUnlock,
   };
 }

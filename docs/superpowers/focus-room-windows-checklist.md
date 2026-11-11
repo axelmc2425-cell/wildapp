@@ -221,10 +221,30 @@ Use a list with one site you can test (for example `reddit.com`). Set the schedu
 - [ ] Create an unlocked schedule, then choose Pause before its next start — Expected: the row reads "Paused", and nothing is blocked at the next start time; Resume brings it back
 - [ ] Delete an unlocked schedule — Expected: its row goes and no further occurrence blocks
 
-## 16. Cleanup
+## 16. Usage analytics
+
+A small sampler process (`focus-helper sampler`) runs in your signed-in session and reports the foreground program to the helper service every 5 seconds. Titles are read only for browsers, to attribute time to a site. The sampler is started by a Run entry at sign-in, so after installing, sign out and in once before testing this section.
+
+- [ ] After install, sign out and sign back in — Expected: Task Manager (Details tab) shows `focus-helper.exe` running in your user session (not as SYSTEM) with the `sampler` argument, and no window or console appears
+- [ ] Check `HKLM\Software\Microsoft\Windows\CurrentVersion\Run` — Expected: a value `MyBrainFocusSampler` with the quoted installed exe path followed by `sampler`
+- [ ] End the sampler process in Task Manager and wait 20 seconds, then work in a program — Expected: `focus-helper send "{\"type\":\"GetStatus\"}"` shows `usage_tracking` false and nothing is counted, and Focus Room > Stats still shows the earlier history together with the "not tracking right now" banner; after the next sign-in tracking resumes
+- [ ] With the sampler running (signed in since install), run the installer again as Administrator — Expected: it succeeds (running samplers are stopped first); sign out and in once to bring the sampler back
+- [ ] With the sampler running, uninstall — Expected: it succeeds and `C:\Program Files\MyBrainFocus` is removed
+- [ ] With two Windows users signed in at once (fast user switching), work in one — Expected: time is not double counted (the usage total grows by about the real elapsed time)
+- [ ] Unlock the PC after a long lock — Expected: at most a few seconds of time appear around the unlock (the 15-second cap), not the whole lock period
+- [ ] Work in a program (for example Notepad) for a couple of minutes, then open Focus Room > Stats — Expected: that program's time is counted
+- [ ] Leave the PC untouched for more than 5 minutes with the program in front — Expected: time stops counting once the last input is older than 5 minutes
+- [ ] Lock the PC (Win+L) for a few minutes, then unlock — Expected: nothing is counted while locked (this verifies that the sampler cannot open the input desktop on the lock screen)
+- [ ] Open different sites in Chrome or Edge in separate tabs, switching between them — Expected: time is attributed to the right site for each tab title, and browser time is counted too
+- [ ] Reboot Windows, do not open Focus Room, work for a few minutes, then open it — Expected: tracking continued after the reboot with the app closed
+- [ ] Work across midnight (or change the date after a day of use) — Expected: usage rolls over to a new day entry at the local day boundary
+- [ ] Open `C:\ProgramData\MyBrainFocus\usage.json` after browsing — Expected: it holds program and site names and seconds only, with no window titles
+
+## 17. Cleanup
 
 With no lock pending, uninstall MyBrain.
 
+- [ ] Open `HKLM\Software\Microsoft\Windows\CurrentVersion\Run` — Expected: the `MyBrainFocusSampler` value is gone (also after a plain uninstall without `--purge-state`)
 - [ ] Run `sc query MyBrainFocus` and `sc query MyBrainFocusWatchdog` — Expected: both report "service does not exist"
 - [ ] Open the hosts file — Expected: no managed block and no BEGIN/END MYBRAIN-FOCUS markers
 - [ ] Check the Chrome/Edge/Firefox policy pages — Expected: DoH values written by the helper are gone

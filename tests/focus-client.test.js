@@ -76,3 +76,10 @@ test('delayed unlock methods send exact JSON', async () => {
   f = fake('{"type":"Error","code":"not-delayable","message":"nope"}');
   await assert.rejects(f.client.requestDelayedUnlock('w1'), (e) => e.code === 'not-delayable');
 });
+
+test('getUsage sends the inclusive day range and returns the reply', async () => {
+  const reply = { type: 'Usage', days: [{ day: '2026-01-02', total: 5, apps: { 'a.exe': 5 }, sites: {}, other_browsing: 0 }] };
+  const f = fake(JSON.stringify(reply));
+  assert.deepEqual(await f.client.getUsage('2026-01-01', '2026-01-31'), reply);
+  assert.equal(f.sent[0], '{"type":"GetUsage","from_day":"2026-01-01","to_day":"2026-01-31"}');
+});

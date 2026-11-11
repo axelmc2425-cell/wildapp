@@ -40,6 +40,7 @@ export function installDom(tauri) {
   const listeners = {};
   globalThis.document = {
     createElement: (t) => new El(t),
+    createElementNS: (ns, t) => { const e = new El(t); e.ns = ns; return e; },
     body: new El('body'),
     activeElement: null,
     addEventListener: (t, fn) => { (listeners[t] ||= []).push(fn); },

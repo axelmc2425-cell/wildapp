@@ -10,7 +10,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use focus_helper::daemon::{Daemon, Platform};
 use focus_helper::enforce::{Proc, ProcessTable};
 
-const USAGE: &str = "usage: focus-helper stdio --state <path> | install | uninstall [--purge-state] | service | watchdog | send <json-request | ->";
+const USAGE: &str = "usage: focus-helper stdio --state <path> | install | uninstall [--purge-state] | service | watchdog | sampler | send <json-request | ->";
 
 struct EmptyTable;
 impl ProcessTable for EmptyTable {
@@ -75,6 +75,22 @@ fn advance_clock(line: &str, skew_ms: &mut i64) -> Option<String> {
     }
 }
 
+/// Test-only: `{"type":"AddUsage","day":{...DayUsage}}` seeds (and saves) a usage day.
+#[cfg(feature = "test-clock")]
+fn add_usage(line: &str, daemon: &mut Daemon) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("type")?.as_str()? != "AddUsage" {
+        return None;
+    }
+    match v.get("day").cloned().and_then(|d| serde_json::from_value::<focus_helper::usage::DayUsage>(d).ok()) {
+        Some(day) => {
+            daemon.add_usage(day);
+            Some(r#"{"type":"Ok"}"#.to_string())
+        }
+        None => Some(r#"{"type":"Error","code":"bad-request","message":"AddUsage needs a day object"}"#.to_string()),
+    }
+}
+
 fn stdio(state: PathBuf) -> ExitCode {
     let mut daemon = Daemon::load(&state);
     let mut platform = NullPlatform;
@@ -96,6 +112,13 @@ fn stdio(state: PathBuf) -> ExitCode {
             }
             continue;
         }
+        #[cfg(feature = "test-clock")]
+        if let Some(reply) = add_usage(&line, &mut daemon) {
+            if writeln!(stdout, "{reply}").and_then(|_| stdout.flush()).is_err() {
+                break;
+            }
+            continue;
+        }
         counter += 1;
         #[cfg(feature = "test-clock")]
         let wall = wall_ms().saturating_add(skew_ms);
@@ -107,6 +130,7 @@ fn stdio(state: PathBuf) -> ExitCode {
             break;
         }
     }
+    daemon.flush_usage();
     ExitCode::SUCCESS
 }
 
@@ -174,6 +198,18 @@ fn send(_arg: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
+/// `sampler`: runs forever in the user's session, reporting the foreground program to the service.
+#[cfg(windows)]
+fn sampler() -> ExitCode {
+    focus_helper::win::foreground::run_sampler()
+}
+
+#[cfg(not(windows))]
+fn sampler() -> ExitCode {
+    eprintln!("Windows only");
+    ExitCode::from(2)
+}
+
 #[cfg(windows)]
 fn windows_service_main(role: focus_helper::service_logic::Role) -> ExitCode {
     match focus_helper::win::service::run(role) {
@@ -200,6 +236,7 @@ fn main() -> ExitCode {
         ["uninstall", "--purge-state"] => windows_cmd(Cmd::Uninstall { purge: true }),
         ["service"] => windows_service_main(focus_helper::service_logic::Role::Main),
         ["watchdog"] => windows_service_main(focus_helper::service_logic::Role::Watchdog),
+        ["sampler"] => sampler(),
         ["send", request] => send(request),
         _ => {
             eprintln!("{USAGE}");

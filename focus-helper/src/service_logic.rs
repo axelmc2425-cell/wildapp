@@ -15,6 +15,10 @@ pub const PIPE_NAME: &str = r"\\.\pipe\mybrain-focus";
 pub const DIR_NAME: &str = "MyBrainFocus";
 pub const EXE_NAME: &str = "focus-helper.exe";
 pub const STATE_FILE: &str = "state.json";
+pub const USAGE_FILE: &str = "usage.json";
+/// Per-machine autorun key; the sampler is started in every interactive user's session at sign-in.
+pub const RUN_KEY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+pub const SAMPLER_RUN_VALUE: &str = "MyBrainFocusSampler";
 
 /// Pipe DACL: SYSTEM and Administrators full control. Interactive users (IU: anyone logged on at
 /// the console or over RDP, not services or network logons) get explicit rights
@@ -131,8 +135,10 @@ pub fn install_state_dir_action(exists: bool, is_reparse: bool) -> InstallStateD
 }
 
 /// Files the helper itself keeps in the state directory.
-pub const EXPECTED_STATE_FILES: [&str; 5] =
-    ["state.json", "state.json.bak", "state.json.tmp", "service.log", "service.log.old"];
+pub const EXPECTED_STATE_FILES: [&str; 8] = [
+    "state.json", "state.json.bak", "state.json.tmp", "usage.json", "usage.json.bak", "usage.json.tmp",
+    "service.log", "service.log.old",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChildAction {
@@ -148,6 +154,15 @@ pub enum ChildAction {
     QuarantineDir,
 }
 
+/// Corrupt state/usage files the daemon set aside (`<file>.corrupt-<unix_ms>`, also for the
+/// `.bak`). They are the only copy of the unreadable data and must never be deleted.
+pub fn is_quarantine_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    ["state.json.corrupt-", "usage.json.corrupt-", "state.json.bak.corrupt-", "usage.json.bak.corrupt-"]
+        .iter()
+        .any(|p| n.starts_with(p))
+}
+
 /// Decide what to do with one immediate child of an adopted state directory. Reparse points are
 /// checked first so a junction named like an expected file is still removed, never followed.
 pub fn classify_child(name: &str, is_dir: bool, is_reparse: bool) -> ChildAction {
@@ -155,7 +170,7 @@ pub fn classify_child(name: &str, is_dir: bool, is_reparse: bool) -> ChildAction
         ChildAction::RemoveLink
     } else if is_dir {
         ChildAction::QuarantineDir
-    } else if EXPECTED_STATE_FILES.iter().any(|f| f.eq_ignore_ascii_case(name)) {
+    } else if EXPECTED_STATE_FILES.iter().any(|f| f.eq_ignore_ascii_case(name)) || is_quarantine_name(name) {
         ChildAction::ResetAcl
     } else {
         ChildAction::RemoveFile
@@ -250,6 +265,39 @@ pub fn install_dir(program_files: &str) -> String {
     format!(r"{}\{}", program_files.trim_end_matches('\\'), DIR_NAME)
 }
 
+/// Command line stored in the Run key: the quoted installed exe plus the `sampler` subcommand.
+pub fn sampler_run_command(exe: &str) -> String {
+    format!("\"{exe}\" sampler")
+}
+
+/// A running process as far as `sampler_pids` needs to know.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcInfo {
+    pub pid: u32,
+    /// Full image path when readable.
+    pub exe: Option<String>,
+    /// Command line split into arguments, program first.
+    pub cmd: Vec<String>,
+}
+
+fn same_path(a: &str, b: &str) -> bool {
+    a.replace('/', "\\").eq_ignore_ascii_case(&b.replace('/', "\\"))
+}
+
+/// Pids of the per-user `sampler` processes that run the installed exe, which install and
+/// uninstall must stop before replacing or deleting it. A process qualifies only when its
+/// image is `installed_exe` AND its first argument after the program is `sampler`. Our own
+/// process and the service processes are never returned.
+pub fn sampler_pids(procs: &[ProcInfo], installed_exe: &str, own_pid: u32, service_pids: &[u32]) -> Vec<u32> {
+    procs
+        .iter()
+        .filter(|p| p.pid != own_pid && !service_pids.contains(&p.pid))
+        .filter(|p| p.exe.as_deref().is_some_and(|e| same_path(e, installed_exe)))
+        .filter(|p| p.cmd.get(1).is_some_and(|a| a == "sampler"))
+        .map(|p| p.pid)
+        .collect()
+}
+
 /// `%ProgramFiles%\MyBrainFocus\focus-helper.exe`
 pub fn install_exe(program_files: &str) -> String {
     format!(r"{}\{}", install_dir(program_files), EXE_NAME)
@@ -262,6 +310,11 @@ pub fn state_dir(program_data: &str) -> String {
 
 pub fn state_file(program_data: &str) -> PathBuf {
     PathBuf::from(format!(r"{}\{}", state_dir(program_data), STATE_FILE))
+}
+
+/// Usage history, a sibling of the state file.
+pub fn usage_file(program_data: &str) -> PathBuf {
+    PathBuf::from(format!(r"{}\{}", state_dir(program_data), USAGE_FILE))
 }
 
 /// `%SystemRoot%\System32\<exe>`: always an absolute path, never a PATH lookup.
@@ -411,6 +464,39 @@ mod tests {
         Window { id: "w".into(), starts, ends, lock, mode: Mode::Block, sites: vec![], apps: vec![], app_folders: vec![], unlock_delay_ms: None }
     }
 
+    fn pi(pid: u32, exe: Option<&str>, args: &[&str]) -> ProcInfo {
+        ProcInfo { pid, exe: exe.map(String::from), cmd: args.iter().map(|a| a.to_string()).collect() }
+    }
+
+    #[test]
+    fn sampler_pids_selection() {
+        let exe = r"C:\Program Files\MyBrainFocus\focus-helper.exe";
+        let procs = [
+            pi(10, Some(exe), &[exe, "sampler"]),
+            pi(11, Some(r"c:\program files\mybrainfocus\FOCUS-HELPER.EXE"), &["x", "sampler"]), // case differs
+            pi(12, Some(exe), &[exe, "sampler"]),                                                 // own pid
+            pi(13, Some(exe), &[exe, "service"]),                                                 // different args
+            pi(14, Some(exe), &[exe, "sampler"]),                                                 // service pid
+            pi(15, Some(r"C:\Users\a\Downloads\focus-helper.exe"), &["x", "sampler"]),       // other exe
+            pi(16, None, &["x", "sampler"]),                                                      // unreadable image
+            pi(17, Some(exe), &[exe]),                                                            // no args
+            pi(18, Some(exe), &[exe, "send", "sampler"]),                                         // sampler not first
+        ];
+        assert_eq!(sampler_pids(&procs, exe, 12, &[14]), vec![10, 11]);
+        assert!(sampler_pids(&[], exe, 1, &[]).is_empty());
+    }
+
+    #[test]
+    fn sampler_run_entry() {
+        assert_eq!(SAMPLER_RUN_VALUE, "MyBrainFocusSampler");
+        assert_eq!(RUN_KEY_PATH, r"Software\Microsoft\Windows\CurrentVersion\Run");
+        assert_eq!(
+            sampler_run_command(r"C:\Program Files\MyBrainFocus\focus-helper.exe"),
+            r#""C:\Program Files\MyBrainFocus\focus-helper.exe" sampler"#
+        );
+        assert_eq!(sampler_run_command(&install_exe(r"C:\Program Files")), r#""C:\Program Files\MyBrainFocus\focus-helper.exe" sampler"#);
+    }
+
     #[test]
     fn uninstall_refuses_with_active_lock_and_allows_otherwise() {
         assert!(uninstall_decision(&[w(Lock::Locked, 0, 100)], 50).is_err());
@@ -462,6 +548,8 @@ mod tests {
         assert_eq!(install_dir(r"C:\Program Files\"), r"C:\Program Files\MyBrainFocus");
         assert_eq!(state_dir(r"C:\ProgramData"), r"C:\ProgramData\MyBrainFocus");
         assert_eq!(state_file(r"C:\ProgramData"), PathBuf::from(r"C:\ProgramData\MyBrainFocus\state.json"));
+        assert_eq!(usage_file(r"C:\ProgramData"), PathBuf::from(r"C:\ProgramData\MyBrainFocus\usage.json"));
+        assert_eq!(classify_child("usage.json", false, false), ChildAction::ResetAcl);
         assert_eq!(system32_exe(r"C:\Windows", "sc.exe"), r"C:\Windows\System32\sc.exe");
     }
 
@@ -553,6 +641,12 @@ mod tests {
         assert_eq!(classify_child("STATE.JSON.BAK", false, false), ResetAcl);
         assert_eq!(classify_child("service.log.old", false, false), ResetAcl);
         assert_eq!(classify_child("sub", true, false), QuarantineDir);
+        assert_eq!(classify_child("usage.json.corrupt-1700000000000", false, false), ResetAcl);
+        assert_eq!(classify_child("state.json.corrupt-1700000000000", false, false), ResetAcl);
+        assert_eq!(classify_child("State.json.bak.corrupt-17", false, false), ResetAcl);
+        assert_eq!(classify_child("usage.json.corrupt-17", false, true), RemoveLink, "a link is still removed");
+        assert_eq!(classify_child("other.json.corrupt-17", false, false), RemoveFile);
+        assert_eq!(classify_child("usage.json.corruptx", false, false), RemoveFile);
         assert_eq!(classify_child("state.json", true, false), QuarantineDir);
     }
 

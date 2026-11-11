@@ -11,6 +11,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS};
+use winreg::RegKey;
+
 use windows_service::service::ServiceState;
 
 use crate::lockstore::LockStore;
@@ -23,7 +26,7 @@ fn ilog(msg: &str) {
     log(msg);
     install_log(msg);
 }
-use crate::win::{paths, scm};
+use crate::win::{paths, procs, scm};
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Watchdog first.
@@ -149,6 +152,8 @@ fn mutate(existing: &[(Role, ServiceState)]) -> Result<(), String> {
     // Stopped services (the only case when a lock is pending) are merely disabled; running ones
     // exist here only when no lock is pending.
     disable_and_stop(existing)?;
+    // Running samplers hold the installed exe open; stop them so it can be replaced.
+    stop_samplers_for(&target_exe);
 
     // Copy our own exe to the admin-only Program Files location; services run THAT copy, never
     // a per-user directory (a SYSTEM service on a user-writable exe would be an escalation hole).
@@ -177,7 +182,40 @@ fn mutate(existing: &[(Role, ServiceState)]) -> Result<(), String> {
     for role in [Role::Main, Role::Watchdog] {
         paths::sc(&logic::sc_sdset_args(role, SERVICE_SDDL)).map_err(|e| e.to_string())?;
     }
+    // Last step, so a failed install leaves no Run value: the sampler runs the installed copy
+    // in each user's session from the next sign-in on.
+    set_sampler_run(&target_exe)?;
     Ok(())
+}
+
+fn stop_samplers_for(exe: &str) {
+    let n = procs::stop_samplers(exe);
+    if n > 0 {
+        ilog(&format!("stopped {n} running sampler process(es)"));
+    }
+}
+
+/// Registers the per-user sampler to start at every sign-in (idempotent: overwrites the value).
+fn set_sampler_run(exe: &str) -> Result<(), String> {
+    let (key, _) = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .create_subkey(logic::RUN_KEY_PATH)
+        .map_err(|e| format!("cannot open the Run key: {e}"))?;
+    key.set_value(logic::SAMPLER_RUN_VALUE, &logic::sampler_run_command(exe))
+        .map_err(|e| format!("cannot write the sampler Run entry: {e}"))
+}
+
+/// Removes the sampler Run entry; an absent key or value is fine (idempotent).
+fn remove_sampler_run() -> Result<(), String> {
+    let key = match RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(logic::RUN_KEY_PATH, KEY_ALL_ACCESS) {
+        Ok(k) => k,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("cannot open the Run key: {e}")),
+    };
+    match key.delete_value(logic::SAMPLER_RUN_VALUE) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("cannot remove the sampler Run entry: {e}")),
+    }
 }
 
 /// Copy to `<exe>.new`, verify the size, then rename over the installed exe. On any failure the
@@ -240,6 +278,15 @@ pub fn uninstall(purge_state: bool) -> Result<(), CmdError> {
             // Still installed: put it back to auto-start and running rather than leave it disabled.
             restore_service(*role);
         }
+    }
+
+    // Only when every service is gone: if one was restored above, the sampler stays registered.
+    if problems.is_empty() {
+        if let Err(e) = remove_sampler_run() {
+            problems.push(e);
+        }
+        // Samplers hold the exe open: stop them, only now that the services are gone.
+        stop_samplers_for(&paths::install_exe());
     }
 
     // Best effort: our own exe may be running from here.

@@ -31,7 +31,7 @@ const FINISHED = 'That block has already finished.';
 
 /**
  * Renders the Focus Room home view. Returns a cleanup that unsubscribes and stops every timer.
- * deps = { subscribe, openListEditor?, openScheduleEditor?, openStartDialog?, openPartnerSetup?, openUnlockDialog?, mountHelperDetails?, tzOffsetAt? }
+ * deps = { subscribe, openListEditor?, openScheduleEditor?, openStartDialog?, openPartnerSetup?, openUnlockDialog?, mountHelperDetails?, openStats?, tzOffsetAt? }
  */
 export function mountHome(root, controller, ctx, deps = {}) {
   const now = () => Date.now();
@@ -57,7 +57,10 @@ export function mountHome(root, controller, ctx, deps = {}) {
 
   // ---- static skeleton ----
   const bannerEl = h('div', { class: 'fr-banner', role: 'status' });
-  const headEl = h('div', { class: 'fr-head' }, h('h2', {}, '🎯 Focus Room'), bannerEl);
+  const statsBtn = typeof deps.openStats === 'function'
+    ? h('button', { type: 'button', class: 'fr-statsbtn', 'data-fk': 'open-stats', onclick: () => deps.openStats() }, 'Stats')
+    : null;
+  const headEl = h('div', { class: 'fr-head' }, h('h2', {}, '🎯 Focus Room'), statsBtn, bannerEl);
   const notesEl = h('div', { class: 'fr-notes' });
   const cardsEl = h('div', { class: 'fr-cards' });
   const welcomeEl = h('div', {});

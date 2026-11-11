@@ -13,13 +13,14 @@
 //! was listed for that pid and is not in CRITICAL_APPS. Any doubt returns false.
 use crate::decide::{normalize_app, CRITICAL_APPS};
 use crate::enforce::{Proc, ProcessTable};
+use crate::service_logic::{sampler_pids, ProcInfo};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_TERMINATE,
+    OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
 };
 
 pub struct SysinfoTable {
@@ -99,4 +100,41 @@ impl ProcessTable for SysinfoTable {
         unsafe { CloseHandle(h) };
         done
     }
+}
+
+/// Terminates the per-user `sampler` processes running `installed_exe` (so the exe can be
+/// replaced or deleted) and waits briefly for each to exit. Never touches this process.
+/// Returns how many were stopped.
+pub fn stop_samplers(installed_exe: &str) -> usize {
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::Always).with_cmd(UpdateKind::Always),
+    );
+    let procs: Vec<ProcInfo> = sys
+        .processes()
+        .iter()
+        .map(|(pid, p)| ProcInfo {
+            pid: pid.as_u32(),
+            exe: p.exe().map(|e| e.to_string_lossy().into_owned()),
+            cmd: p.cmd().iter().map(|a| a.to_string_lossy().into_owned()).collect(),
+        })
+        .collect();
+    let mut stopped = 0;
+    for pid in sampler_pids(&procs, installed_exe, std::process::id(), &[]) {
+        // SAFETY: plain FFI calls; the handle is closed on every path.
+        unsafe {
+            let h = OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid);
+            if h == 0 {
+                continue;
+            }
+            if TerminateProcess(h, 1) != 0 {
+                stopped += 1;
+                WaitForSingleObject(h, 5000);
+            }
+            CloseHandle(h);
+        }
+    }
+    stopped
 }
