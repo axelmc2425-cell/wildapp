@@ -1,6 +1,6 @@
 # Focus Room analytics, sub-project 6a: usage tracking and Stats
 
-Date: 2026-11-10. Status: draft, awaiting owner review.
+Date: 2026-11-10. Status: built.
 
 Builds on `2026-11-08-focus-room-design.md` (helper, pipe protocol) and `2026-11-09-focus-room-ui-design.md` (screens). Order agreed with the owner: 5a pickers (building), recurring schedules (sub-project 3), daily and weekly time limits (6b), 6a analytics. Time limits reuse this tracking, so 6a's helper part ships before 6b. Uninstall protection is its own spec.
 
@@ -65,8 +65,14 @@ Out: time limits (6b), per-site exact timing (needs a browser extension), export
 - Website time is an estimate from the tab title: a page whose title does not name the site, or a site not in the map or the owner's lists, counts as "Other browsing". Incognito and background tabs are not seen separately.
 - Only the foreground window counts; audio, video on a second monitor and background programs do not.
 - Titles are read in memory to choose a website and then discarded.
+- Tracking runs from a sampler process in the user's session that is started at sign-in (Run key), so a fresh install or update starts tracking at the next sign-in, not immediately. The sampler is a console-subsystem exe that frees its console at once, so a brief console flash at sign-in is possible.
+- Locking is detected by the sampler failing to open the input desktop. The first report after unlocking can add up to the 15-second cap of time that was really spent locked (a few seconds of phantom time per unlock).
 - Admin users can stop the service or delete the usage file; uninstall and service protection are sub-project 6c (uninstall protection).
 
 ## Open items
 
 None.
+
+## Design change (as built)
+
+The original text above says the helper service samples the foreground window. That cannot work: the service runs as SYSTEM in session 0 and cannot see the user's foreground window. As built, a small user-session process, `focus-helper sampler`, started at sign-in from `HKLM\...\Run` (`MyBrainFocusSampler`), takes the sample every 5 seconds and reports it to the service over the existing pipe with a `ReportForeground` request (program, browser title only for browsers, idle seconds, local day). The service does the accounting, website matching, persistence and `GetUsage`. `usage_tracking` in Status is true while the latest report is recent and false when no sampler is reporting. `Platform::foreground()` and the `win/foreground.rs` source described under "Helper changes" are therefore the sampler's side; everything else is as specified.

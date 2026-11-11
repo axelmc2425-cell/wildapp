@@ -146,7 +146,7 @@ export function stackedDailyBars(perDay, { topN = 5 } = {}) {
     const x = L + i * slot + (slot - bw) / 2;
     const segs = stackSegments(d, names);
     const lines = [`${d.day}: ${formatDuration(totals[i])}`, ...segs.map(s => `${s.key}: ${formatDuration(s.secs)}`)];
-    const g = svgEl('g', { class: 'fr-bar' }, title(lines.join('\n')));
+    const g = svgEl('g', { class: bw < 3 ? 'fr-bar fr-thin' : 'fr-bar' }, title(lines.join('\n')));
     let y = T + ph;
     for (const s of segs) {
       const sh = scale(s.secs, max, ph);

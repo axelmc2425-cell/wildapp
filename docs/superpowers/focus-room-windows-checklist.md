@@ -232,6 +232,7 @@ A small sampler process (`focus-helper sampler`) runs in your signed-in session 
 - [ ] With the sampler running, uninstall — Expected: it succeeds and `C:\Program Files\MyBrainFocus` is removed
 - [ ] With two Windows users signed in at once (fast user switching), work in one — Expected: time is not double counted (the usage total grows by about the real elapsed time)
 
+- [ ] Unlock the PC after a long lock — Expected: at most a few seconds of time appear around the unlock (the 15-second cap), not the whole lock period
 - [ ] Work in a program (for example Notepad) for a couple of minutes, then open the usage view — Expected: that program's time is counted
 - [ ] Leave the PC untouched for more than 5 minutes with the program in front — Expected: time stops counting once the last input is older than 5 minutes
 - [ ] Lock the PC (Win+L) for a few minutes, then unlock — Expected: nothing is counted while locked (this verifies that the sampler cannot open the input desktop on the lock screen)

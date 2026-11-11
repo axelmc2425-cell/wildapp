@@ -355,6 +355,9 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-heat-3 { fill: var(--chart-heat-3); }
 .fr-heat-4 { fill: var(--chart-heat-4); }
 .fr-bar .fr-seg { stroke: var(--panel); stroke-width: 1; }
+.fr-bar.fr-thin .fr-seg { stroke: none; } /* hairline bars (year view) would be all separator */
+.fr-chart-weekday { max-width: 440px; min-width: 260px; }
+.fr-chart-stacked { min-width: 480px; } /* scrolls inside its section on phones instead of shrinking the labels to nothing */
 .fr-legend { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; }
 .fr-legend li { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .fr-swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
@@ -404,7 +407,8 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-otherline { margin: 10px 0 0; font-size: 13px; }
 @media (max-width: 480px) {
   .fr-statbar { flex-direction: column; align-items: stretch; }
-  .fr-period { display: grid; grid-template-columns: repeat(4, 1fr); }
+  .fr-period { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .fr-period .fr-pbtn { padding: 6px 2px; }
   .fr-rangenav { justify-content: space-between; }
   .fr-statcards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

@@ -268,3 +268,10 @@ test('dataTable caption', () => {
   assert.equal(byTag(t, 'caption')[0].textContent, 'Daily time');
   assert.equal(byTag(dataTable([], []), 'caption').length, 0);
 });
+
+test('stackedDailyBars marks hairline bars (year view) so they lose their separators', () => {
+  const many = Array.from({ length: 365 }, (_, i) => day(`2026-${String(1 + Math.floor(i / 31)).padStart(2, '0')}-${String(1 + (i % 31)).padStart(2, '0')}`, 3600, { Code: 3600 }));
+  const svg = stackedDailyBars(many);
+  assert.ok(withClass(svg, 'fr-thin').length > 300);
+  assert.equal(withClass(stackedDailyBars(week), 'fr-thin').length, 0);
+});
