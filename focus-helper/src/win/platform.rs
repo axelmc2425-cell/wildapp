@@ -4,7 +4,8 @@ use std::io;
 
 use crate::daemon::Platform;
 use crate::enforce::ProcessTable;
-use crate::win::dns;
+use crate::usage::Sample;
+use crate::win::{dns, foreground};
 use crate::win::procs::SysinfoTable;
 use windows_sys::Win32::Security::Cryptography::{BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG};
 
@@ -39,6 +40,12 @@ impl Platform for WindowsPlatform {
     }
     fn process_table(&self) -> &dyn ProcessTable {
         &self.procs
+    }
+    fn foreground(&mut self) -> Option<Sample> {
+        foreground::sample()
+    }
+    fn usage_tracking(&self) -> bool {
+        true
     }
 }
 

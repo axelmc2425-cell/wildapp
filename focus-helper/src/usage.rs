@@ -22,6 +22,16 @@ pub struct Sample {
     pub day: String,
 }
 
+/// File name of a Windows (or forward-slash) path; the whole input when it has no separator.
+pub fn base_name(path: &str) -> String {
+    path.rsplit(['\\', '/']).next().unwrap_or("").to_string()
+}
+
+/// `YYYY-MM-DD` for a local calendar date.
+pub fn day_string(y: u16, m: u16, d: u16) -> String {
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
 /// Seconds a single sample may add, so a stall or suspend never invents time.
 pub const MAX_SAMPLE_SECS: u64 = 15;
 /// Last input older than this counts nothing.

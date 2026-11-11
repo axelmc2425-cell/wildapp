@@ -318,3 +318,19 @@ fn failed_quarantine_is_still_corrupt_not_fresh() {
     assert_eq!(how, UsageLoad::Corrupt(p.clone()));
     assert_eq!(std::fs::read(&p).unwrap(), b"nope");
 }
+
+#[test]
+fn base_name_takes_last_path_component() {
+    use focus_helper::usage::base_name;
+    assert_eq!(base_name(r"C:\Program Files\Google\Chrome\Application\chrome.exe"), "chrome.exe");
+    assert_eq!(base_name("C:/tools/code.exe"), "code.exe");
+    assert_eq!(base_name("notepad.exe"), "notepad.exe");
+    assert_eq!(base_name(""), "");
+}
+
+#[test]
+fn day_string_zero_pads() {
+    use focus_helper::usage::day_string;
+    assert_eq!(day_string(2026, 3, 7), "2026-03-07");
+    assert_eq!(day_string(2026, 12, 31), "2026-12-31");
+}

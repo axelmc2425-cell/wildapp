@@ -4,6 +4,7 @@
 
 pub mod client;
 pub mod dns;
+pub mod foreground;
 pub mod install;
 pub mod log;
 pub mod paths;

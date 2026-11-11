@@ -221,7 +221,19 @@ Use a list with one site you can test (for example `reddit.com`). Set the schedu
 - [ ] Create an unlocked schedule, then choose Pause before its next start — Expected: the row reads "Paused", and nothing is blocked at the next start time; Resume brings it back
 - [ ] Delete an unlocked schedule — Expected: its row goes and no further occurrence blocks
 
-## 16. Cleanup
+## 16. Usage analytics
+
+The helper samples the foreground program every 5 seconds. Titles are read only for browsers, to attribute time to a site.
+
+- [ ] Work in a program (for example Notepad) for a couple of minutes, then open the usage view — Expected: that program's time is counted
+- [ ] Leave the PC untouched for more than 5 minutes with the program in front — Expected: time stops counting once the last input is older than 5 minutes
+- [ ] Lock the PC (Win+L) for a few minutes, then unlock — Expected: nothing is counted while locked
+- [ ] Open different sites in Chrome or Edge in separate tabs, switching between them — Expected: time is attributed to the right site for each tab title, and browser time is counted too
+- [ ] Reboot Windows, do not open Focus Room, work for a few minutes, then open it — Expected: tracking continued after the reboot with the app closed
+- [ ] Work across midnight (or change the date after a day of use) — Expected: usage rolls over to a new day entry at the local day boundary
+- [ ] Open `C:\ProgramData\MyBrainFocus\usage.json` after browsing — Expected: it holds program and site names and seconds only, with no window titles
+
+## 17. Cleanup
 
 With no lock pending, uninstall MyBrain.
 
