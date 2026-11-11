@@ -47,6 +47,7 @@ Terms: "service" = a background Windows program; "ACL" = the permission list on 
 ## 1. Install and service hardening
 
 - [ ] Run the installer as Administrator — Expected: it completes with no error dialog
+- [ ] Open `HKLM\Software\Microsoft\Windows\CurrentVersion\Run` — Expected: the `MyBrainFocusSampler` value is gone (also after a plain uninstall without `--purge-state`)
 - [ ] Run `sc query MyBrainFocus` and `sc query MyBrainFocusWatchdog` — Expected: both exist and are RUNNING
 - [ ] Run `sc qc MyBrainFocus` and `sc qc MyBrainFocusWatchdog` — Expected: START_TYPE is AUTO_START and SERVICE_START_NAME is LocalSystem
 - [ ] Check BINARY_PATH_NAME in the `sc qc` output — Expected: it points at `C:\Program Files\MyBrainFocus\focus-helper.exe` (not a per-user folder)
@@ -223,11 +224,16 @@ Use a list with one site you can test (for example `reddit.com`). Set the schedu
 
 ## 16. Usage analytics
 
-The helper samples the foreground program every 5 seconds. Titles are read only for browsers, to attribute time to a site.
+A small sampler process (`focus-helper sampler`) runs in your signed-in session and reports the foreground program to the helper service every 5 seconds. Titles are read only for browsers, to attribute time to a site. The sampler is started by a Run entry at sign-in, so after installing, sign out and in once before testing this section.
+
+- [ ] After install, sign out and sign back in — Expected: Task Manager (Details tab) shows `focus-helper.exe` running in your user session (not as SYSTEM) with the `sampler` argument, and no window or console appears
+- [ ] Check `HKLM\Software\Microsoft\Windows\CurrentVersion\Run` — Expected: a value `MyBrainFocusSampler` with the quoted installed exe path followed by `sampler`
+- [ ] End the sampler process in Task Manager and wait 20 seconds, then work in a program — Expected: the helper status shows usage tracking off and nothing is counted; after the next sign-in tracking resumes
+- [ ] With two Windows users signed in at once (fast user switching), work in one — Expected: time is not double counted (the usage total grows by about the real elapsed time)
 
 - [ ] Work in a program (for example Notepad) for a couple of minutes, then open the usage view — Expected: that program's time is counted
 - [ ] Leave the PC untouched for more than 5 minutes with the program in front — Expected: time stops counting once the last input is older than 5 minutes
-- [ ] Lock the PC (Win+L) for a few minutes, then unlock — Expected: nothing is counted while locked
+- [ ] Lock the PC (Win+L) for a few minutes, then unlock — Expected: nothing is counted while locked (this verifies that the sampler cannot open the input desktop on the lock screen)
 - [ ] Open different sites in Chrome or Edge in separate tabs, switching between them — Expected: time is attributed to the right site for each tab title, and browser time is counted too
 - [ ] Reboot Windows, do not open Focus Room, work for a few minutes, then open it — Expected: tracking continued after the reboot with the app closed
 - [ ] Work across midnight (or change the date after a day of use) — Expected: usage rolls over to a new day entry at the local day boundary
@@ -237,6 +243,7 @@ The helper samples the foreground program every 5 seconds. Titles are read only 
 
 With no lock pending, uninstall MyBrain.
 
+- [ ] Open `HKLM\Software\Microsoft\Windows\CurrentVersion\Run` — Expected: the `MyBrainFocusSampler` value is gone (also after a plain uninstall without `--purge-state`)
 - [ ] Run `sc query MyBrainFocus` and `sc query MyBrainFocusWatchdog` — Expected: both report "service does not exist"
 - [ ] Open the hosts file — Expected: no managed block and no BEGIN/END MYBRAIN-FOCUS markers
 - [ ] Check the Chrome/Edge/Firefox policy pages — Expected: DoH values written by the helper are gone

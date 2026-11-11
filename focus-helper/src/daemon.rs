@@ -14,6 +14,9 @@ use crate::persist;
 use crate::sites::stems_from_domains;
 use crate::usage::{self, DayUsage, Sample, UsageLoad, UsageStore};
 
+const MAX_EXE_CHARS: usize = 260;
+const MAX_TITLE_CHARS: usize = 1024;
+
 /// While block sites are active, re-assert the hosts file this often (effective ms): repairs
 /// edits and ACL changes made behind the helper's back. A no-op when nothing differs.
 pub const HOSTS_REAPPLY_INTERVAL_MS: i64 = 30_000;
@@ -21,8 +24,11 @@ pub const HOSTS_REAPPLY_INTERVAL_MS: i64 = 30_000;
 /// Persist at least this often, in effective-clock milliseconds.
 pub const PERSIST_INTERVAL_MS: i64 = 30_000;
 
-/// Foreground sampling period, in monotonic milliseconds.
-pub const USAGE_SAMPLE_INTERVAL_MS: i64 = 5_000;
+/// Reports closer together than this are ignored (also stops two users' samplers from
+/// double counting). In whole seconds of monotonic time.
+pub const MIN_REPORT_GAP_SECS: i64 = 4;
+/// `usage_tracking` is true while the latest report is at most this old (monotonic ms).
+pub const REPORT_FRESH_MS: i64 = 15_000;
 /// Usage is written at most this often (monotonic ms) while dirty.
 pub const USAGE_FLUSH_INTERVAL_MS: i64 = 60_000;
 
@@ -34,14 +40,6 @@ pub trait Platform {
     fn clear_doh_off(&mut self) -> io::Result<()>;
     fn flush_dns(&mut self) -> io::Result<()>;
     fn process_table(&self) -> &dyn ProcessTable;
-    /// The foreground program right now, if this platform can tell.
-    fn foreground(&mut self) -> Option<Sample> {
-        None
-    }
-    /// Whether `foreground` is implemented (reported in Status).
-    fn usage_tracking(&self) -> bool {
-        false
-    }
 }
 
 pub struct Daemon {
@@ -69,7 +67,10 @@ pub struct Daemon {
     usage_warning: Option<String>,
     /// Set while the latest usage save failed; cleared by the next successful save.
     usage_error: Option<String>,
-    last_sample_mono: Option<i64>,
+    /// Monotonic time up to which reported seconds have been accounted; `None` before the first report.
+    report_anchor_mono: Option<i64>,
+    /// Monotonic time of the latest accepted report (drives `usage_tracking`).
+    last_report_mono: Option<i64>,
     last_usage_flush_mono: Option<i64>,
 }
 
@@ -129,7 +130,8 @@ impl Daemon {
             usage_path: usage_path.to_path_buf(),
             usage_warning,
             usage_error: None,
-            last_sample_mono: None,
+            report_anchor_mono: None,
+            last_report_mono: None,
             last_usage_flush_mono: None,
         }
     }
@@ -192,23 +194,34 @@ impl Daemon {
         self.flush_usage();
     }
 
-    fn sample_usage(&mut self, now: i64, mono_ms: i64, platform: &mut dyn Platform) {
-        if !platform.usage_tracking() {
-            return;
-        }
-        let Some(last) = self.last_sample_mono else {
-            self.last_sample_mono = Some(mono_ms);
+    /// Flushes usage when dirty and a minute has passed since the last flush.
+    fn maybe_flush_usage(&mut self, mono_ms: i64) {
+        let last = *self.last_usage_flush_mono.get_or_insert(mono_ms);
+        if self.usage.dirty() && mono_ms - last >= USAGE_FLUSH_INTERVAL_MS {
             self.last_usage_flush_mono = Some(mono_ms);
+            self.flush_usage();
+        }
+    }
+
+    /// Whether a sampler has reported recently.
+    fn usage_tracking(&self, mono_ms: i64) -> bool {
+        self.last_report_mono.is_some_and(|t| mono_ms - t <= REPORT_FRESH_MS)
+    }
+
+    /// Accounts one report from a sampler. The caller has validated the fields.
+    fn report_foreground(&mut self, sample: Sample, now: i64, mono_ms: i64) {
+        self.last_report_mono = Some(mono_ms);
+        let Some(anchor) = self.report_anchor_mono else {
+            self.report_anchor_mono = Some(mono_ms);
+            self.last_usage_flush_mono.get_or_insert(mono_ms);
             return;
         };
-        let since = mono_ms - last;
-        if since < USAGE_SAMPLE_INTERVAL_MS {
+        let elapsed = (mono_ms - anchor).max(0) / 1000;
+        if elapsed < MIN_REPORT_GAP_SECS {
             return;
         }
-        let elapsed = (since / 1000) as u64;
-        // Keep the sub-second remainder for the next sample so seconds are not truncated away.
-        self.last_sample_mono = Some(last + elapsed as i64 * 1000);
-        let sample = platform.foreground();
+        // Keep the sub-second remainder for the next report so seconds are not truncated away.
+        self.report_anchor_mono = Some(anchor + elapsed * 1000);
         let sites: Vec<String> = self
             .store
             .windows
@@ -216,13 +229,8 @@ impl Daemon {
             .filter(|w| w.mode == Mode::Block && w.starts <= now && now < w.ends)
             .flat_map(|w| w.sites.iter().cloned())
             .collect();
-        self.usage.record(sample.as_ref(), elapsed, &stems_from_domains(&sites));
-        if self.usage.dirty()
-            && self.last_usage_flush_mono.is_none_or(|f| mono_ms - f >= USAGE_FLUSH_INTERVAL_MS)
-        {
-            self.last_usage_flush_mono = Some(mono_ms);
-            self.flush_usage();
-        }
+        self.usage.record(Some(&sample), elapsed as u64, &stems_from_domains(&sites));
+        self.maybe_flush_usage(mono_ms);
     }
 
     pub fn handle_line(
@@ -246,6 +254,20 @@ impl Daemon {
                     .into(),
                 },
             },
+            Ok(Request::ReportForeground { exe, title, idle_secs, day }) => {
+                let bad = |message: &str| Response::Error { code: "bad-request".into(), message: message.into() };
+                if exe.is_empty() || exe.chars().count() > MAX_EXE_CHARS || exe.contains(['\\', '/']) {
+                    bad("exe must be a program file name of 1 to 260 characters")
+                } else if title.as_ref().is_some_and(|t| t.chars().count() > MAX_TITLE_CHARS) {
+                    bad("title is longer than 1024 characters")
+                } else if !usage::is_valid_day(&day) {
+                    bad("day must be YYYY-MM-DD")
+                } else {
+                    let now = self.clock.now(wall_ms, mono_ms);
+                    self.report_foreground(Sample { exe, title, idle_secs, day }, now, mono_ms);
+                    Response::Ok
+                }
+            }
             Ok(req) => {
                 let is_status = req == Request::GetStatus;
                 let (mut resp, expired) = ipc::handle_changed(&mut self.store, &mut self.clock, req, wall_ms, mono_ms, nonce);
@@ -258,7 +280,7 @@ impl Daemon {
                     }
                     if let Response::Status { warnings, usage_tracking, .. } = &mut resp {
                         *warnings = self.warnings();
-                        *usage_tracking = platform.usage_tracking();
+                        *usage_tracking = self.usage_tracking(mono_ms);
                     }
                 } else {
                     let failed = self.save();
@@ -295,7 +317,7 @@ impl Daemon {
         self.store.prune_tombstones(now);
         let expired = self.store.expire_pending(now);
         self.apply(now, platform);
-        self.sample_usage(now, mono_ms, platform);
+        self.maybe_flush_usage(mono_ms);
         if self.persist_error.is_some() || expired {
             self.save();
             return;

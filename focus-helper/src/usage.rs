@@ -102,6 +102,11 @@ fn parse_day(s: &str) -> Option<(i64, i64, i64)> {
     (1..=dim).contains(&d).then_some((y, m, d))
 }
 
+/// Whether `s` is a real `YYYY-MM-DD` calendar date.
+pub fn is_valid_day(s: &str) -> bool {
+    parse_day(s).is_some()
+}
+
 /// Days since 1970-01-01 (Howard Hinnant's days-from-civil).
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };

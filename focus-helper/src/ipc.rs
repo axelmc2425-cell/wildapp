@@ -15,6 +15,9 @@ pub enum Request {
     GetStatus,
     /// Usage days in the inclusive local-day range `from_day..=to_day` (`YYYY-MM-DD`); daemon only.
     GetUsage { from_day: String, to_day: String },
+    /// Sent every 5 s by the per-user sampler process (`focus-helper sampler`): the foreground
+    /// program in that user's session. Daemon only; the title is used in memory, never kept.
+    ReportForeground { exe: String, title: Option<String>, idle_secs: u64, day: String },
     RequestChallenge { window_id: String },
     SubmitToken { token: String },
     /// Starts the waiting period of a Locked window; answered with `UnlockPending`.
@@ -48,7 +51,7 @@ pub enum Response {
     UnlockPending { unlock_at: i64 },
     /// Codes: bad-request, no-partner, bad-window (bad-times, bad-lock, too-long, bad-item, bad-folder,
     /// forbidden-folder, allow-needs-apps, too-many, duplicate id, bad-delay), frozen-unavailable, too-many, no-such-lock, not-delayable,
-    /// no-pending-unlock, bad-key, bad-request (also a bad GetUsage range), lock-active (also ResetClock), the unlock
+    /// no-pending-unlock, bad-key, bad-request (also a bad GetUsage range or ReportForeground field), lock-active (also ResetClock), the unlock
     /// reasons, and `persist-failed` (daemon only: applied in memory but the state file could not
     /// be written, so the change is lost on restart; retried every tick).
     Error { code: String, message: String },
@@ -106,6 +109,7 @@ pub fn handle_changed(
         },
         // The usage store belongs to the daemon, which answers this before calling here.
         Request::GetUsage { .. } => err("bad-request", "GetUsage is only available from the daemon"),
+        Request::ReportForeground { .. } => err("bad-request", "ReportForeground is only available from the daemon"),
         Request::RequestChallenge { window_id } => match store.request_challenge(&window_id, now, nonce) {
             Ok(code) => Response::Challenge { code },
             Err(ChallengeError::NoSuchLock) => err("no-such-lock", "no active locked window with that id"),

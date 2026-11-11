@@ -11,6 +11,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS};
+use winreg::RegKey;
+
 use windows_service::service::ServiceState;
 
 use crate::lockstore::LockStore;
@@ -170,6 +173,8 @@ fn mutate(existing: &[(Role, ServiceState)]) -> Result<(), String> {
         paths::sc(&logic::sc_failure_args(role)).map_err(|e| e.to_string())?;
         paths::sc(&logic::sc_failureflag_args(role)).map_err(|e| e.to_string())?;
     }
+    // The sampler runs the installed copy in each user's session from the next sign-in on.
+    set_sampler_run(&target_exe)?;
     // Start while the descriptor still lets us, then restrict it.
     for role in [Role::Main, Role::Watchdog] {
         scm::start_if_stopped(role).map_err(|e| format!("cannot start {}: {e}", role.service_name()))?;
@@ -178,6 +183,29 @@ fn mutate(existing: &[(Role, ServiceState)]) -> Result<(), String> {
         paths::sc(&logic::sc_sdset_args(role, SERVICE_SDDL)).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Registers the per-user sampler to start at every sign-in (idempotent: overwrites the value).
+fn set_sampler_run(exe: &str) -> Result<(), String> {
+    let (key, _) = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .create_subkey(logic::RUN_KEY_PATH)
+        .map_err(|e| format!("cannot open the Run key: {e}"))?;
+    key.set_value(logic::SAMPLER_RUN_VALUE, &logic::sampler_run_command(exe))
+        .map_err(|e| format!("cannot write the sampler Run entry: {e}"))
+}
+
+/// Removes the sampler Run entry; an absent key or value is fine (idempotent).
+fn remove_sampler_run() -> Result<(), String> {
+    let key = match RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(logic::RUN_KEY_PATH, KEY_ALL_ACCESS) {
+        Ok(k) => k,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("cannot open the Run key: {e}")),
+    };
+    match key.delete_value(logic::SAMPLER_RUN_VALUE) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("cannot remove the sampler Run entry: {e}")),
+    }
 }
 
 /// Copy to `<exe>.new`, verify the size, then rename over the installed exe. On any failure the
@@ -240,6 +268,10 @@ pub fn uninstall(purge_state: bool) -> Result<(), CmdError> {
             // Still installed: put it back to auto-start and running rather than leave it disabled.
             restore_service(*role);
         }
+    }
+
+    if let Err(e) = remove_sampler_run() {
+        problems.push(e);
     }
 
     // Best effort: our own exe may be running from here.

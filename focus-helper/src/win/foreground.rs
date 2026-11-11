@@ -1,5 +1,10 @@
 //! Foreground-window sampler. Reads the active program, whether the workstation is locked, and
-//! how long the user has been idle. Window titles are read only for browsers, are returned in
+//! how long the user has been idle.
+//!
+//! This runs in the interactive user's session, inside the `focus-helper sampler` process that the
+//! installer starts at sign-in, and NOT in the helper service: the service lives in Session 0 and
+//! cannot see any user's foreground window, input idle time or lock state. There,
+//! `OpenInputDesktop` failing is the correct "locked" signal. Window titles are read only for browsers, are returned in
 //! the `Sample` and are never logged or stored by this module.
 
 use windows_sys::Win32::Foundation::{CloseHandle, FALSE, HWND};
@@ -35,7 +40,7 @@ fn process_image_path(pid: u32) -> Option<String> {
     if handle == 0 {
         return None;
     }
-    let mut buf = vec![0u16; 1024];
+    let mut buf = vec![0u16; 32768];
     let mut len = buf.len() as u32;
     // SAFETY: `buf` is writable for `len` u16s; `len` is updated to the characters written.
     let ok = unsafe { QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) };
@@ -62,16 +67,16 @@ fn window_title(hwnd: HWND) -> Option<String> {
     Some(String::from_utf16_lossy(&buf[..got as usize]))
 }
 
-/// Seconds since the last keyboard or mouse input; 0 when the OS cannot say.
-fn idle_secs() -> u64 {
+/// Seconds since the last keyboard or mouse input; `None` when the OS cannot say.
+fn idle_secs() -> Option<u64> {
     let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
     // SAFETY: `info` is a valid LASTINPUTINFO with cbSize set.
     if unsafe { GetLastInputInfo(&mut info) } == 0 {
-        return 0;
+        return None;
     }
     // SAFETY: plain FFI call. Both ticks wrap at 2^32 ms, so wrapping subtraction is correct.
     let now = unsafe { GetTickCount() };
-    u64::from(now.wrapping_sub(info.dwTime)) / 1000
+    Some(u64::from(now.wrapping_sub(info.dwTime)) / 1000)
 }
 
 fn local_day() -> String {
@@ -106,5 +111,33 @@ pub fn sample() -> Option<Sample> {
         return None;
     }
     let title = if is_browser(&exe) { window_title(hwnd) } else { None };
-    Some(Sample { exe, title, idle_secs: idle_secs(), day: local_day() })
+    // Fail closed: without a trustworthy idle time nothing is counted.
+    let idle_secs = idle_secs()?;
+    Some(Sample { exe, title, idle_secs, day: local_day() })
+}
+
+/// How often the sampler reports.
+const REPORT_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The `focus-helper sampler` loop: every 5 s report the foreground program to the service over
+/// the pipe. All errors are ignored (the service may be down or restarting); titles are only
+/// ever put into the request and are never logged. Never returns.
+pub fn run_sampler() -> ! {
+    // Started from the Run key as a console-subsystem exe: drop the console right away so no
+    // window stays on screen (a brief flash at sign-in is possible).
+    // SAFETY: plain FFI call; failure (no console) is harmless.
+    unsafe { windows_sys::Win32::System::Console::FreeConsole() };
+    loop {
+        if let Some(s) = sample() {
+            let request = serde_json::json!({
+                "type": "ReportForeground",
+                "exe": s.exe,
+                "title": s.title,
+                "idle_secs": s.idle_secs,
+                "day": s.day,
+            });
+            let _ = crate::win::client::send(&request.to_string());
+        }
+        std::thread::sleep(REPORT_EVERY);
+    }
 }

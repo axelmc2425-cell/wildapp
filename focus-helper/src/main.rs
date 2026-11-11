@@ -10,7 +10,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use focus_helper::daemon::{Daemon, Platform};
 use focus_helper::enforce::{Proc, ProcessTable};
 
-const USAGE: &str = "usage: focus-helper stdio --state <path> | install | uninstall [--purge-state] | service | watchdog | send <json-request | ->";
+const USAGE: &str = "usage: focus-helper stdio --state <path> | install | uninstall [--purge-state] | service | watchdog | sampler | send <json-request | ->";
 
 struct EmptyTable;
 impl ProcessTable for EmptyTable {
@@ -198,6 +198,18 @@ fn send(_arg: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
+/// `sampler`: runs forever in the user's session, reporting the foreground program to the service.
+#[cfg(windows)]
+fn sampler() -> ExitCode {
+    focus_helper::win::foreground::run_sampler()
+}
+
+#[cfg(not(windows))]
+fn sampler() -> ExitCode {
+    eprintln!("Windows only");
+    ExitCode::from(2)
+}
+
 #[cfg(windows)]
 fn windows_service_main(role: focus_helper::service_logic::Role) -> ExitCode {
     match focus_helper::win::service::run(role) {
@@ -224,6 +236,7 @@ fn main() -> ExitCode {
         ["uninstall", "--purge-state"] => windows_cmd(Cmd::Uninstall { purge: true }),
         ["service"] => windows_service_main(focus_helper::service_logic::Role::Main),
         ["watchdog"] => windows_service_main(focus_helper::service_logic::Role::Watchdog),
+        ["sampler"] => sampler(),
         ["send", request] => send(request),
         _ => {
             eprintln!("{USAGE}");

@@ -16,6 +16,9 @@ pub const DIR_NAME: &str = "MyBrainFocus";
 pub const EXE_NAME: &str = "focus-helper.exe";
 pub const STATE_FILE: &str = "state.json";
 pub const USAGE_FILE: &str = "usage.json";
+/// Per-machine autorun key; the sampler is started in every interactive user's session at sign-in.
+pub const RUN_KEY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+pub const SAMPLER_RUN_VALUE: &str = "MyBrainFocusSampler";
 
 /// Pipe DACL: SYSTEM and Administrators full control. Interactive users (IU: anyone logged on at
 /// the console or over RDP, not services or network logons) get explicit rights
@@ -253,6 +256,11 @@ pub fn install_dir(program_files: &str) -> String {
     format!(r"{}\{}", program_files.trim_end_matches('\\'), DIR_NAME)
 }
 
+/// Command line stored in the Run key: the quoted installed exe plus the `sampler` subcommand.
+pub fn sampler_run_command(exe: &str) -> String {
+    format!("\"{exe}\" sampler")
+}
+
 /// `%ProgramFiles%\MyBrainFocus\focus-helper.exe`
 pub fn install_exe(program_files: &str) -> String {
     format!(r"{}\{}", install_dir(program_files), EXE_NAME)
@@ -417,6 +425,17 @@ mod tests {
 
     fn w(lock: Lock, starts: i64, ends: i64) -> Window {
         Window { id: "w".into(), starts, ends, lock, mode: Mode::Block, sites: vec![], apps: vec![], app_folders: vec![], unlock_delay_ms: None }
+    }
+
+    #[test]
+    fn sampler_run_entry() {
+        assert_eq!(SAMPLER_RUN_VALUE, "MyBrainFocusSampler");
+        assert_eq!(RUN_KEY_PATH, r"Software\Microsoft\Windows\CurrentVersion\Run");
+        assert_eq!(
+            sampler_run_command(r"C:\Program Files\MyBrainFocus\focus-helper.exe"),
+            r#""C:\Program Files\MyBrainFocus\focus-helper.exe" sampler"#
+        );
+        assert_eq!(sampler_run_command(&install_exe(r"C:\Program Files")), r#""C:\Program Files\MyBrainFocus\focus-helper.exe" sampler"#);
     }
 
     #[test]

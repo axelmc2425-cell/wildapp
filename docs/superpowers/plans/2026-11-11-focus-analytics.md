@@ -172,6 +172,8 @@
 
 - [ ] **Step 5: Commit:** `git add focus-helper docs && git commit -m "feat(helper): Windows foreground sampler and checklist"`
 
+**Rework (4b):** the helper service runs in Session 0 and cannot see a user's foreground window, idle time or lock state, so sampling from the service tick (Tasks 3 and 4 as written above) cannot work. It was reworked: a per-user `focus-helper sampler` process (started at sign-in from an HKLM Run entry written by install, removed by uninstall) calls `foreground::sample()` every 5 s and sends `ReportForeground { exe, title, idle_secs, day }` over the pipe; the service keeps all accounting (first report anchors, reports less than 4 s apart are ignored, at most 15 s per report, stems from active block windows) and `Status.usage_tracking` is true only while a report arrived in the last 15 s. `Platform::foreground`/`usage_tracking` no longer exist. Design and exact values: `.superpowers/sdd/2026-11-11-focus-analytics/task-4b-brief.md`.
+
 ---
 
 ### Task 5: Client method and pure stats (`stats.js`)
