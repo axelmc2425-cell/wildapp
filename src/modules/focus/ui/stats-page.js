@@ -45,6 +45,7 @@ export function mountStatsPage(root, controller, deps = {}) {
   let message = '';
   let errCode = null;
   let unavailable = false;
+  let version = 0; // bumps with every stored result, so the render signature never serialises day data
   let seq = 0; // newest request wins
   let statusKey = null; // the range key `status` describes
   let lastSig = null;
@@ -67,7 +68,6 @@ export function mountStatsPage(root, controller, deps = {}) {
   }
 
   async function load() {
-    if (trackingOff()) { render(); return; }
     const mine = ++seq;
     const per = period;
     const cur = range;
@@ -79,7 +79,7 @@ export function mountStatsPage(root, controller, deps = {}) {
     if (!alive) return;
     if (a.ok && Array.isArray(a.days)) {
       const old = cache.get(key);
-      cache.set(key, { days: a.days, prevDays: b.ok && Array.isArray(b.days) ? b.days : (old ? old.prevDays : null), at: now() });
+      cache.set(key, { v: ++version, days: a.days, prevDays: b.ok && Array.isArray(b.days) ? b.days : (old ? old.prevDays : null), at: now() });
     }
     if (mine !== seq) return; // a newer request has taken over
     errCode = null; unavailable = false;
@@ -168,13 +168,25 @@ export function mountStatsPage(root, controller, deps = {}) {
     return out;
   }
 
+  const OFF_HINT = 'Usage tracking runs from a small program that starts when you sign in. If you just installed or updated the helper, sign out and back in.';
   function stateView() {
-    if (trackingOff()) {
+    const entry = cache.get(keyOf());
+    const hasData = !!entry && summarize(entry.days, range, todayKey()).total > 0;
+    if (trackingOff() && entry && !hasData) {
       return h('div', { class: 'fr-statnote', 'data-fk': 'off' },
         h('strong', {}, 'Usage tracking is off'),
-        h('p', {}, 'Usage is only tracked by the Windows helper, and it is not tracking on this device right now.'));
+        h('p', {}, 'Usage is only tracked by the Windows helper, and it is not tracking on this device right now.'),
+        h('p', {}, OFF_HINT));
     }
-    const entry = cache.get(keyOf());
+    const view = baseView(entry);
+    if (!(trackingOff() && hasData)) return view;
+    const out = h('div', {});
+    out.append(h('p', { class: 'fr-statnote fr-warn', role: 'status', 'data-fk': 'off-banner' },
+      `Not tracking right now. ${OFF_HINT} History below is from earlier.`), view);
+    return out;
+  }
+
+  function baseView(entry) {
     if (!entry) {
       if (status === 'down') {
         if (unavailable || helperKind() === 'unavailable') {
@@ -210,7 +222,7 @@ export function mountStatsPage(root, controller, deps = {}) {
 
   function signature() {
     const entry = cache.get(keyOf());
-    return JSON.stringify([period, range, asTable, status, message, errCode, unavailable, trackingOff(), helperKind(), todayKey(), entry ? [entry.days, entry.prevDays, status === 'down' ? entry.at : 0] : null]);
+    return JSON.stringify([period, range, asTable, status, message, errCode, unavailable, trackingOff(), helperKind(), todayKey(), entry ? [entry.v, status === 'down' ? entry.at : 0] : null]);
   }
 
   function render() {
@@ -251,7 +263,7 @@ export function mountStatsPage(root, controller, deps = {}) {
   }) : () => {};
   const timers = [
     setInterval(() => { try { Promise.resolve(controller.refreshStatus && controller.refreshStatus()).catch(() => {}); } catch { /* ignore */ } }, 5000),
-    setInterval(() => { if (alive && !trackingOff()) load(); }, REFRESH_MS)];
+    setInterval(() => { if (alive) load(); }, REFRESH_MS)];
 
   load();
 

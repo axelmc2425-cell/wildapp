@@ -71,12 +71,28 @@ test('empty period', async () => {
   stop();
 });
 
-test('tracking off', async () => {
-  const { body, calls, stop } = setup({ helper: { kind: 'ok', status: { usage_tracking: false } } });
+test('tracking off with no data for the range shows the explanation and the sign-in hint', async () => {
+  const { body, calls, stop } = setup({ helper: { kind: 'ok', status: { usage_tracking: false } }, usage: () => ({ ok: true, days: [] }) });
   await tick();
   assert.match(text(body), /Usage tracking is off/);
   assert.match(text(body), /Windows helper/);
-  assert.equal(calls.length, 0);
+  assert.match(text(body), /sign out and back in/);
+  assert.doesNotMatch(text(body), /Total/);
+  assert.equal(calls.length, 2);
+  stop();
+});
+
+test('tracking off with history shows the data under a banner; the banner goes when tracking returns', async () => {
+  const { body, controller, subs, stop } = setup({ helper: { kind: 'ok', status: { usage_tracking: false } }, usage: () => ({ ok: true, days: [row('2026-11-09', 3600)] }) });
+  await tick();
+  assert.match(text(body), /Not tracking right now\. Usage tracking runs from a small program that starts when you sign in\. If you just installed or updated the helper, sign out and back in\. History below is from earlier\./);
+  assert.match(text(body), /Total/); assert.match(text(body), /1h 0m/);
+  assert.doesNotMatch(text(body), /Usage tracking is off/);
+  controller.state.helper = { kind: 'ok', status: { usage_tracking: true } };
+  for (const fn of subs) fn();
+  await tick();
+  assert.doesNotMatch(text(body), /Not tracking right now/);
+  assert.match(text(body), /Total/);
   stop();
 });
 
@@ -84,7 +100,7 @@ test('old helper without usage_tracking still shows data', async () => {
   const { body, stop } = setup({ helper: { kind: 'ok', status: {} }, usage: () => ({ ok: true, days: [row('2026-11-09', 600)] }) });
   await tick();
   assert.match(text(body), /10m/);
-  assert.doesNotMatch(text(body), /tracking is off/);
+  assert.doesNotMatch(text(body), /tracking is off|Not tracking right now/);
   stop();
 });
 
