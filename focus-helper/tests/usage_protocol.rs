@@ -52,7 +52,7 @@ fn chrome(title: &str) -> String {
 }
 
 fn report(exe: &str, title: Option<&str>, idle: u64) -> String {
-    json!({"type":"ReportForeground","exe":exe,"title":title,"idle_secs":idle,"day":"2026-11-11"}).to_string()
+    json!({"type":"ReportForeground","exe":exe,"title":title,"idle_secs":idle,"day":"2023-11-14"}).to_string()
 }
 
 fn call(d: &mut Daemon, p: &mut Fake, line: &str, mono: i64) -> Value {
@@ -60,7 +60,7 @@ fn call(d: &mut Daemon, p: &mut Fake, line: &str, mono: i64) -> Value {
 }
 
 fn usage(d: &mut Daemon, p: &mut Fake) -> Value {
-    call(d, p, r#"{"type":"GetUsage","from_day":"2026-11-01","to_day":"2026-11-30"}"#, 0)
+    call(d, p, r#"{"type":"GetUsage","from_day":"2023-11-01","to_day":"2023-11-30"}"#, 0)
 }
 
 #[test]
@@ -175,7 +175,7 @@ fn get_usage_shape() {
     let (s, u) = paths("shape");
     let mut d = Daemon::load_with_usage(&s, &u);
     let mut p = Fake;
-    d.add_usage(DayUsage { day: "2026-11-10".into(), total: 60, ..Default::default() });
+    d.add_usage(DayUsage { day: "2023-11-10".into(), total: 60, ..Default::default() });
     let r = usage(&mut d, &mut p);
     assert_eq!(r["type"], "Usage");
     let day = r["days"][0].as_object().unwrap();
@@ -189,7 +189,7 @@ fn get_usage_rejects() {
     let (s, u) = paths("rejects");
     let mut d = Daemon::load_with_usage(&s, &u);
     let mut p = Fake;
-    for (f, t) in [("2026-11-30", "2026-11-01"), ("nope", "2026-11-01"), ("2025-01-01", "2026-02-05")] {
+    for (f, t) in [("2023-11-30", "2023-11-01"), ("nope", "2023-11-01"), ("2025-01-01", "2026-02-05")] {
         let r = call(&mut d, &mut p, &json!({"type":"GetUsage","from_day":f,"to_day":t}).to_string(), 0);
         assert_eq!(r["type"], "Error", "{f}..{t}");
         assert_eq!(r["code"], "bad-request");
@@ -244,7 +244,7 @@ fn unreadable_usage_file_warns_without_titles() {
 fn load_derives_usage_path_next_to_state() {
     let (s, u) = paths("derive");
     let mut d = Daemon::load(&s);
-    d.add_usage(DayUsage { day: "2026-11-10".into(), total: 7, ..Default::default() });
+    d.add_usage(DayUsage { day: "2023-11-10".into(), total: 7, ..Default::default() });
     assert!(u.exists());
 }
 
@@ -307,12 +307,12 @@ fn report_validation_errors() {
     let long_exe = "a".repeat(261);
     let long_title = "t".repeat(1025);
     let cases = [
-        json!({"type":"ReportForeground","exe":"","title":null,"idle_secs":0,"day":"2026-11-11"}),
-        json!({"type":"ReportForeground","exe":long_exe,"title":null,"idle_secs":0,"day":"2026-11-11"}),
-        json!({"type":"ReportForeground","exe":"C:\\x\\a.exe","title":null,"idle_secs":0,"day":"2026-11-11"}),
-        json!({"type":"ReportForeground","exe":"dir/a.exe","title":null,"idle_secs":0,"day":"2026-11-11"}),
-        json!({"type":"ReportForeground","exe":"a.exe","title":long_title,"idle_secs":0,"day":"2026-11-11"}),
-        json!({"type":"ReportForeground","exe":"a.exe","title":null,"idle_secs":0,"day":"2026-13-01"}),
+        json!({"type":"ReportForeground","exe":"","title":null,"idle_secs":0,"day":"2023-11-14"}),
+        json!({"type":"ReportForeground","exe":long_exe,"title":null,"idle_secs":0,"day":"2023-11-14"}),
+        json!({"type":"ReportForeground","exe":"C:\\x\\a.exe","title":null,"idle_secs":0,"day":"2023-11-14"}),
+        json!({"type":"ReportForeground","exe":"dir/a.exe","title":null,"idle_secs":0,"day":"2023-11-14"}),
+        json!({"type":"ReportForeground","exe":"a.exe","title":long_title,"idle_secs":0,"day":"2023-11-14"}),
+        json!({"type":"ReportForeground","exe":"a.exe","title":null,"idle_secs":0,"day":"2023-13-01"}),
         json!({"type":"ReportForeground","exe":"a.exe","title":null,"idle_secs":0,"day":"nope"}),
     ];
     for c in cases {
@@ -325,7 +325,7 @@ fn report_validation_errors() {
     // Rejected reports neither anchor nor mark the sampler as running.
     assert_eq!(call(&mut d, &mut p, r#"{"type":"GetStatus"}"#, 0)["usage_tracking"], false);
     // Boundary values are accepted.
-    let ok = json!({"type":"ReportForeground","exe":"a".repeat(260),"title":"t".repeat(1024),"idle_secs":0,"day":"2026-11-11"});
+    let ok = json!({"type":"ReportForeground","exe":"a".repeat(260),"title":"t".repeat(1024),"idle_secs":0,"day":"2023-11-14"});
     assert_eq!(call(&mut d, &mut p, &ok.to_string(), 0)["type"], "Ok");
 }
 
@@ -361,7 +361,7 @@ fn failed_usage_save_warns_then_clears() {
     let u = dir.join("usage.json");
     let mut d = Daemon::load_with_usage(&s, &u);
     let mut p = Fake;
-    d.add_usage(DayUsage { day: "2026-11-10".into(), total: 7, ..Default::default() });
+    d.add_usage(DayUsage { day: "2023-11-10".into(), total: 7, ..Default::default() });
     let st = call(&mut d, &mut p, r#"{"type":"GetStatus"}"#, 0);
     assert!(st["warnings"][0].as_str().unwrap().starts_with("usage: "), "{st}");
     std::fs::create_dir_all(&dir).unwrap();
@@ -375,8 +375,8 @@ fn backup_load_warns() {
     let (s, u) = paths("backup");
     {
         let mut d = Daemon::load_with_usage(&s, &u);
-        d.add_usage(DayUsage { day: "2026-11-10".into(), total: 7, ..Default::default() });
-        d.add_usage(DayUsage { day: "2026-11-10".into(), total: 8, ..Default::default() });
+        d.add_usage(DayUsage { day: "2023-11-10".into(), total: 7, ..Default::default() });
+        d.add_usage(DayUsage { day: "2023-11-10".into(), total: 8, ..Default::default() });
     }
     std::fs::write(&u, b"garbage").unwrap();
     let mut d = Daemon::load_with_usage(&s, &u);
@@ -404,4 +404,42 @@ fn usage_file_contains_no_title_text() {
     let text = std::fs::read_to_string(&u).unwrap();
     assert!(text.contains("chrome.exe"));
     assert!(!text.contains("Xyzzy") && !text.contains("Secret"), "{text}");
+}
+
+fn report_day(d: &mut Daemon, day: &str) -> Value {
+    let line = json!({"type":"ReportForeground","exe":"a.exe","title":null,"idle_secs":0,"day":day}).to_string();
+    serde_json::from_str(&d.handle_line(&line, NOW, 0, [0; 16], &mut Fake)).unwrap()
+}
+
+#[test]
+fn report_day_must_be_near_the_wall_clock_date() {
+    // NOW is 2023-11-14 22:13 UTC.
+    let (s, u) = paths("dayskew");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    for ok in ["2023-11-14", "2023-11-15", "2023-11-13", "2023-11-16", "2023-11-12"] {
+        assert_eq!(report_day(&mut d, ok)["type"], "Ok", "{ok}");
+    }
+    for bad in ["2023-11-17", "2023-11-11", "2026-11-11", "1999-01-01"] {
+        let r = report_day(&mut d, bad);
+        assert_eq!(r["type"], "Error", "{bad}");
+        assert_eq!(r["code"], "bad-request", "{bad}");
+    }
+}
+
+#[test]
+fn rejected_far_day_changes_nothing() {
+    let (s, u) = paths("dayreject");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    call(&mut d, &mut p, &chrome("Inbox"), 0);
+    call(&mut d, &mut p, &chrome("Inbox"), 5_000);
+    let far = json!({"type":"ReportForeground","exe":"chrome.exe","title":null,"idle_secs":0,"day":"2023-11-20"}).to_string();
+    assert_eq!(call(&mut d, &mut p, &far, 10_000)["type"], "Error");
+    assert_eq!(call(&mut d, &mut p, &far, 20_000)["type"], "Error");
+    let r = usage(&mut d, &mut p);
+    assert_eq!(r["days"].as_array().unwrap().len(), 1);
+    assert_eq!(r["days"][0]["total"], 5);
+    // The rejected reports did not move the anchor: the next good one counts the whole gap (capped at 15).
+    call(&mut d, &mut p, &chrome("Inbox"), 25_000);
+    assert_eq!(usage(&mut d, &mut p)["days"][0]["total"], 20);
 }

@@ -43,6 +43,17 @@ pub const KEEP_DAYS: usize = 730;
 /// Longest range `range` serves, inclusive.
 pub const MAX_RANGE_DAYS: i64 = 400;
 
+/// Longest program or site name stored.
+pub const MAX_NAME_CHARS: usize = 64;
+
+/// `s` cut to at most `max` characters, always on a character boundary.
+pub fn truncate_title(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((i, _)) => s[..i].to_string(),
+        None => s.to_string(),
+    }
+}
+
 const OTHER: &str = "other";
 
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq, Eq, Debug)]
@@ -75,6 +86,8 @@ impl PartialEq for UsageStore {
 }
 
 fn add_capped(map: &mut BTreeMap<String, u64>, key: &str, secs: u64) {
+    let key = truncate_title(key, MAX_NAME_CHARS);
+    let key = key.as_str();
     let key = if map.contains_key(key) || map.len() < MAX_NAMES { key } else { OTHER };
     *map.entry(key.to_string()).or_insert(0) += secs;
 }
@@ -105,6 +118,11 @@ fn parse_day(s: &str) -> Option<(i64, i64, i64)> {
 /// Whether `s` is a real `YYYY-MM-DD` calendar date.
 pub fn is_valid_day(s: &str) -> bool {
     parse_day(s).is_some()
+}
+
+/// Days since 1970-01-01 of a valid `YYYY-MM-DD`, else `None`.
+pub fn day_number(s: &str) -> Option<i64> {
+    parse_day(s).map(|(y, m, d)| days_from_civil(y, m, d))
 }
 
 /// Days since 1970-01-01 (Howard Hinnant's days-from-civil).

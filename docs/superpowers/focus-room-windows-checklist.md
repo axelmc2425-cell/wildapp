@@ -227,13 +227,12 @@ A small sampler process (`focus-helper sampler`) runs in your signed-in session 
 
 - [ ] After install, sign out and sign back in — Expected: Task Manager (Details tab) shows `focus-helper.exe` running in your user session (not as SYSTEM) with the `sampler` argument, and no window or console appears
 - [ ] Check `HKLM\Software\Microsoft\Windows\CurrentVersion\Run` — Expected: a value `MyBrainFocusSampler` with the quoted installed exe path followed by `sampler`
-- [ ] End the sampler process in Task Manager and wait 20 seconds, then work in a program — Expected: `focus-helper send "{\"type\":\"GetStatus\"}"` shows `usage_tracking` false and nothing is counted; after the next sign-in tracking resumes
+- [ ] End the sampler process in Task Manager and wait 20 seconds, then work in a program — Expected: `focus-helper send "{\"type\":\"GetStatus\"}"` shows `usage_tracking` false and nothing is counted, and Focus Room > Stats still shows the earlier history together with the "not tracking right now" banner; after the next sign-in tracking resumes
 - [ ] With the sampler running (signed in since install), run the installer again as Administrator — Expected: it succeeds (running samplers are stopped first); sign out and in once to bring the sampler back
 - [ ] With the sampler running, uninstall — Expected: it succeeds and `C:\Program Files\MyBrainFocus` is removed
 - [ ] With two Windows users signed in at once (fast user switching), work in one — Expected: time is not double counted (the usage total grows by about the real elapsed time)
-
 - [ ] Unlock the PC after a long lock — Expected: at most a few seconds of time appear around the unlock (the 15-second cap), not the whole lock period
-- [ ] Work in a program (for example Notepad) for a couple of minutes, then open the usage view — Expected: that program's time is counted
+- [ ] Work in a program (for example Notepad) for a couple of minutes, then open Focus Room > Stats — Expected: that program's time is counted
 - [ ] Leave the PC untouched for more than 5 minutes with the program in front — Expected: time stops counting once the last input is older than 5 minutes
 - [ ] Lock the PC (Win+L) for a few minutes, then unlock — Expected: nothing is counted while locked (this verifies that the sampler cannot open the input desktop on the lock screen)
 - [ ] Open different sites in Chrome or Edge in separate tabs, switching between them — Expected: time is attributed to the right site for each tab title, and browser time is counted too

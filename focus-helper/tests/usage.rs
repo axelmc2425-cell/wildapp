@@ -334,3 +334,32 @@ fn day_string_zero_pads() {
     assert_eq!(day_string(2026, 3, 7), "2026-03-07");
     assert_eq!(day_string(2026, 12, 31), "2026-12-31");
 }
+
+#[test]
+fn truncate_title_on_char_boundary() {
+    assert_eq!(truncate_title("abc", 5), "abc");
+    assert_eq!(truncate_title("abcdef", 3), "abc");
+    assert_eq!(truncate_title("", 3), "");
+    // 3 bytes per char: cutting at 2 chars must not split the third.
+    assert_eq!(truncate_title("€€€", 2), "€€");
+    assert_eq!(truncate_title("ab€cd", 3), "ab€");
+    let long = "é".repeat(1500);
+    let t = truncate_title(&long, 1000);
+    assert_eq!(t.chars().count(), 1000);
+    assert!(long.starts_with(&t));
+}
+
+#[test]
+fn stored_names_are_capped_to_64_chars() {
+    let mut st = UsageStore::new();
+    let long_exe = format!("{}.exe", "x".repeat(100));
+    st.record(Some(&s(&long_exe, None, 0, "2026-11-11")), 5, &[]);
+    let d = &st.range("2026-11-11", "2026-11-11").unwrap()[0];
+    let key = d.apps.keys().next().unwrap();
+    assert_eq!(key.chars().count(), 64);
+    assert_eq!(d.total, 5);
+    let long_stem = "y".repeat(100);
+    st.record(Some(&s("chrome.exe", Some(&format!("Inbox | {long_stem}")), 0, "2026-11-11")), 5, &[long_stem]);
+    let d = &st.range("2026-11-11", "2026-11-11").unwrap()[0];
+    assert!(d.sites.keys().all(|k| k.chars().count() <= 64), "{:?}", d.sites);
+}

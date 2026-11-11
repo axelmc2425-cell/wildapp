@@ -119,6 +119,8 @@
 
 ### Task 3: Protocol, daemon integration, test-only AddUsage
 
+> Note: `Platform::foreground`/`usage_tracking` and tick sampling below were replaced by the 4b design (see Rework (4b) under Task 4).
+
 **Files:**
 - Modify: `focus-helper/src/ipc.rs` (add `GetUsage`, `Usage`, `usage_tracking`), `focus-helper/src/daemon.rs` (own the `UsageStore`, sampling, flush), `focus-helper/src/main.rs` (usage path for stdio, `AddUsage` under `test-clock`), `focus-helper/src/win/pipe.rs` and `focus-helper/src/service_logic.rs` (usage file path, flush on stop), `focus-helper/src/win/paths.rs` (`usage_file()`)
 - Test: `focus-helper/tests/usage_protocol.rs`, extend `focus-helper/tests/stdio.rs`
@@ -151,6 +153,8 @@
 ---
 
 ### Task 4: Windows foreground sampler (`win/foreground.rs`)
+
+> Note: `WindowsPlatform::foreground` was replaced by the 4b design: the sampler runs in a per-user process (see Rework (4b) below).
 
 **Files:**
 - Create: `focus-helper/src/win/foreground.rs`

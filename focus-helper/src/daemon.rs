@@ -14,6 +14,8 @@ use crate::persist;
 use crate::sites::stems_from_domains;
 use crate::usage::{self, DayUsage, Sample, UsageLoad, UsageStore};
 
+/// A reported day may differ from the UTC date by this many days (time zones, midnight).
+const MAX_DAY_SKEW: i64 = 2;
 const MAX_EXE_CHARS: usize = 260;
 const MAX_TITLE_CHARS: usize = 1024;
 
@@ -262,6 +264,8 @@ impl Daemon {
                     bad("title is longer than 1024 characters")
                 } else if !usage::is_valid_day(&day) {
                     bad("day must be YYYY-MM-DD")
+                } else if usage::day_number(&day).is_none_or(|n| (n - wall_ms.div_euclid(86_400_000)).abs() > MAX_DAY_SKEW) {
+                    bad("day is too far from today")
                 } else {
                     let now = self.clock.now(wall_ms, mono_ms);
                     self.report_foreground(Sample { exe, title, idle_secs, day }, now, mono_ms);

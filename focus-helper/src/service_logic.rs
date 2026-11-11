@@ -154,6 +154,15 @@ pub enum ChildAction {
     QuarantineDir,
 }
 
+/// Corrupt state/usage files the daemon set aside (`<file>.corrupt-<unix_ms>`, also for the
+/// `.bak`). They are the only copy of the unreadable data and must never be deleted.
+pub fn is_quarantine_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    ["state.json.corrupt-", "usage.json.corrupt-", "state.json.bak.corrupt-", "usage.json.bak.corrupt-"]
+        .iter()
+        .any(|p| n.starts_with(p))
+}
+
 /// Decide what to do with one immediate child of an adopted state directory. Reparse points are
 /// checked first so a junction named like an expected file is still removed, never followed.
 pub fn classify_child(name: &str, is_dir: bool, is_reparse: bool) -> ChildAction {
@@ -161,7 +170,7 @@ pub fn classify_child(name: &str, is_dir: bool, is_reparse: bool) -> ChildAction
         ChildAction::RemoveLink
     } else if is_dir {
         ChildAction::QuarantineDir
-    } else if EXPECTED_STATE_FILES.iter().any(|f| f.eq_ignore_ascii_case(name)) {
+    } else if EXPECTED_STATE_FILES.iter().any(|f| f.eq_ignore_ascii_case(name)) || is_quarantine_name(name) {
         ChildAction::ResetAcl
     } else {
         ChildAction::RemoveFile
@@ -632,6 +641,12 @@ mod tests {
         assert_eq!(classify_child("STATE.JSON.BAK", false, false), ResetAcl);
         assert_eq!(classify_child("service.log.old", false, false), ResetAcl);
         assert_eq!(classify_child("sub", true, false), QuarantineDir);
+        assert_eq!(classify_child("usage.json.corrupt-1700000000000", false, false), ResetAcl);
+        assert_eq!(classify_child("state.json.corrupt-1700000000000", false, false), ResetAcl);
+        assert_eq!(classify_child("State.json.bak.corrupt-17", false, false), ResetAcl);
+        assert_eq!(classify_child("usage.json.corrupt-17", false, true), RemoveLink, "a link is still removed");
+        assert_eq!(classify_child("other.json.corrupt-17", false, false), RemoveFile);
+        assert_eq!(classify_child("usage.json.corruptx", false, false), RemoveFile);
         assert_eq!(classify_child("state.json", true, false), QuarantineDir);
     }
 

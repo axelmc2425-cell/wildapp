@@ -132,7 +132,7 @@ pub fn run_sampler() -> ! {
             let request = serde_json::json!({
                 "type": "ReportForeground",
                 "exe": s.exe,
-                "title": s.title,
+                "title": s.title.map(|t| crate::usage::truncate_title(&t, 1000)),
                 "idle_secs": s.idle_secs,
                 "day": s.day,
             });

@@ -285,11 +285,12 @@ pub fn uninstall(purge_state: bool) -> Result<(), CmdError> {
         if let Err(e) = remove_sampler_run() {
             problems.push(e);
         }
+        // Samplers hold the exe open: stop them, only now that the services are gone.
+        stop_samplers_for(&paths::install_exe());
     }
 
-    // Best effort: our own exe may be running from here. Samplers hold the exe open: stop them.
+    // Best effort: our own exe may be running from here.
     let install_dir = paths::install_dir();
-    stop_samplers_for(&paths::install_exe());
     admin_write(&install_dir);
     let _ = std::fs::remove_dir_all(&install_dir);
 
