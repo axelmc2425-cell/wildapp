@@ -449,3 +449,22 @@ test('list editor picks "schedule" or "block" wording from the refusal kind', as
     assert.ok(findAll(body, n => /^That list is part of a locked /.test(n.textContent || '') && n.textContent.length < 80).some(n => n.textContent.includes(`locked ${kind} until`)), kind);
   }
 });
+
+test('home header shows a Stats button only when deps.openStats is a function', async () => {
+  const { mountHome } = await import('../src/modules/focus/ui/home.js');
+  const state = { loaded: true, blocks: [], lists: [], helper: null, notice: null, syncPending: false };
+  const controller = { state, refreshStatus() {}, resync() {} };
+  let body = installDom(undefined);
+  let stop = mountHome(body, controller, {}, {});
+  assert.equal(findAll(body, n => n.tag === 'button' && n.textContent === 'Stats').length, 0);
+  stop();
+  let opened = 0;
+  body = installDom(undefined);
+  stop = mountHome(body, controller, {}, { openStats: () => { opened++; } });
+  try {
+    const b = findAll(body, n => n.tag === 'button' && n.textContent === 'Stats');
+    assert.equal(b.length, 1);
+    await b[0].click();
+    assert.equal(opened, 1);
+  } finally { stop(); }
+});

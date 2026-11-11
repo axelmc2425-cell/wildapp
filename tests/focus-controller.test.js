@@ -1104,3 +1104,19 @@ test('a locked save whose status cannot be read after the push is kept as unconf
   assert.equal(ctl.state.syncPending, true);
   assert.equal((await db.all('SELECT id FROM focus_schedules')).length, 1);
 });
+
+test('getUsage resolves {ok, days}, never throws, and flags an unreachable helper', async () => {
+  const mk = (getUsage) => createController({ db: {}, client: { getUsage }, now: () => 0, tzOffsetAt: () => 0, onChange() {} });
+  const rows = [{ day: '2026-11-11', total: 5 }];
+  const seen = [];
+  assert.deepEqual(await mk(async (f, t) => { seen.push([f, t]); return { type: 'Usage', days: rows }; }).getUsage('a', 'b'), { ok: true, days: rows });
+  assert.deepEqual(seen, [['a', 'b']]);
+  const bad = await mk(async () => ({ type: 'Ok' })).getUsage('a', 'b');
+  assert.equal(bad.ok, false);
+  const down = await mk(async () => { const e = new Error('The helper is not running'); e.code = 'unreachable'; throw e; }).getUsage('a', 'b');
+  assert.deepEqual([down.ok, down.down], [false, true]);
+  const req = await mk(async () => { const e = new Error('range too large'); e.code = 'bad-request'; throw e; }).getUsage('a', 'b');
+  assert.deepEqual([req.ok, req.down, req.message], [false, false, 'range too large']);
+  const none = await mk(undefined).getUsage('a', 'b');
+  assert.equal(none.ok, false);
+});

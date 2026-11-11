@@ -10,6 +10,7 @@ import { openStartDialog } from './ui/start-dialog.js';
 import { openPartnerSetup } from './ui/partner-setup.js';
 import { openUnlockDialog } from './ui/unlock-dialog.js';
 import { mountHelperDetails } from './ui/helper-details.js';
+import { mountStatsPage } from './ui/stats-page.js';
 
 const listeners = new Set();
 let controller = null;
@@ -56,6 +57,22 @@ registerModule({
     startAutoResync(ctl);
   },
   render(root, ctx) {
-    return mountHome(root, getController(ctx), ctx, { subscribe, openListEditor, openScheduleEditor, openStartDialog, openPartnerSetup, openUnlockDialog, mountHelperDetails });
+    const ctl = getController(ctx);
+    let view = 'home';
+    let cleanup = null;
+    let alive = true;
+    function show(next) {
+      if (!alive) return;
+      view = next;
+      if (cleanup) { const c = cleanup; cleanup = null; try { c(); } catch { /* ignore */ } }
+      cleanup = view === 'stats'
+        ? mountStatsPage(root, ctl, { onBack: () => show('home'), subscribe })
+        : mountHome(root, ctl, ctx, { subscribe, openListEditor, openScheduleEditor, openStartDialog, openPartnerSetup, openUnlockDialog, mountHelperDetails, openStats: () => show('stats') });
+    }
+    show('home');
+    return () => {
+      alive = false;
+      if (cleanup) { const c = cleanup; cleanup = null; try { c(); } catch { /* ignore */ } }
+    };
   },
 });
