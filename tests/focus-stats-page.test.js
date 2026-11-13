@@ -449,3 +449,84 @@ test('Show as table renders stretches, capped at 500 rows with a note', async ()
   assert.doesNotMatch(text(body), /NaN|Infinity/);
   stop();
 });
+
+// ---- hour-of-day charts and averages ----
+const hrs = (m) => { const a = new Array(24).fill(0); for (const [k, v] of Object.entries(m)) a[k] = v; return a; };
+const hrow = (day, total, hours) => ({ ...row(day, total), ...(hours ? { hours } : {}) });
+const hasChart = (body, cls) => findAll(body, (n) => (n.getAttribute('class') || '').includes(cls)).length > 0;
+
+test('hour bars and heatmap show with the day count caption', async () => {
+  const { body, stop } = setup({ usage: (from) => ({ ok: true, days: from === '2026-11-09'
+    ? [hrow('2026-11-09', 3600, hrs({ 9: 3600 })), hrow('2026-11-10', 1800, hrs({ 10: 1800 }))] : [] }) });
+  await tick();
+  assert.match(text(body), /Hours of the day/);
+  assert.match(text(body), /Based on 2 days with hour data/);
+  assert.match(text(body), /2 of 3 days/);
+  assert.ok(hasChart(body, 'fr-chart-hours'));
+  assert.ok(hasChart(body, 'fr-chart-weekhour'));
+  assert.doesNotMatch(text(body), /NaN/);
+  stop();
+});
+
+test('singular caption for one day', async () => {
+  const { body, stop } = setup({ usage: (from) => ({ ok: true, days: from === '2026-11-09' ? [hrow('2026-11-09', 3600, hrs({ 9: 3600 }))] : [] }) });
+  await tick();
+  assert.match(text(body), /Based on 1 day with hour data/);
+  stop();
+});
+
+test('days without hours show the placeholder and no hour chart', async () => {
+  const { body, stop } = setup({ usage: (from) => ({ ok: true, days: from === '2026-11-09' ? [hrow('2026-11-09', 3600), hrow('2026-11-10', 600)] : [] }) });
+  await tick();
+  assert.match(text(body), /Hour detail is recorded from the update onwards/);
+  assert.equal(hasChart(body, 'fr-chart-hours'), false);
+  assert.equal(hasChart(body, 'fr-chart-weekhour'), false);
+  stop();
+});
+
+test('Day period shows only the hour bars', async () => {
+  const { body, stop } = setup({ usage: () => ({ ok: true, days: [hrow('2026-11-11', 3600, hrs({ 9: 3600 }))] }) });
+  await tick();
+  await btn(body, 'Day').click();
+  assert.match(text(body), /Based on 1 day with hour data/);
+  assert.ok(hasChart(body, 'fr-chart-hours'));
+  assert.equal(hasChart(body, 'fr-chart-weekhour'), false);
+  stop();
+});
+
+test('averages: exact per-day value, dash for week and month on short ranges, no NaN', async () => {
+  const { body, stop } = setup({ usage: (from) => ({ ok: true, days: from === '2026-11-09' ? [row('2026-11-09', 7200, { 'code.exe': 7200 }), row('2026-11-10', 3600, { 'code.exe': 3600 })] : [] }) });
+  await tick();
+  const t = text(body);
+  assert.match(t, /Averages/);
+  const rowsOf = (k) => findAll(body, (n) => n.getAttribute('data-fk') === k)[0];
+  assert.equal(rowsOf('avg-day').textContent, 'Per day1h 0m'); // 10800 / 3 elapsed days
+  assert.equal(rowsOf('avg-week').textContent, 'Per week—needs 7 days');
+  assert.equal(rowsOf('avg-month').textContent, 'Per month—needs 28 days');
+  assert.match(t, /Code\.exe|code\.exe/);
+  assert.match(rowsOf('avg-app-code.exe').textContent, /3h 0m|1h 30m/);
+  assert.doesNotMatch(t, /NaN/);
+  stop();
+});
+
+test('averages and hours render as tables when Show as table is on', async () => {
+  const { body, stop } = setup({ usage: (from) => ({ ok: true, days: from === '2026-11-09' ? [hrow('2026-11-09', 3600, hrs({ 9: 3600 }))] : [] }) });
+  await tick();
+  await btn(body, 'Show as table').click();
+  const tables = findAll(body, (n) => n.tag === 'table');
+  const hourT = tables.find((tb) => /Hours of the day/.test(tb.textContent));
+  assert.ok(hourT);
+  assert.equal(findAll(hourT, (n) => n.tag === 'tr').length, 25);
+  assert.ok(tables.some((tb) => /Averages/.test(tb.textContent)));
+  assert.equal(hasChart(body, 'fr-chart-hours'), false);
+  assert.doesNotMatch(text(body), /NaN/);
+  stop();
+});
+
+test('empty range and Today view have no hour or averages sections', async () => {
+  const { body, stop } = setup({ usage: () => ({ ok: true, days: [] }) });
+  await tick();
+  assert.match(text(body), /No usage recorded/);
+  assert.doesNotMatch(text(body), /Hours of the day|Averages|NaN/);
+  stop();
+});

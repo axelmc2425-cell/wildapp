@@ -2,8 +2,8 @@ import { h } from './dom.js';
 import { formatClock } from './util.js';
 import { makeTzOffsetAt } from '../tz.js';
 import { dayKey, addDays, rangeFor, previousRange, shiftRange, summarize, deltaVs, formatDuration } from '../stats.js';
-import { timelineWindow, focusMetrics, activeStreaks, formatDurationSecs } from '../stats-detail.js';
-import { timelineStrip, timelineLegend } from './charts-detail.js';
+import { timelineWindow, focusMetrics, activeStreaks, formatDurationSecs, hourlyAverages, weekdayHourGrid, periodAverages } from '../stats-detail.js';
+import { timelineStrip, timelineLegend, hourBars, weekdayHourHeatmap } from './charts-detail.js';
 import { stackedDailyBars, chartLegend, topAppNames, weekdayBars, yearHeatmap, rankedBars, dataTable } from './charts.js';
 
 const PERIODS = [['today', 'Today'], ['day', 'Day'], ['week', 'Week'], ['month', 'Month'], ['year', 'Year']];
@@ -233,7 +233,59 @@ export function mountStatsPage(root, controller, deps = {}) {
     }
     if (sum.otherBrowsing > 0) sites.append(h('p', { class: 'fr-otherline' }, `Other browsing: ${formatDuration(sum.otherBrowsing)}`));
     out.append(sites);
+    out.append(hoursSection(entry, today), averagesSection(entry, today));
     return out;
+  }
+
+  // ---- hour-of-day and averages ----
+  const dayCount = (n) => `${n} ${n === 1 ? 'day' : 'days'}`;
+  function hoursSection(entry, today) {
+    const avg = hourlyAverages(entry.days);
+    const sec = section('Hours of the day');
+    if (!(avg.daysCounted > 0)) {
+      sec.append(h('p', { class: 'fr-statnote', 'data-fk': 'no-hours' }, 'Hour detail is recorded from the update onwards'));
+      return sec;
+    }
+    const last = today < range.to ? today : range.to;
+    const elapsed = last < range.from ? 0 : Math.round((Date.parse(last) - Date.parse(range.from)) / 86400000) + 1;
+    let caption = `Based on ${dayCount(avg.daysCounted)} with hour data`;
+    if (elapsed > avg.daysCounted) caption += ` (${avg.daysCounted} of ${elapsed} days)`;
+    sec.append(h('p', { class: 'fr-muted fr-small', 'data-fk': 'hours-caption' }, caption));
+    if (asTable) {
+      const rows = avg.hours.map((secs, i) => ({ hour: `${p2(i)}:00`, secs }));
+      sec.append(dataTable(rows, [{ key: 'hour', label: 'Hour' }, { key: 'secs', label: 'Average', format: formatDuration }], 'Hours of the day'));
+      return sec;
+    }
+    sec.append(hourBars(avg.hours, avg.daysCounted));
+    if (period !== 'day') sec.append(h('div', { class: 'fr-chart-scroll' }, weekdayHourHeatmap(weekdayHourGrid(entry.days).grid)));
+    return sec;
+  }
+
+  function averagesSection(entry, today) {
+    const a = periodAverages(entry.days, range, today);
+    const dur = (v) => (v == null || !Number.isFinite(v) ? '—' : formatDuration(v));
+    const items = [
+      ['avg-day', 'Per day', dur(a.perDay), ''],
+      ['avg-week', 'Per week', dur(a.perWeek), a.perWeek == null ? 'needs 7 days' : ''],
+      ['avg-month', 'Per month', dur(a.perMonth), a.perMonth == null ? 'needs 28 days' : '']];
+    const sec = section('Averages');
+    if (asTable) {
+      sec.append(dataTable(items.map(([, label, value, hint]) => ({ label, value: hint ? `${value} (${hint})` : value })), [{ key: 'label', label: 'Average' }, { key: 'value', label: 'Value' }], 'Averages'));
+      sec.append(dataTable(WEEKDAYS.map((name, i) => ({ name, secs: a.perWeekday[i] })), [{ key: 'name', label: 'Weekday' }, { key: 'secs', label: 'Average', format: formatDuration }], 'Average per weekday'));
+      sec.append(dataTable(a.perApp.slice(0, 10), [{ key: 'name', label: 'App' }, { key: 'perActiveDay', label: 'Per active day', format: formatDuration }, { key: 'activeDays', label: 'Active days' }], 'Apps by average per active day'));
+      return sec;
+    }
+    sec.append(h('ul', { class: 'fr-avglist' }, ...items.map(([fk, label, value, hint]) =>
+      h('li', { 'data-fk': fk }, h('span', {}, label), h('strong', {}, value), hint ? h('span', { class: 'fr-muted fr-small' }, hint) : null))));
+    sec.append(h('ul', { class: 'fr-avglist', 'aria-label': 'Average per weekday' }, ...WEEKDAYS.map((name, i) =>
+      h('li', { 'data-fk': `avg-wd-${name}` }, h('span', {}, name), h('strong', {}, formatDuration(a.perWeekday[i]))))));
+    if (a.perApp.length) {
+      sec.append(h('h4', {}, 'Apps by average per active day'),
+        h('ol', { class: 'fr-avglist' }, ...a.perApp.slice(0, 10).map((app) =>
+          h('li', { 'data-fk': `avg-app-${app.name}` }, h('span', {}, app.name), h('strong', {}, formatDuration(app.perActiveDay)),
+            h('span', { class: 'fr-muted fr-small' }, `${dayCount(app.activeDays)} active`)))));
+    }
+    return sec;
   }
 
   // ---- Today view ----
