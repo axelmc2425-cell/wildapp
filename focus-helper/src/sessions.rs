@@ -48,16 +48,21 @@ impl SessionStore {
         end: i64,
         interval_secs: u64,
     ) {
-        if end <= start {
+        if !is_valid_day(day) || end <= start {
             return;
         }
-        let gap = (2 * interval_secs).max(2).min(i64::MAX as u64) as i64;
+        let gap = interval_secs.saturating_mul(2).max(2).min(i64::MAX as u64) as i64;
         let d = self.days.entry(day.to_string()).or_default();
+        let mut start = start;
         if let Some(last) = d.stretches.last_mut() {
             if end <= last.end {
                 return; // clock moved back or duplicate report
             }
-            if last.exe == exe && last.site.as_deref() == site && start - last.end <= gap {
+            start = start.max(last.end); // never overlap the previous stretch
+            if end <= start {
+                return;
+            }
+            if last.exe == exe && last.site.as_deref() == site && start.saturating_sub(last.end) <= gap {
                 last.end = end;
                 self.dirty.insert(day.to_string());
                 return;
@@ -80,6 +85,9 @@ impl SessionStore {
 
     /// Replaces the day (test seeding / loading).
     pub fn set_day(&mut self, day: &str, d: DayStretches) {
+        if !is_valid_day(day) {
+            return;
+        }
         self.days.insert(day.to_string(), d);
         self.dirty.insert(day.to_string());
     }
@@ -109,8 +117,9 @@ struct FileV1 {
     stretches: Vec<Stretch>,
 }
 
-pub fn session_file(dir: &Path, day: &str) -> PathBuf {
-    dir.join(format!("sessions-{day}.json"))
+/// `None` unless `day` is a real `YYYY-MM-DD` (so it can never escape `dir`).
+pub fn session_file(dir: &Path, day: &str) -> Option<PathBuf> {
+    is_valid_day(day).then(|| dir.join(format!("sessions-{day}.json")))
 }
 
 fn read_day(path: &Path) -> Option<DayStretches> {
@@ -124,7 +133,8 @@ fn read_day(path: &Path) -> Option<DayStretches> {
 
 /// Atomic save: previous good file kept as `.bak`, new state to `.tmp`, fsync, rename.
 pub fn save_day(dir: &Path, day: &str, d: &DayStretches) -> io::Result<()> {
-    let path = session_file(dir, day);
+    let path = session_file(dir, day)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid day"))?;
     let bak = with_suffix(&path, ".bak");
     let tmp = with_suffix(&path, ".tmp");
     if path.exists() && read_day(&path).is_some() {
@@ -150,7 +160,7 @@ pub fn save_day(dir: &Path, day: &str, d: &DayStretches) -> io::Result<()> {
 /// Loads a day. The bool is true when it came from the backup. Unparseable files are renamed
 /// to `<name>.corrupt-<unix_ms>`; `None` when nothing usable exists.
 pub fn load_day(dir: &Path, day: &str, unix_ms: i64) -> Option<(DayStretches, bool)> {
-    let path = session_file(dir, day);
+    let path = session_file(dir, day)?;
     if let Some(d) = read_day(&path) {
         return Some((d, false));
     }

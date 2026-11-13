@@ -8,9 +8,9 @@ pub mod lockstore;
 pub mod model;
 pub mod persist;
 pub mod service_logic;
+pub mod sessions;
 pub mod sites;
 pub mod usage;
-pub mod sessions;
 pub mod hosts_io;
 pub mod unlock;
 #[cfg(windows)]

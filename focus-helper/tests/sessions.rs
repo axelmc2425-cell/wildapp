@@ -55,6 +55,50 @@ fn gap_tolerates_five_second_reports() {
 }
 
 #[test]
+fn gap_exactly_at_tolerance_merges() {
+    let mut s = SessionStore::new();
+    s.record(D, "a.exe", None, 100, 105, 5);
+    s.record(D, "a.exe", None, 115, 120, 5); // gap 10 merges
+    assert_eq!(s.day(D).unwrap().stretches, vec![st(100, 120, "a.exe", None)]);
+}
+
+#[test]
+fn partial_overlap_is_clamped() {
+    let mut s = SessionStore::new();
+    s.record(D, "a.exe", None, 100, 110, 1);
+    s.record(D, "b.exe", None, 105, 115, 1);
+    assert_eq!(
+        s.day(D).unwrap().stretches,
+        vec![st(100, 110, "a.exe", None), st(110, 115, "b.exe", None)]
+    );
+    let mut s = SessionStore::new();
+    s.record(D, "a.exe", None, 100, 110, 1);
+    s.record(D, "a.exe", None, 105, 115, 1);
+    assert_eq!(s.day(D).unwrap().stretches, vec![st(100, 115, "a.exe", None)]);
+}
+
+#[test]
+fn hostile_days_are_rejected() {
+    let base = tmp("hostile");
+    let dir = base.join("inner");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(base.join("sessions-x.json"), b"outside").unwrap();
+    let d = DayStretches { truncated: false, stretches: vec![st(1, 2, "a", None)] };
+    let mut s = SessionStore::new();
+    for bad in ["../x", "a/b", "", "2026-11-13/../..", "..\\x"] {
+        assert!(session_file(&dir, bad).is_none());
+        assert_eq!(save_day(&dir, bad, &d).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(load_day(&dir, bad, 1), None);
+        s.record(bad, "a", None, 1, 2, 1);
+        s.set_day(bad, d.clone());
+        assert!(s.day(bad).is_none());
+    }
+    assert!(s.dirty_days().is_empty());
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+    assert_eq!(fs::read(base.join("sessions-x.json")).unwrap(), b"outside");
+}
+
+#[test]
 fn new_day_starts_new_stretch() {
     let mut s = SessionStore::new();
     s.record("2026-11-13", "a.exe", None, 100, 101, 1);
@@ -82,6 +126,8 @@ fn cap_marks_truncated_and_stops_adding() {
     let d = s.day(D).unwrap();
     assert_eq!(d.stretches.len(), MAX_STRETCHES_PER_DAY);
     assert!(d.truncated);
+    s.record(D, "a.exe", None, 10_000_000, 10_000_001, 1);
+    assert_eq!(s.day(D).unwrap().stretches.len(), MAX_STRETCHES_PER_DAY);
 }
 
 #[test]
@@ -103,7 +149,7 @@ fn save_load_roundtrip() {
     let dir = tmp("rt");
     let d = DayStretches { truncated: true, stretches: vec![st(1, 5, "a", Some("x.com"))] };
     save_day(&dir, D, &d).unwrap();
-    assert_eq!(session_file(&dir, D), dir.join("sessions-2026-11-13.json"));
+    assert_eq!(session_file(&dir, D).unwrap(), dir.join("sessions-2026-11-13.json"));
     assert_eq!(load_day(&dir, D, 1), Some((d, false)));
 }
 
@@ -114,7 +160,7 @@ fn load_falls_back_to_bak() {
     let d2 = DayStretches { truncated: false, stretches: vec![st(1, 9, "a", None)] };
     save_day(&dir, D, &d1).unwrap();
     save_day(&dir, D, &d2).unwrap();
-    fs::write(session_file(&dir, D), b"garbage").unwrap();
+    fs::write(session_file(&dir, D).unwrap(), b"garbage").unwrap();
     assert_eq!(load_day(&dir, D, 7), Some((d1, true)));
     assert!(dir.join("sessions-2026-11-13.json.corrupt-7").exists());
 }
@@ -122,9 +168,9 @@ fn load_falls_back_to_bak() {
 #[test]
 fn corrupt_file_is_quarantined_and_returns_none() {
     let dir = tmp("corrupt");
-    fs::write(session_file(&dir, D), b"garbage").unwrap();
+    fs::write(session_file(&dir, D).unwrap(), b"garbage").unwrap();
     assert_eq!(load_day(&dir, D, 42), None);
-    assert!(!session_file(&dir, D).exists());
+    assert!(!session_file(&dir, D).unwrap().exists());
     assert!(dir.join("sessions-2026-11-13.json.corrupt-42").exists());
 }
 
@@ -153,7 +199,7 @@ fn delete_old_files_removes_unlisted_days() {
     save_day(&dir, "2026-11-13", &d).unwrap();
     fs::write(dir.join("other.json"), b"x").unwrap();
     delete_old_files(&dir, &["2026-11-13".to_string()]);
-    assert!(!session_file(&dir, "2026-11-12").exists());
-    assert!(session_file(&dir, "2026-11-13").exists());
+    assert!(!session_file(&dir, "2026-11-12").unwrap().exists());
+    assert!(session_file(&dir, "2026-11-13").unwrap().exists());
     assert!(dir.join("other.json").exists());
 }
