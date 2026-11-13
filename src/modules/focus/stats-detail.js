@@ -122,16 +122,22 @@ export function timelineWindow(stretches, fromSec, toSec) {
   return out;
 }
 
-/** Joins adjacent same-program/site blocks separated by less than `minPx` pixels (merged gaps are drawn through). */
+/**
+ * Joins adjacent same-program/site blocks separated by less than `minPx` pixels (merged gaps are drawn through).
+ * Every returned block carries `activeSecs` (sum of its constituents' own durations, gaps excluded) and `count`.
+ */
 export function mergeTiny(blocks, secsPerPx, minPx = 1) {
   const limit = (Number.isFinite(secsPerPx) && secsPerPx > 0 ? secsPerPx : 0) * minPx;
   const out = [];
   for (const b of blocks ?? []) {
+    const own = Math.max(0, b.end - b.start);
     const last = out[out.length - 1];
     if (last && last.exe === b.exe && (last.site ?? null) === (b.site ?? null) && b.start - last.end < limit) {
       last.end = Math.max(last.end, b.end);
+      last.activeSecs += own;
+      last.count += 1;
     } else {
-      out.push({ ...b });
+      out.push({ ...b, activeSecs: own, count: 1 });
     }
   }
   return out;

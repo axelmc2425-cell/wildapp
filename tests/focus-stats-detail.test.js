@@ -159,9 +159,9 @@ test('mergeTiny merges adjacent same-key blocks across sub-pixel gaps', () => {
     { start: 45, end: 50, exe: 'B', site: null }, // 5 px gap stays
   ];
   assert.deepEqual(mergeTiny(blocks, 1), [
-    { start: 0, end: 30, exe: 'A', site: null },
-    { start: 30, end: 40, exe: 'B', site: null },
-    { start: 45, end: 50, exe: 'B', site: null },
+    { start: 0, end: 30, exe: 'A', site: null, activeSecs: 29.5, count: 3 },
+    { start: 30, end: 40, exe: 'B', site: null, activeSecs: 10, count: 1 },
+    { start: 45, end: 50, exe: 'B', site: null, activeSecs: 5, count: 1 },
   ]);
   assert.deepEqual(mergeTiny([], 1), []);
 });

@@ -4,26 +4,14 @@
 import { h } from './dom.js';
 import { formatDuration } from '../stats.js';
 import { formatDurationSecs, mergeTiny } from '../stats-detail.js';
-import { scale, niceMax, heatLevel } from './charts.js';
+import { scale, niceMax, heatLevel, svgEl, text, title, root, plural, NO_DATA } from './charts.js';
 
-const SVG_NS = 'http://www.w3.org/2000/svg';
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const NO_DATA = 'No data for this period.';
+const MAX_MARKS = 2000; // block rects drawn per strip
 
 const secsOf = (v) => (Number.isFinite(v) && v > 0 ? v : 0);
 const r1 = (n) => Math.round(n * 10) / 10;
 const p2 = (n) => String(n).padStart(2, '0');
-
-function svgEl(tag, attrs = {}, ...kids) {
-  const el = document.createElementNS(SVG_NS, tag);
-  for (const [k, v] of Object.entries(attrs)) if (v != null && v !== false) el.setAttribute(k, v);
-  el.append(...kids.filter(k => k != null));
-  return el;
-}
-const text = (x, y, anchor, str, cls = 'fr-chart-label') => svgEl('text', { x: r1(x), y: r1(y), 'text-anchor': anchor, class: cls }, str);
-const title = (str) => svgEl('title', {}, str);
-const root = (w, hgt, label, cls) => svgEl('svg', { viewBox: `0 0 ${w} ${hgt}`, role: 'img', 'aria-label': label, class: `fr-chart ${cls}`, preserveAspectRatio: 'xMidYMid meet' });
-const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
 /** Local HH:MM:SS of a unix second in the viewer's time zone. */
 export function localTimeLabel(sec) {
@@ -48,6 +36,9 @@ function tickStep(len) {
  * One rect per block over [fromSec, toSec]. `colorOf(exe)` gives a palette index 0..5 (default 0);
  * options `timeLabel(sec)` (HH:MM:SS), `offsetSec` (local UTC offset, for tick alignment) and
  * `nameOf(exe)` can be injected. A zero, negative or non-finite window gives an empty strip.
+ * Caller contract: at most MAX_MARKS (2000) block rects are drawn. When more remain after merging
+ * sub-pixel gaps, the longest 2000 are drawn (in time order), `data-hidden` holds how many were left
+ * out and the aria-label says so. Tooltip duration is the active time, not the merged span.
  */
 export function timelineStrip(blocks, { fromSec, toSec, width = 720, colorOf = () => 0, timeLabel = localTimeLabel, offsetSec, nameOf = defaultName } = {}) {
   const W = Number.isFinite(width) && width >= 100 ? Math.floor(width) : 720;
@@ -59,11 +50,16 @@ export function timelineStrip(blocks, { fromSec, toSec, width = 720, colorOf = (
   const clipped = list.map(b => ({ ...b, start: Math.max(b.start, fromSec), end: Math.min(b.end, toSec) })).filter(b => b.end > b.start);
   const perPx = len / W;
   const merged = mergeTiny(clipped, perPx, 1);
+  const hidden = Math.max(0, merged.length - MAX_MARKS);
+  const drawn = hidden
+    ? merged.map((b, i) => ({ b, i })).sort((p, q) => (q.b.end - q.b.start) - (p.b.end - p.b.start) || p.i - q.i).slice(0, MAX_MARKS).sort((p, q) => p.i - q.i).map(o => o.b)
+    : merged;
   const total = clipped.reduce((s, b) => s + (b.end - b.start), 0);
   const label = clipped.length
-    ? `Timeline from ${timeLabel(fromSec)} to ${timeLabel(toSec)}: ${plural(clipped.length, 'block')}, ${formatDurationSecs(total)} in total.`
+    ? `Timeline from ${timeLabel(fromSec)} to ${timeLabel(toSec)}: ${plural(clipped.length, 'block')}, ${formatDurationSecs(total)} in total.${hidden ? ` ${plural(hidden, 'short block')} not drawn.` : ''}`
     : `Timeline from ${timeLabel(fromSec)} to ${timeLabel(toSec)}: ${NO_DATA}`;
   const svg = root(W, H, label, 'fr-chart-timeline');
+  if (hidden) svg.setAttribute('data-hidden', String(hidden));
   const x = (t) => L + ((t - fromSec) / len) * W;
 
   svg.append(svgEl('line', { x1: 0, x2: W, y1: TOP + BH + 0.5, y2: TOP + BH + 0.5, class: 'fr-chart-grid' }));
@@ -80,11 +76,11 @@ export function timelineStrip(blocks, { fromSec, toSec, width = 720, colorOf = (
     if (n % showEvery === 0) g.append(text(Math.min(W - 14, Math.max(14, tx)), H - 6, 'middle', name));
     svg.append(g);
   }
-  for (const b of merged) {
+  for (const b of drawn) {
     const bx = x(b.start);
     const bw = Math.max(1, x(b.end) - bx);
     const who = b.site ? `${nameOf(b.exe)} / ${b.site}` : nameOf(b.exe);
-    const tip = `${who} · ${timeLabel(b.start)} to ${timeLabel(b.end)} · ${formatDurationSecs(b.end - b.start)}`;
+    const tip = `${who} · ${timeLabel(b.start)} to ${timeLabel(b.end)} · ${formatDurationSecs(b.activeSecs ?? b.end - b.start)}${b.count > 1 ? ` · ${b.count} stretches` : ''}`;
     svg.append(svgEl('rect', {
       x: r1(bx), y: TOP, width: r1(Math.min(bw, W - bx)), height: BH,
       class: `fr-seg fr-block fr-c${Math.min(5, Math.max(0, Math.floor(secsOf(colorOf(b.exe)))))}`,
@@ -107,6 +103,7 @@ export function hourBars(hours, daysCounted) {
   const days = Number.isFinite(daysCounted) && daysCounted > 0 ? Math.floor(daysCounted) : 0;
   const W = 480; const H = 160; const L = 4; const R = 4; const T = 10; const B = 22;
   const pw = W - L - R; const ph = H - T - B;
+  if (days === 0) return root(W, H, 'Hour-of-day detail is not recorded for this period.', 'fr-chart-hours');
   const peak = Math.max(...vals);
   let best = 0;
   vals.forEach((v, i) => { if (v > vals[best]) best = i; });

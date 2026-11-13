@@ -102,19 +102,20 @@ function rankApps(perDay, topN) {
 
 // ---- tiny SVG builder ---------------------------------------------------------------------
 
-function svgEl(tag, attrs = {}, ...kids) {
+export function svgEl(tag, attrs = {}, ...kids) {
   const el = document.createElementNS(SVG_NS, tag);
   for (const [k, v] of Object.entries(attrs)) if (v != null && v !== false) el.setAttribute(k, v);
   el.append(...kids.filter(k => k != null));
   return el;
 }
-const text = (x, y, anchor, str, cls = 'fr-chart-label') => svgEl('text', { x: r1(x), y: r1(y), 'text-anchor': anchor, class: cls }, str);
-const title = (str) => svgEl('title', {}, str);
+export const text = (x, y, anchor, str, cls = 'fr-chart-label') => svgEl('text', { x: r1(x), y: r1(y), 'text-anchor': anchor, class: cls }, str);
+export const title = (str) => svgEl('title', {}, str);
 
-function root(w, hgt, label, cls) {
+export function root(w, hgt, label, cls) {
   return svgEl('svg', { viewBox: `0 0 ${w} ${hgt}`, role: 'img', 'aria-label': label, class: `fr-chart ${cls}`, preserveAspectRatio: 'xMidYMid meet' });
 }
-const NO_DATA = 'No data for this period.';
+export const NO_DATA = 'No data for this period.';
+export const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
 // ---- stacked daily bars -------------------------------------------------------------------
 
