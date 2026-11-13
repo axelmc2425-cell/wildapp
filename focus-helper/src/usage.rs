@@ -20,6 +20,8 @@ pub struct Sample {
     pub idle_secs: u64,
     /// Local calendar day, `YYYY-MM-DD`.
     pub day: String,
+    /// Local hour of day, 0 to 23, when the sampler reported one.
+    pub hour: Option<u8>,
 }
 
 /// File name of a Windows (or forward-slash) path; the whole input when it has no separator.
@@ -56,6 +58,14 @@ pub fn truncate_title(s: &str, max: usize) -> String {
 
 const OTHER: &str = "other";
 
+/// The website label for a browser sample (`None` for other programs or unmatched titles).
+pub fn site_label(exe: &str, title: Option<&str>, stems: &[String]) -> Option<String> {
+    if !is_browser(exe) {
+        return None;
+    }
+    title.and_then(|t| match_site(t, stems))
+}
+
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq, Eq, Debug)]
 pub struct DayUsage {
     pub day: String,
@@ -63,6 +73,9 @@ pub struct DayUsage {
     pub apps: BTreeMap<String, u64>,
     pub sites: BTreeMap<String, u64>,
     pub other_browsing: u64,
+    /// Seconds per local hour. Empty means not recorded; otherwise exactly 24 slots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hours: Vec<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,10 +166,19 @@ impl UsageStore {
             .days
             .entry(s.day.clone())
             .or_insert_with(|| DayUsage { day: s.day.clone(), ..Default::default() });
+        // A day that already holds seconds without hours stays unrecorded: never mix.
+        if let Some(h) = s.hour.filter(|&h| h < 24) {
+            if day.hours.is_empty() && day.total == 0 {
+                day.hours = vec![0; 24];
+            }
+            if let Some(slot) = day.hours.get_mut(usize::from(h)) {
+                *slot = slot.saturating_add(secs as u32);
+            }
+        }
         day.total += secs;
         add_capped(&mut day.apps, &s.exe.to_lowercase(), secs);
         if is_browser(&s.exe) {
-            match s.title.as_deref().and_then(|t| match_site(t, stems)) {
+            match site_label(&s.exe, s.title.as_deref(), stems) {
                 Some(label) => add_capped(&mut day.sites, &label, secs),
                 None => day.other_browsing += secs,
             }
@@ -212,7 +234,7 @@ struct FileV1 {
     days: Vec<DayUsage>,
 }
 
-fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+pub(crate) fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name: OsString = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
     name.push(suffix);
     path.with_file_name(name)

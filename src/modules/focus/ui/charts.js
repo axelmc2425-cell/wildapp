@@ -102,19 +102,20 @@ function rankApps(perDay, topN) {
 
 // ---- tiny SVG builder ---------------------------------------------------------------------
 
-function svgEl(tag, attrs = {}, ...kids) {
+export function svgEl(tag, attrs = {}, ...kids) {
   const el = document.createElementNS(SVG_NS, tag);
   for (const [k, v] of Object.entries(attrs)) if (v != null && v !== false) el.setAttribute(k, v);
   el.append(...kids.filter(k => k != null));
   return el;
 }
-const text = (x, y, anchor, str, cls = 'fr-chart-label') => svgEl('text', { x: r1(x), y: r1(y), 'text-anchor': anchor, class: cls }, str);
-const title = (str) => svgEl('title', {}, str);
+export const text = (x, y, anchor, str, cls = 'fr-chart-label') => svgEl('text', { x: r1(x), y: r1(y), 'text-anchor': anchor, class: cls }, str);
+export const title = (str) => svgEl('title', {}, str);
 
-function root(w, hgt, label, cls) {
+export function root(w, hgt, label, cls) {
   return svgEl('svg', { viewBox: `0 0 ${w} ${hgt}`, role: 'img', 'aria-label': label, class: `fr-chart ${cls}`, preserveAspectRatio: 'xMidYMid meet' });
 }
-const NO_DATA = 'No data for this period.';
+export const NO_DATA = 'No data for this period.';
+export const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
 // ---- stacked daily bars -------------------------------------------------------------------
 
@@ -225,7 +226,10 @@ export function yearHeatmap(perDay, year) {
 
 // ---- ranked bars (HTML) ---------------------------------------------------------------------
 
-export function rankedBars(items, { unit = 'time' } = {}) {
+/**
+ * With `onOpen(name)` every row holds a button (data-fk `${fkPrefix}-${name}`) that opens that item.
+ */
+export function rankedBars(items, { unit = 'time', onOpen = null, fkPrefix = 'item' } = {}) {
   const rows = (Array.isArray(items) ? items : []).filter(Boolean);
   const sum = rows.reduce((s, r) => s + secsOf(r.secs), 0);
   const max = Math.max(0, ...rows.map(r => secsOf(r.secs)));
@@ -243,11 +247,15 @@ export function rankedBars(items, { unit = 'time' } = {}) {
     const name = String(r.name ?? '');
     const fill = h('div', { class: 'fr-rank-fill' });
     fill.style.width = `${r1(max > 0 ? (secs / max) * 100 : 0)}%`;
-    wrap.append(h('div', { class: 'fr-rank-row', role: 'listitem' },
+    const cells = [
       h('span', { class: 'fr-rank-name', title: name }, name),
       h('div', { class: 'fr-rank-track' }, fill),
       h('span', { class: 'fr-rank-time' }, fmt(secs)),
-      h('span', { class: 'fr-rank-pct' }, pctText)));
+      h('span', { class: 'fr-rank-pct' }, pctText)];
+    wrap.append(typeof onOpen === 'function'
+      ? h('div', { class: 'fr-rank-row fr-rank-open', role: 'listitem' },
+        h('button', { type: 'button', class: 'fr-rank-btn', 'data-fk': `${fkPrefix}-${name}`, 'aria-label': `${name}, ${fmt(secs)}, ${pctText}. Open details`, onclick: () => onOpen(name) }, ...cells))
+      : h('div', { class: 'fr-rank-row', role: 'listitem' }, ...cells));
   }
   return wrap;
 }

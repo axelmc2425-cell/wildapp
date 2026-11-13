@@ -357,6 +357,13 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-bar .fr-seg { stroke: var(--panel); stroke-width: 1; }
 .fr-bar.fr-thin .fr-seg { stroke: none; } /* hairline bars (year view) would be all separator */
 .fr-chart-weekday { max-width: 440px; min-width: 260px; }
+.fr-chart-timeline { min-width: 520px; }
+.fr-chart-hours { max-width: 560px; min-width: 300px; }
+.fr-chart-weekhour { min-width: 560px; max-width: 560px; }
+.fr-hourswrap .fr-chart-hours { min-width: 560px; }
+.fr-chart-trend { min-width: 420px; }
+.fr-block { stroke: var(--panel); stroke-width: 0.5; }
+.fr-block:hover { stroke: var(--text); stroke-width: 1; }
 .fr-chart-stacked { min-width: 480px; } /* scrolls inside its section on phones instead of shrinking the labels to nothing */
 .fr-legend { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; }
 .fr-legend li { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
@@ -366,6 +373,22 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-chart-empty { margin: 0; color: var(--muted); }
 .fr-ranked { display: flex; flex-direction: column; gap: 6px; }
 .fr-rank-row { display: grid; grid-template-columns: minmax(70px, 28%) 1fr auto 3.4em; gap: 4px 10px; align-items: center; font-size: 13px; }
+.fr-rank-open { display: block; }
+.fr-rank-btn { display: grid; grid-template-columns: minmax(70px, 28%) 1fr auto 3.4em; gap: 4px 10px; align-items: center; width: 100%; font: inherit; font-size: 13px; color: inherit; text-align: left; background: transparent; border: 0; border-radius: 6px; padding: 3px 4px; cursor: pointer; }
+.fr-rank-btn:hover { background: var(--hover); }
+.fr-rank-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fr-avglist { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.fr-avglist li { display: flex; align-items: baseline; justify-content: space-between; gap: 4px 10px; flex-wrap: wrap; min-width: 0; padding: 3px 0; border-bottom: 1px solid var(--border); }
+.fr-avglist li > :first-child { min-width: 0; overflow-wrap: anywhere; margin-right: auto; }
+.fr-avglist li strong { font-variant-numeric: tabular-nums; text-align: right; }
+.fr-avglist .fr-linkbtn { font: inherit; color: inherit; background: transparent; border: 0; padding: 0; text-align: left; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.fr-avglist .fr-linkbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fr-drillnav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.fr-windowlabel { font-variant-numeric: tabular-nums; min-width: 0; }
+.fr-drillnav .fr-windowlabel { min-width: 0; overflow-wrap: anywhere; }
+.fr-timelinectl { display: flex; align-items: center; gap: 6px 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.fr-timelinectl .fr-windowlabel { white-space: nowrap; }
+.fr-timelinectl .fr-pan { flex: 1 1 140px; min-width: 120px; }
 .fr-rank-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .fr-rank-track { height: 10px; background: var(--chart-empty); border-radius: 5px; overflow: hidden; }
 .fr-rank-fill { height: 100%; background: var(--chart-0); border-radius: 5px; min-width: 2px; }
@@ -375,7 +398,7 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-table th, .fr-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
 .fr-table th { color: var(--muted); font-weight: 600; }
 @media (max-width: 480px) {
-  .fr-rank-row { grid-template-columns: 1fr auto 3.4em; }
+  .fr-rank-row, .fr-rank-btn { grid-template-columns: 1fr auto 3.4em; }
   .fr-rank-track { grid-column: 1 / -1; grid-row: 2; }
 }
 
@@ -407,8 +430,11 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-otherline { margin: 10px 0 0; font-size: 13px; }
 @media (max-width: 480px) {
   .fr-statbar { flex-direction: column; align-items: stretch; }
-  .fr-period { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .fr-period { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
   .fr-period .fr-pbtn { padding: 6px 2px; }
+  .fr-period.fr-zoom { display: inline-flex; }
+  .fr-period.fr-zoom .fr-pbtn { padding: 6px 10px; }
+  .fr-timelinectl .fr-pan { flex-basis: 100%; }
   .fr-rangenav { justify-content: space-between; }
   .fr-statcards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

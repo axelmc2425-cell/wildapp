@@ -1120,3 +1120,23 @@ test('getUsage resolves {ok, days}, never throws, and flags an unreachable helpe
   const none = await mk(undefined).getUsage('a', 'b');
   assert.equal(none.ok, false);
 });
+
+test('getSessions resolves {ok, stretches}, never throws, and flags an unreachable helper', async () => {
+  const mk = (getSessions) => createController({ db: {}, client: { getSessions }, now: () => 0, tzOffsetAt: () => 0, onChange() {} });
+  const stretches = [{ start: 1, end: 5, exe: 'a.exe', site: null }];
+  const seen = [];
+  assert.deepEqual(
+    await mk(async (d) => { seen.push(d); return { type: 'Sessions', day: d, truncated: true, stretches }; }).getSessions('2026-11-13'),
+    { ok: true, day: '2026-11-13', truncated: true, stretches },
+  );
+  assert.deepEqual(seen, ['2026-11-13']);
+  const bad = await mk(async () => ({ type: 'Ok' })).getSessions('2026-11-13');
+  assert.equal(bad.ok, false);
+  const down = await mk(async () => { const e = new Error('The helper is not running'); e.code = 'unreachable'; throw e; }).getSessions('d');
+  assert.deepEqual([down.ok, down.down], [false, true]);
+  const req = await mk(async () => { const e = new Error('bad day'); e.code = 'bad-request'; throw e; }).getSessions('d');
+  assert.deepEqual([req.ok, req.down, req.message, req.code], [false, false, 'bad day', 'bad-request']);
+  assert.equal((await mk(undefined).getSessions('d')).ok, false);
+  const stub = await createController({ db: {}, client: HELPER_UNAVAILABLE_CLIENT, now: () => 0, tzOffsetAt: () => 0, onChange() {} }).getSessions('d');
+  assert.deepEqual([stub.ok, stub.down, stub.unavailable], [false, true, true]);
+});

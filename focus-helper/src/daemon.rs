@@ -12,6 +12,7 @@ use crate::lockstore::LockStore;
 use crate::model::Mode;
 use crate::persist;
 use crate::sites::stems_from_domains;
+use crate::sessions::{self, DayStretches, SessionStore};
 use crate::usage::{self, DayUsage, Sample, UsageLoad, UsageStore};
 
 /// A reported day may differ from the UTC date by this many days (time zones, midnight).
@@ -28,7 +29,7 @@ pub const PERSIST_INTERVAL_MS: i64 = 30_000;
 
 /// Reports closer together than this are ignored (also stops two users' samplers from
 /// double counting). In whole seconds of monotonic time.
-pub const MIN_REPORT_GAP_SECS: i64 = 4;
+pub const MIN_REPORT_GAP_SECS: i64 = 1;
 /// `usage_tracking` is true while the latest report is at most this old (monotonic ms).
 pub const REPORT_FRESH_MS: i64 = 15_000;
 /// Usage is written at most this often (monotonic ms) while dirty.
@@ -69,11 +70,19 @@ pub struct Daemon {
     usage_warning: Option<String>,
     /// Set while the latest usage save failed; cleared by the next successful save.
     usage_error: Option<String>,
+    sessions_error: Option<String>,
+    /// Set when a stretch file was quarantined or recovered from its backup; shown in Status.
+    sessions_warning: Option<String>,
+    /// Latest reported day; the only clean day kept in memory.
+    current_day: Option<String>,
     /// Monotonic time up to which reported seconds have been accounted; `None` before the first report.
     report_anchor_mono: Option<i64>,
     /// Monotonic time of the latest accepted report (drives `usage_tracking`).
     last_report_mono: Option<i64>,
     last_usage_flush_mono: Option<i64>,
+    sessions: SessionStore,
+    /// Directory of the `sessions-YYYY-MM-DD.json` files (the state directory).
+    sessions_dir: PathBuf,
 }
 
 impl Daemon {
@@ -132,9 +141,17 @@ impl Daemon {
             usage_path: usage_path.to_path_buf(),
             usage_warning,
             usage_error: None,
+            sessions_error: None,
+            sessions_warning: None,
+            current_day: None,
             report_anchor_mono: None,
             last_report_mono: None,
             last_usage_flush_mono: None,
+            sessions: SessionStore::new(),
+            sessions_dir: match usage_path.parent() {
+                Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+                _ => PathBuf::from("."),
+            },
         }
     }
 
@@ -149,6 +166,8 @@ impl Daemon {
             .cloned()
             .chain(self.usage_warning.iter().cloned())
             .chain(self.usage_error.iter().map(|e| format!("usage: {e}")))
+            .chain(self.sessions_warning.iter().cloned())
+            .chain(self.sessions_error.iter().map(|e| format!("sessions: {e}")))
             .chain(self.persist_error.iter().map(|e| format!("persist: {e}")))
             .chain(self.doh_warnings.iter().cloned())
             .chain(self.error_warnings.iter().cloned())
@@ -172,22 +191,100 @@ impl Daemon {
         }
     }
 
-    /// Writes the usage store now if it has unsaved changes.
+    /// Writes the usage store and the dirty session days now.
     pub fn flush_usage(&mut self) {
-        if !self.usage.dirty() {
+        if self.usage.dirty() {
+            self.usage.prune();
+            match usage::save(&self.usage_path, &self.usage) {
+                Ok(()) => {
+                    self.usage.mark_clean();
+                    self.usage_error = None;
+                }
+                Err(e) => {
+                    eprintln!("focus-helper: usage save failed: {e}");
+                    self.usage_error = Some(e.to_string());
+                }
+            }
+        }
+        self.flush_sessions();
+    }
+
+    fn flush_sessions(&mut self) {
+        let dirty = self.sessions.dirty_days();
+        if dirty.is_empty() {
             return;
         }
-        self.usage.prune();
-        match usage::save(&self.usage_path, &self.usage) {
-            Ok(()) => {
-                self.usage.mark_clean();
-                self.usage_error = None;
-            }
-            Err(e) => {
-                eprintln!("focus-helper: usage save failed: {e}");
-                self.usage_error = Some(e.to_string());
+        self.prune_sessions();
+        let mut failed = None;
+        for day in self.sessions.dirty_days() {
+            if let Some(d) = self.sessions.day(&day) {
+                match sessions::save_day(&self.sessions_dir, &day, &d) {
+                    Ok(()) => self.sessions.mark_day_clean(&day),
+                    Err(e) => {
+                        eprintln!("focus-helper: sessions save failed: {e}");
+                        failed = Some(e.to_string());
+                    }
+                }
+            } else {
+                self.sessions.mark_day_clean(&day);
             }
         }
+        self.sessions_error = failed;
+        let keep = self.current_day.clone();
+        self.sessions.evict_clean_except(keep.as_deref());
+    }
+
+    /// Keeps the newest 90 days, counting days on disk as well as those in memory.
+    fn prune_sessions(&mut self) {
+        self.sessions.prune();
+        let mut days: std::collections::BTreeSet<String> = std::fs::read_dir(&self.sessions_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let day = name.strip_prefix("sessions-")?.get(..10)?.to_string();
+                usage::is_valid_day(&day).then_some(day)
+            })
+            .collect();
+        for d in self.sessions.dirty_days() {
+            days.insert(d);
+        }
+        let keep: Vec<String> = days.into_iter().rev().take(sessions::KEEP_SESSION_DAYS).collect();
+        sessions::delete_old_files(&self.sessions_dir, &keep);
+    }
+
+    /// Loads `day` from disk into memory unless already there.
+    fn ensure_day_loaded(&mut self, day: &str) {
+        if !usage::is_valid_day(day) || self.sessions.has_day(day) {
+            return;
+        }
+        if let Some(d) = self.read_day_from_disk(day) {
+            self.sessions.insert_loaded(day, d);
+        }
+    }
+
+    fn read_day_from_disk(&mut self, day: &str) -> Option<DayStretches> {
+        let unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let l = sessions::load_day(&self.sessions_dir, day, unix_ms);
+        if let Some(p) = &l.quarantined {
+            self.sessions_warning = Some(if l.from_backup {
+                format!("sessions: {day} loaded from backup — unreadable file kept as {}", p.display())
+            } else {
+                format!("sessions: {day} unreadable, kept as {}", p.display())
+            });
+        } else if l.from_backup {
+            self.sessions_warning = Some(format!("sessions: {day} loaded from backup"));
+        }
+        l.day
+    }
+
+    /// Days of stretches currently held in memory.
+    pub fn loaded_day_count(&self) -> usize {
+        self.sessions.loaded_day_count()
     }
 
     /// Test seeding: replaces the day and saves immediately.
@@ -196,10 +293,16 @@ impl Daemon {
         self.flush_usage();
     }
 
-    /// Flushes usage when dirty and a minute has passed since the last flush.
+    /// Test seeding: replaces the day's stretches and saves immediately.
+    pub fn add_sessions(&mut self, day: &str, d: DayStretches) {
+        self.sessions.set_day(day, d);
+        self.flush_sessions();
+    }
+
+    /// Flushes usage and sessions when dirty and a minute has passed since the last flush.
     fn maybe_flush_usage(&mut self, mono_ms: i64) {
         let last = *self.last_usage_flush_mono.get_or_insert(mono_ms);
-        if self.usage.dirty() && mono_ms - last >= USAGE_FLUSH_INTERVAL_MS {
+        if (self.usage.dirty() || !self.sessions.dirty_days().is_empty()) && mono_ms - last >= USAGE_FLUSH_INTERVAL_MS {
             self.last_usage_flush_mono = Some(mono_ms);
             self.flush_usage();
         }
@@ -211,7 +314,7 @@ impl Daemon {
     }
 
     /// Accounts one report from a sampler. The caller has validated the fields.
-    fn report_foreground(&mut self, sample: Sample, now: i64, mono_ms: i64) {
+    fn report_foreground(&mut self, sample: Sample, now: i64, wall_ms: i64, mono_ms: i64) {
         self.last_report_mono = Some(mono_ms);
         let Some(anchor) = self.report_anchor_mono else {
             self.report_anchor_mono = Some(mono_ms);
@@ -231,7 +334,19 @@ impl Daemon {
             .filter(|w| w.mode == Mode::Block && w.starts <= now && now < w.ends)
             .flat_map(|w| w.sites.iter().cloned())
             .collect();
-        self.usage.record(Some(&sample), elapsed as u64, &stems_from_domains(&sites));
+        let stems = stems_from_domains(&sites);
+        if sample.idle_secs <= usage::IDLE_LIMIT_SECS {
+            let secs = (elapsed as u64).min(usage::MAX_SAMPLE_SECS);
+            let end = wall_ms.div_euclid(1000);
+            // Gap tolerance follows the sampler's nominal interval, not the (capped) elapsed time,
+            // so a lock or stall never lets a stretch be extended over time that was not counted.
+            let nominal = if secs <= 5 { secs } else { 1 };
+            let site = usage::site_label(&sample.exe, sample.title.as_deref(), &stems);
+            self.current_day = Some(sample.day.clone());
+            self.ensure_day_loaded(&sample.day);
+            self.sessions.record(&sample.day, &sample.exe.to_lowercase(), site.as_deref(), end - secs as i64, end, nominal);
+        }
+        self.usage.record(Some(&sample), elapsed as u64, &stems);
         self.maybe_flush_usage(mono_ms);
     }
 
@@ -256,19 +371,33 @@ impl Daemon {
                     .into(),
                 },
             },
-            Ok(Request::ReportForeground { exe, title, idle_secs, day }) => {
+            Ok(Request::GetSessions { day }) => {
+                if !usage::is_valid_day(&day) {
+                    Response::Error { code: "bad-request".into(), message: "day must be YYYY-MM-DD".into() }
+                } else {
+                    // Served from disk without keeping the day resident unless it already is.
+                    let d = match self.sessions.day(&day) {
+                        Some(d) => d,
+                        None => self.read_day_from_disk(&day).unwrap_or_default(),
+                    };
+                    Response::Sessions { day, truncated: d.truncated, stretches: d.stretches }
+                }
+            }
+            Ok(Request::ReportForeground { exe, title, idle_secs, day, hour }) => {
                 let bad = |message: &str| Response::Error { code: "bad-request".into(), message: message.into() };
                 if exe.is_empty() || exe.chars().count() > MAX_EXE_CHARS || exe.contains(['\\', '/']) {
                     bad("exe must be a program file name of 1 to 260 characters")
                 } else if title.as_ref().is_some_and(|t| t.chars().count() > MAX_TITLE_CHARS) {
                     bad("title is longer than 1024 characters")
+                } else if hour.is_some_and(|h| h > 23) {
+                    bad("hour must be 0 to 23")
                 } else if !usage::is_valid_day(&day) {
                     bad("day must be YYYY-MM-DD")
                 } else if usage::day_number(&day).is_none_or(|n| (n - wall_ms.div_euclid(86_400_000)).abs() > MAX_DAY_SKEW) {
                     bad("day is too far from today")
                 } else {
                     let now = self.clock.now(wall_ms, mono_ms);
-                    self.report_foreground(Sample { exe, title, idle_secs, day }, now, mono_ms);
+                    self.report_foreground(Sample { exe, title, idle_secs, day, hour }, now, wall_ms, mono_ms);
                     Response::Ok
                 }
             }

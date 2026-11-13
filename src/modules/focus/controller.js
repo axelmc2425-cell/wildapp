@@ -26,7 +26,7 @@ export function createUnavailableClient(message) {
   };
   return {
     pushWindows: fail, status: fail, requestChallenge: fail, submitToken: fail, setPartner: fail,
-    requestDelayedUnlock: fail, cancelDelayedUnlock: fail, getUsage: fail,
+    requestDelayedUnlock: fail, cancelDelayedUnlock: fail, getUsage: fail, getSessions: fail,
   };
 }
 
@@ -610,6 +610,23 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
     });
   }
 
+  /** Focus stretches for one local day; same never-throws contract and result shape as getUsage. */
+  async function getSessions(day) {
+    try {
+      const res = await client.getSessions(day);
+      if (!res || res.type !== 'Sessions' || !Array.isArray(res.stretches)) {
+        return { ok: false, down: false, message: 'The helper sent an unexpected reply.' };
+      }
+      return { ok: true, day: res.day ?? day, truncated: !!res.truncated, stretches: res.stretches };
+    } catch (err) {
+      let kind = 'unknown';
+      try { kind = classifyHelperFailure(err).kind; } catch { /* keep unknown */ }
+      const down = (err && err.code === 'unreachable') || ['not-running', 'timeout', 'unavailable'].includes(kind);
+      const unavailable = kind === 'unavailable' || /desktop app/i.test(errText(err));
+      return { ok: false, down: !!down, unavailable, code: err && err.code, message: errText(err) };
+    }
+  }
+
   /**
    * Usage rows for an inclusive day range. Runs OUTSIDE the write queue (a slow or absent helper must not
    * stall writes) and never throws. `down` is true when the helper could not be reached at all.
@@ -638,6 +655,6 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
       };
     },
     load, saveList, deleteList, saveSchedule, setScheduleEnabled, deleteSchedule, startBlock, extendBlock, cancelBlock, refreshStatus, resync,
-    getUsage, startLockedBlock, setPartner, requestPartnerChallenge, submitPartnerToken, startDelayedUnlock, cancelDelayedUnlock,
+    getUsage, getSessions, startLockedBlock, setPartner, requestPartnerChallenge, submitPartnerToken, startDelayedUnlock, cancelDelayedUnlock,
   };
 }

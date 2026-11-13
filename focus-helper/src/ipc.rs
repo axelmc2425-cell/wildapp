@@ -15,9 +15,11 @@ pub enum Request {
     GetStatus,
     /// Usage days in the inclusive local-day range `from_day..=to_day` (`YYYY-MM-DD`); daemon only.
     GetUsage { from_day: String, to_day: String },
-    /// Sent every 5 s by the per-user sampler process (`focus-helper sampler`): the foreground
+    /// Foreground stretches of one local day (`YYYY-MM-DD`); daemon only.
+    GetSessions { day: String },
+    /// Sent every 1 s by the per-user sampler process (`focus-helper sampler`): the foreground
     /// program in that user's session. Daemon only; the title is used in memory, never kept.
-    ReportForeground { exe: String, title: Option<String>, idle_secs: u64, day: String },
+    ReportForeground { exe: String, title: Option<String>, idle_secs: u64, day: String, #[serde(default)] hour: Option<u8> },
     RequestChallenge { window_id: String },
     SubmitToken { token: String },
     /// Starts the waiting period of a Locked window; answered with `UnlockPending`.
@@ -46,6 +48,8 @@ pub enum Response {
     },
     /// Answer to `GetUsage`: days present in the range, ascending.
     Usage { days: Vec<DayUsage> },
+    /// Answer to `GetSessions`.
+    Sessions { day: String, truncated: bool, stretches: Vec<crate::sessions::Stretch> },
     Challenge { code: String },
     /// The window ends early at `unlock_at` (effective ms) unless cancelled.
     UnlockPending { unlock_at: i64 },
@@ -109,6 +113,7 @@ pub fn handle_changed(
         },
         // The usage store belongs to the daemon, which answers this before calling here.
         Request::GetUsage { .. } => err("bad-request", "GetUsage is only available from the daemon"),
+        Request::GetSessions { .. } => err("bad-request", "GetSessions is only available from the daemon"),
         Request::ReportForeground { .. } => err("bad-request", "ReportForeground is only available from the daemon"),
         Request::RequestChallenge { window_id } => match store.request_challenge(&window_id, now, nonce) {
             Ok(code) => Response::Challenge { code },

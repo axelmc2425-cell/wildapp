@@ -83,3 +83,10 @@ test('getUsage sends the inclusive day range and returns the reply', async () =>
   assert.deepEqual(await f.client.getUsage('2026-01-01', '2026-01-31'), reply);
   assert.equal(f.sent[0], '{"type":"GetUsage","from_day":"2026-01-01","to_day":"2026-01-31"}');
 });
+
+test('getSessions sends the day and returns the reply', async () => {
+  const reply = { type: 'Sessions', day: '2026-11-13', truncated: false, stretches: [{ start: 1, end: 5, exe: 'a.exe', site: null }] };
+  const f = fake(JSON.stringify(reply));
+  assert.deepEqual(await f.client.getSessions('2026-11-13'), reply);
+  assert.equal(f.sent[0], '{"type":"GetSessions","day":"2026-11-13"}');
+});

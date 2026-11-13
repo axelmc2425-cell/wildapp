@@ -55,6 +55,10 @@ fn report(exe: &str, title: Option<&str>, idle: u64) -> String {
     json!({"type":"ReportForeground","exe":exe,"title":title,"idle_secs":idle,"day":"2023-11-14"}).to_string()
 }
 
+fn report_hour(hour: Value) -> String {
+    json!({"type":"ReportForeground","exe":"a.exe","title":null,"idle_secs":0,"day":"2023-11-14","hour":hour}).to_string()
+}
+
 fn call(d: &mut Daemon, p: &mut Fake, line: &str, mono: i64) -> Value {
     serde_json::from_str(&d.handle_line(line, NOW + mono, mono, [0; 16], p)).unwrap()
 }
@@ -79,11 +83,11 @@ fn status_reports_usage_tracking() {
 }
 
 #[test]
-fn reports_every_five_seconds() {
-    let (s, u) = paths("every5");
+fn reports_every_second() {
+    let (s, u) = paths("every1");
     let mut d = Daemon::load_with_usage(&s, &u);
     let mut p = Fake;
-    for mono in [0, 5_000, 10_000] {
+    for mono in (0..=10).map(|i| i * 1_000) {
         assert_eq!(call(&mut d, &mut p, &chrome("Inbox"), mono)["type"], "Ok");
     }
     // The first report only anchors.
@@ -102,24 +106,24 @@ fn first_report_records_nothing() {
 }
 
 #[test]
-fn reports_less_than_four_seconds_apart_count_once() {
+fn reports_less_than_one_second_apart_count_once() {
     let (s, u) = paths("double");
     let mut d = Daemon::load_with_usage(&s, &u);
     let mut p = Fake;
     call(&mut d, &mut p, &chrome("Inbox"), 0);
-    // Two signed-in users: each sampler reports every 5 s, interleaved 1 s apart.
+    // Two signed-in users: each sampler reports every 1 s, interleaved 0.5 s apart.
     call(&mut d, &mut p, &chrome("Inbox"), 5_000);
-    call(&mut d, &mut p, &chrome("Inbox"), 6_000);
+    call(&mut d, &mut p, &chrome("Inbox"), 5_500);
     call(&mut d, &mut p, &chrome("Inbox"), 10_000);
-    call(&mut d, &mut p, &chrome("Inbox"), 11_000);
+    call(&mut d, &mut p, &chrome("Inbox"), 10_500);
     assert_eq!(usage(&mut d, &mut p)["days"][0]["total"], 10);
-    // The anchor stays at 10 s: a report 3.999 s later counts nothing.
-    call(&mut d, &mut p, &chrome("Inbox"), 13_999);
+    // The anchor stays at 10 s: a report 0.999 s later counts nothing.
+    call(&mut d, &mut p, &chrome("Inbox"), 10_999);
     assert_eq!(usage(&mut d, &mut p)["days"][0]["total"], 10);
 }
 
 #[test]
-fn four_second_boundary() {
+fn one_second_boundary() {
     let total = |name: &str, monos: &[i64]| {
         let (s, u) = paths(name);
         let mut d = Daemon::load_with_usage(&s, &u);
@@ -129,10 +133,10 @@ fn four_second_boundary() {
         }
         usage(&mut d, &mut p)["days"][0]["total"].as_u64().unwrap_or(0)
     };
-    assert_eq!(total("b4000", &[0, 4_000]), 4, "exactly 4 s counts");
-    assert_eq!(total("b3999", &[0, 3_999]), 0, "3.999 s counts nothing");
-    assert_eq!(total("b3999late", &[0, 3_999, 8_000]), 8, "the ignored report is not lost");
-    assert_eq!(total("b3900", &[0, 3_900, 8_000]), 8);
+    assert_eq!(total("b1000", &[0, 1_000]), 1, "exactly 1 s counts");
+    assert_eq!(total("b999", &[0, 999]), 0, "0.999 s counts nothing");
+    assert_eq!(total("b999late", &[0, 999, 2_000]), 2, "the ignored report is not lost");
+    assert_eq!(total("b900", &[0, 900, 2_000]), 2);
 }
 
 #[test]
@@ -442,4 +446,445 @@ fn rejected_far_day_changes_nothing() {
     // The rejected reports did not move the anchor: the next good one counts the whole gap (capped at 15).
     call(&mut d, &mut p, &chrome("Inbox"), 25_000);
     assert_eq!(usage(&mut d, &mut p)["days"][0]["total"], 20);
+}
+
+#[test]
+fn report_with_hour_ok() {
+    let (s, u) = paths("hour-ok");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    assert_eq!(call(&mut d, &mut p, &report_hour(json!(14)), 0)["type"], "Ok");
+    assert_eq!(call(&mut d, &mut p, &report_hour(json!(14)), 5_000)["type"], "Ok");
+    let r = usage(&mut d, &mut p);
+    assert_eq!(r["days"][0]["hours"][14], 5);
+}
+
+#[test]
+fn report_with_hour_24_is_bad_request() {
+    let (s, u) = paths("hour-24");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    let r = call(&mut d, &mut p, &report_hour(json!(24)), 0);
+    assert_eq!(r["type"], "Error");
+    assert_eq!(r["code"], "bad-request");
+    assert_eq!(r["message"], "hour must be 0 to 23");
+}
+
+#[test]
+fn report_without_hour_still_ok() {
+    let (s, u) = paths("hour-none");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    assert_eq!(call(&mut d, &mut p, &report("a.exe", None, 0), 0)["type"], "Ok");
+    call(&mut d, &mut p, &report("a.exe", None, 0), 5_000);
+    let r = usage(&mut d, &mut p);
+    assert_eq!(r["days"][0]["total"], 5);
+    assert!(r["days"][0].get("hours").is_none(), "unrecorded hours are omitted");
+}
+
+#[test]
+fn get_usage_rows_include_hours() {
+    let (s, u) = paths("hour-rows");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    let mut hours = vec![0u32; 24];
+    hours[9] = 7;
+    d.add_usage(DayUsage { day: "2023-11-10".into(), total: 7, hours, ..Default::default() });
+    let r = usage(&mut d, &mut p);
+    assert_eq!(r["days"][0]["hours"].as_array().unwrap().len(), 24);
+    assert_eq!(r["days"][0]["hours"][9], 7);
+}
+
+fn sessions(d: &mut Daemon, p: &mut Fake, day: &str) -> Value {
+    call(d, p, &json!({"type":"GetSessions","day":day}).to_string(), 0)
+}
+
+#[test]
+fn one_second_reports_make_one_stretch() {
+    let (s, u) = paths("st-one");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    for m in 0..=5 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    let r = sessions(&mut d, &mut p, "2023-11-14");
+    assert_eq!(r["type"], "Sessions");
+    assert_eq!(r["day"], "2023-11-14");
+    assert_eq!(r["truncated"], false);
+    let st = r["stretches"].as_array().unwrap();
+    assert_eq!(st.len(), 1, "{r}");
+    assert_eq!(st[0]["exe"], "a.exe");
+    assert_eq!(st[0]["site"], Value::Null);
+    assert_eq!(st[0]["start"], NOW / 1000 + 0);
+    assert_eq!(st[0]["end"], NOW / 1000 + 5);
+}
+
+#[test]
+fn switching_program_makes_two_stretches() {
+    let (s, u) = paths("st-two");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    for m in 0..=3 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    for m in 4..=6 {
+        call(&mut d, &mut p, &report("b.exe", None, 0), m * 1000);
+    }
+    let r = sessions(&mut d, &mut p, "2023-11-14");
+    let st = r["stretches"].as_array().unwrap();
+    assert_eq!(st.len(), 2, "{r}");
+    assert_eq!((st[0]["exe"].as_str(), st[1]["exe"].as_str()), (Some("a.exe"), Some("b.exe")));
+    assert!(st[0]["end"].as_i64() <= st[1]["start"].as_i64());
+}
+
+#[test]
+fn browser_site_title_sets_site() {
+    let (s, u) = paths("st-site");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    for m in 0..=3 {
+        call(&mut d, &mut p, &chrome("Inbox - Gmail - Google Chrome"), m * 1000);
+    }
+    let r = sessions(&mut d, &mut p, "2023-11-14");
+    let usage_sites = usage(&mut d, &mut p)["days"][0]["sites"].clone();
+    let label = usage_sites.as_object().unwrap().keys().next().cloned();
+    assert_eq!(r["stretches"][0]["site"].as_str().map(String::from), label, "{r} {usage_sites}");
+    assert!(r["stretches"][0]["site"].is_string());
+}
+
+#[test]
+fn idle_sample_ends_the_stretch() {
+    let (s, u) = paths("st-idle");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    for m in 0..=3 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    for m in 4..=9 {
+        call(&mut d, &mut p, &report("a.exe", None, 400), m * 1000);
+    }
+    for m in 10..=12 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    let r = sessions(&mut d, &mut p, "2023-11-14");
+    let st = r["stretches"].as_array().unwrap();
+    assert_eq!(st.len(), 2, "{r}");
+    assert_eq!(st[0]["end"], NOW / 1000 + 3);
+    assert_eq!(st[1]["end"], NOW / 1000 + 12);
+}
+
+#[test]
+fn empty_day_and_bad_day() {
+    let (s, u) = paths("st-empty");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    let r = sessions(&mut d, &mut p, "2023-11-01");
+    assert_eq!(r, json!({"type":"Sessions","day":"2023-11-01","truncated":false,"stretches":[]}));
+    for bad in ["x", "2023-13-01", "../state"] {
+        let r = sessions(&mut d, &mut p, bad);
+        assert_eq!((r["type"].as_str(), r["code"].as_str()), (Some("Error"), Some("bad-request")), "{bad}");
+    }
+}
+
+#[test]
+fn stretches_survive_restart_and_prune_deletes_old_files() {
+    let (s, u) = paths("st-restart");
+    {
+        let mut d = Daemon::load_with_usage(&s, &u);
+        let mut p = Fake;
+        for m in 0..=4 {
+            call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+        }
+        d.flush_usage();
+    }
+    let dir = s.parent().unwrap();
+    assert!(dir.join("sessions-2023-11-14.json").exists());
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    let r = sessions(&mut d, &mut p, "2023-11-14");
+    assert_eq!(r["stretches"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["stretches"][0]["end"], NOW / 1000 + 4);
+
+    // 100 older days on disk: after a flush with new data only the newest 90 remain.
+    let old: Vec<String> = (0..100)
+        .map(|i| {
+            let n = focus_helper::usage::day_number("2023-08-01").unwrap() + i;
+            let (y, m, dd) = civil(n);
+            format!("{y:04}-{m:02}-{dd:02}")
+        })
+        .collect();
+    for day in &old {
+        focus_helper::sessions::save_day(dir, day, &Default::default()).unwrap();
+    }
+    for m in 5..=8 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    d.flush_usage();
+    let count = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".json") && e.file_name().to_string_lossy().starts_with("sessions-"))
+        .count();
+    assert_eq!(count, 90);
+    assert!(!dir.join(format!("sessions-{}.json", old[0])).exists(), "oldest deleted");
+    assert!(dir.join("sessions-2023-11-14.json").exists(), "newest kept");
+}
+
+fn civil(z: i64) -> (i64, i64, i64) {
+    let z = z + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+#[test]
+fn recording_after_restart_does_not_clobber_the_stored_day() {
+    let (s, u) = paths("st-clobber");
+    let dir = s.parent().unwrap().to_path_buf();
+    {
+        let mut d = Daemon::load_with_usage(&s, &u);
+        let mut p = Fake;
+        for m in 0..=4 {
+            call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+        }
+        d.flush_usage();
+    }
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    // No GetSessions first: recording must load the stored day itself.
+    for m in 10..=14 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    d.flush_usage();
+    drop(d);
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let r = sessions(&mut d, &mut p, "2023-11-14");
+    let st = r["stretches"].as_array().unwrap();
+    assert_eq!(st.first().unwrap()["start"], NOW / 1000, "old start kept: {r}");
+    assert_eq!(st.last().unwrap()["end"], NOW / 1000 + 14, "new end: {r}");
+    assert!(dir.join("sessions-2023-11-14.json").exists());
+}
+
+#[test]
+fn session_flush_is_throttled_to_once_a_minute() {
+    let (s, u) = paths("st-throttle");
+    let file = s.parent().unwrap().join("sessions-2023-11-14.json");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    for m in 0..=5 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    assert!(!file.exists(), "not written right away");
+    d.tick(NOW + 59_999, 59_999, &mut p);
+    assert!(!file.exists(), "not written before a minute");
+    d.tick(NOW + 60_000, 60_000, &mut p);
+    assert!(file.exists(), "written once a minute has passed");
+}
+
+#[test]
+fn shutdown_flush_writes_pending_sessions() {
+    let (s, u) = paths("st-shutdown");
+    let file = s.parent().unwrap().join("sessions-2023-11-14.json");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    for m in 0..=3 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    assert!(!file.exists());
+    d.flush_usage();
+    assert!(file.exists());
+}
+
+#[test]
+fn clean_non_today_day_is_not_retained_after_reading() {
+    let (s, u) = paths("st-evict");
+    let dir = s.parent().unwrap();
+    let old = focus_helper::sessions::DayStretches {
+        truncated: false,
+        stretches: vec![focus_helper::sessions::Stretch { start: 1, end: 5, exe: "a.exe".into(), site: None }],
+    };
+    focus_helper::sessions::save_day(dir, "2023-11-01", &old).unwrap();
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    let r = sessions(&mut d, &mut p, "2023-11-01");
+    assert_eq!(r["stretches"].as_array().unwrap().len(), 1);
+    assert_eq!(d.loaded_day_count(), 0, "reading does not retain");
+    for m in 0..=3 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    assert_eq!(d.loaded_day_count(), 1, "today is resident");
+    d.flush_usage();
+    assert_eq!(d.loaded_day_count(), 1, "today stays after the flush");
+    call(&mut d, &mut p, &report("a.exe", None, 0).replace("2023-11-14", "2023-11-15"), 5_000);
+    call(&mut d, &mut p, &report("a.exe", None, 0).replace("2023-11-14", "2023-11-15"), 6_000);
+    d.flush_usage();
+    assert_eq!(d.loaded_day_count(), 1, "yesterday evicted once clean");
+}
+
+// ---- stretches through the daemon (wall and monotonic clocks controlled) ----
+
+const N: i64 = NOW / 1000;
+
+fn rep(exe: &str, day: &str) -> String {
+    json!({"type":"ReportForeground","exe":exe,"title":null,"idle_secs":0,"day":day}).to_string()
+}
+
+fn callw(d: &mut Daemon, p: &mut Fake, line: &str, wall: i64, mono: i64) -> Value {
+    serde_json::from_str(&d.handle_line(line, wall, mono, [0; 16], p)).unwrap()
+}
+
+fn stretches(d: &mut Daemon, p: &mut Fake, day: &str) -> Vec<(i64, i64, String)> {
+    let line = json!({"type":"GetSessions","day":day}).to_string();
+    let v = call(d, p, &line, 0);
+    v["stretches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["start"].as_i64().unwrap(), s["end"].as_i64().unwrap(), s["exe"].as_str().unwrap().to_string()))
+        .collect()
+}
+
+fn run_1s(d: &mut Daemon, p: &mut Fake, exe: &str, from: i64, to: i64) {
+    for mono in (from..=to).step_by(1_000) {
+        call(d, p, &rep(exe, "2023-11-14"), mono);
+    }
+}
+
+#[test]
+fn a_stall_does_not_invent_time_or_merge() {
+    for stall in [30_000, 60_000] {
+        let (s, u) = paths(&format!("stall{stall}"));
+        let mut d = Daemon::load_with_usage(&s, &u);
+        let mut p = Fake;
+        run_1s(&mut d, &mut p, "a.exe", 0, 3_000);
+        call(&mut d, &mut p, &rep("a.exe", "2023-11-14"), 3_000 + stall);
+        let st = stretches(&mut d, &mut p, "2023-11-14");
+        assert_eq!(st.len(), 2, "stall {stall}: {st:?}");
+        assert_eq!(st[0], (N, N + 3, "a.exe".into()));
+        assert!(st[1].1 - st[1].0 <= 15, "{st:?}");
+        assert!(st[1].0 > st[0].1);
+    }
+}
+
+#[test]
+fn a_lock_gap_splits_the_stretch() {
+    let (s, u) = paths("lockgap");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    run_1s(&mut d, &mut p, "a.exe", 0, 3_000);
+    run_1s(&mut d, &mut p, "a.exe", 23_000, 26_000);
+    let st = stretches(&mut d, &mut p, "2023-11-14");
+    assert_eq!(st.len(), 2, "{st:?}");
+    assert_eq!(st[0], (N, N + 3, "a.exe".into()));
+}
+
+#[test]
+fn a_stretch_over_midnight_lands_in_both_day_files() {
+    let (s, u) = paths("midnight");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    for mono in [0, 1_000, 2_000, 3_000] {
+        call(&mut d, &mut p, &rep("a.exe", "2023-11-14"), mono);
+    }
+    for mono in [4_000, 5_000, 6_000] {
+        call(&mut d, &mut p, &rep("a.exe", "2023-11-15"), mono);
+    }
+    assert_eq!(stretches(&mut d, &mut p, "2023-11-14"), vec![(N, N + 3, "a.exe".into())]);
+    assert_eq!(stretches(&mut d, &mut p, "2023-11-15"), vec![(N + 3, N + 6, "a.exe".into())]);
+}
+
+#[test]
+fn wall_clock_going_backwards_never_overlaps() {
+    let (s, u) = paths("wallback");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    for mono in [0, 1_000, 2_000, 3_000, 4_000, 5_000] {
+        callw(&mut d, &mut p, &rep("a.exe", "2023-11-14"), NOW + mono, mono);
+    }
+    // The wall clock steps back 60 s, then runs on normally.
+    for mono in (6_000..=75_000).step_by(1_000) {
+        let exe = if mono % 20_000 < 10_000 { "a.exe" } else { "b.exe" };
+        callw(&mut d, &mut p, &rep(exe, "2023-11-14"), NOW + mono - 60_000, mono);
+    }
+    let st = stretches(&mut d, &mut p, "2023-11-14");
+    assert!(!st.is_empty());
+    for w in st.windows(2) {
+        assert!(w[0].1 <= w[1].0, "overlap: {st:?}");
+    }
+    for s in &st {
+        assert!(s.0 < s.1, "empty or negative: {st:?}");
+    }
+}
+
+#[test]
+fn old_five_second_sampler_still_merges() {
+    let (s, u) = paths("old5");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    for mono in (0..=30_000).step_by(5_000) {
+        call(&mut d, &mut p, &rep("a.exe", "2023-11-14"), mono);
+    }
+    assert_eq!(stretches(&mut d, &mut p, "2023-11-14"), vec![(N, N + 30, "a.exe".into())]);
+}
+
+// ---- stretch file problems reach Status ----
+
+fn warnings(d: &mut Daemon, p: &mut Fake) -> Vec<String> {
+    let v = call(d, p, r#"{"type":"GetStatus"}"#, 0);
+    v["warnings"].as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect()
+}
+
+fn dir_names(dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()
+}
+
+#[test]
+fn corrupt_stretch_file_is_quarantined_and_reported() {
+    let (s, u) = paths("corruptsess");
+    let dir = s.parent().unwrap().to_path_buf();
+    std::fs::write(dir.join("sessions-2023-11-14.json"), b"garbage").unwrap();
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    assert!(stretches(&mut d, &mut p, "2023-11-14").is_empty());
+    let w = warnings(&mut d, &mut p);
+    assert!(w.iter().any(|m| m.starts_with("sessions: 2023-11-14 unreadable, kept as ")), "{w:?}");
+    let names = dir_names(&dir);
+    assert!(!names.contains(&"sessions-2023-11-14.json".to_string()), "{names:?}");
+    assert!(names.iter().any(|n| n.starts_with("sessions-2023-11-14.json.corrupt-")), "{names:?}");
+}
+
+#[test]
+fn stretch_file_recovered_from_backup_is_reported() {
+    use focus_helper::sessions::{save_day, DayStretches, Stretch};
+    let (s, u) = paths("baksess");
+    let dir = s.parent().unwrap().to_path_buf();
+    let mk = |end| DayStretches { truncated: false, stretches: vec![Stretch { start: 1, end, exe: "a.exe".into(), site: None }] };
+    save_day(&dir, "2023-11-14", &mk(5)).unwrap();
+    save_day(&dir, "2023-11-14", &mk(9)).unwrap();
+    std::fs::write(dir.join("sessions-2023-11-14.json"), b"garbage").unwrap();
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    assert_eq!(stretches(&mut d, &mut p, "2023-11-14"), vec![(1, 5, "a.exe".into())]);
+    let w = warnings(&mut d, &mut p);
+    assert!(w.iter().any(|m| m.starts_with("sessions: 2023-11-14 loaded from backup")), "{w:?}");
+}
+
+#[test]
+fn a_transient_read_error_does_not_quarantine() {
+    let (s, u) = paths("readerr");
+    let dir = s.parent().unwrap().to_path_buf();
+    // A directory in place of the file: reading it fails with an error other than "not found".
+    std::fs::create_dir(dir.join("sessions-2023-11-14.json")).unwrap();
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    assert!(stretches(&mut d, &mut p, "2023-11-14").is_empty());
+    let names = dir_names(&dir);
+    assert!(names.contains(&"sessions-2023-11-14.json".to_string()), "{names:?}");
+    assert!(!names.iter().any(|n| n.contains("corrupt")), "{names:?}");
 }
