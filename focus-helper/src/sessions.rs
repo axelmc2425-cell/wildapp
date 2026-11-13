@@ -99,6 +99,21 @@ impl SessionStore {
         }
     }
 
+    /// Number of days held in memory.
+    pub fn loaded_day_count(&self) -> usize {
+        self.days.len()
+    }
+
+    pub fn mark_day_clean(&mut self, day: &str) {
+        self.dirty.remove(day);
+    }
+
+    /// Drops days that are not dirty, except `keep`.
+    pub fn evict_clean_except(&mut self, keep: Option<&str>) {
+        let dirty = &self.dirty;
+        self.days.retain(|k, _| dirty.contains(k) || Some(k.as_str()) == keep);
+    }
+
     pub fn has_day(&self, day: &str) -> bool {
         self.days.contains_key(day)
     }

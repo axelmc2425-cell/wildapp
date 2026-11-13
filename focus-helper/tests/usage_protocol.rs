@@ -642,3 +642,87 @@ fn civil(z: i64) -> (i64, i64, i64) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
+
+#[test]
+fn recording_after_restart_does_not_clobber_the_stored_day() {
+    let (s, u) = paths("st-clobber");
+    let dir = s.parent().unwrap().to_path_buf();
+    {
+        let mut d = Daemon::load_with_usage(&s, &u);
+        let mut p = Fake;
+        for m in 0..=4 {
+            call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+        }
+        d.flush_usage();
+    }
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    // No GetSessions first: recording must load the stored day itself.
+    for m in 10..=14 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    d.flush_usage();
+    drop(d);
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let r = sessions(&mut d, &mut p, "2023-11-14");
+    let st = r["stretches"].as_array().unwrap();
+    assert_eq!(st.first().unwrap()["start"], NOW / 1000, "old start kept: {r}");
+    assert_eq!(st.last().unwrap()["end"], NOW / 1000 + 14, "new end: {r}");
+    assert!(dir.join("sessions-2023-11-14.json").exists());
+}
+
+#[test]
+fn session_flush_is_throttled_to_once_a_minute() {
+    let (s, u) = paths("st-throttle");
+    let file = s.parent().unwrap().join("sessions-2023-11-14.json");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    for m in 0..=5 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    assert!(!file.exists(), "not written right away");
+    d.tick(NOW + 59_999, 59_999, &mut p);
+    assert!(!file.exists(), "not written before a minute");
+    d.tick(NOW + 60_000, 60_000, &mut p);
+    assert!(file.exists(), "written once a minute has passed");
+}
+
+#[test]
+fn shutdown_flush_writes_pending_sessions() {
+    let (s, u) = paths("st-shutdown");
+    let file = s.parent().unwrap().join("sessions-2023-11-14.json");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    for m in 0..=3 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    assert!(!file.exists());
+    d.flush_usage();
+    assert!(file.exists());
+}
+
+#[test]
+fn clean_non_today_day_is_not_retained_after_reading() {
+    let (s, u) = paths("st-evict");
+    let dir = s.parent().unwrap();
+    let old = focus_helper::sessions::DayStretches {
+        truncated: false,
+        stretches: vec![focus_helper::sessions::Stretch { start: 1, end: 5, exe: "a.exe".into(), site: None }],
+    };
+    focus_helper::sessions::save_day(dir, "2023-11-01", &old).unwrap();
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    let r = sessions(&mut d, &mut p, "2023-11-01");
+    assert_eq!(r["stretches"].as_array().unwrap().len(), 1);
+    assert_eq!(d.loaded_day_count(), 0, "reading does not retain");
+    for m in 0..=3 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    assert_eq!(d.loaded_day_count(), 1, "today is resident");
+    d.flush_usage();
+    assert_eq!(d.loaded_day_count(), 1, "today stays after the flush");
+    call(&mut d, &mut p, &report("a.exe", None, 0).replace("2023-11-14", "2023-11-15"), 5_000);
+    call(&mut d, &mut p, &report("a.exe", None, 0).replace("2023-11-14", "2023-11-15"), 6_000);
+    d.flush_usage();
+    assert_eq!(d.loaded_day_count(), 1, "yesterday evicted once clean");
+}

@@ -71,6 +71,8 @@ pub struct Daemon {
     /// Set while the latest usage save failed; cleared by the next successful save.
     usage_error: Option<String>,
     sessions_error: Option<String>,
+    /// Latest reported day; the only clean day kept in memory.
+    current_day: Option<String>,
     /// Monotonic time up to which reported seconds have been accounted; `None` before the first report.
     report_anchor_mono: Option<i64>,
     /// Monotonic time of the latest accepted report (drives `usage_tracking`).
@@ -138,6 +140,7 @@ impl Daemon {
             usage_warning,
             usage_error: None,
             sessions_error: None,
+            current_day: None,
             report_anchor_mono: None,
             last_report_mono: None,
             last_usage_flush_mono: None,
@@ -211,17 +214,20 @@ impl Daemon {
         let mut failed = None;
         for day in self.sessions.dirty_days() {
             if let Some(d) = self.sessions.day(&day) {
-                if let Err(e) = sessions::save_day(&self.sessions_dir, &day, &d) {
-                    eprintln!("focus-helper: sessions save failed: {e}");
-                    failed = Some(e.to_string());
+                match sessions::save_day(&self.sessions_dir, &day, &d) {
+                    Ok(()) => self.sessions.mark_day_clean(&day),
+                    Err(e) => {
+                        eprintln!("focus-helper: sessions save failed: {e}");
+                        failed = Some(e.to_string());
+                    }
                 }
+            } else {
+                self.sessions.mark_day_clean(&day);
             }
         }
-        // A failed day stays dirty only until the next change; keep it simple and retry then.
-        if failed.is_none() {
-            self.sessions.mark_clean();
-        }
         self.sessions_error = failed;
+        let keep = self.current_day.clone();
+        self.sessions.evict_clean_except(keep.as_deref());
     }
 
     /// Keeps the newest 90 days, counting days on disk as well as those in memory.
@@ -249,13 +255,22 @@ impl Daemon {
         if !usage::is_valid_day(day) || self.sessions.has_day(day) {
             return;
         }
+        if let Some(d) = self.read_day_from_disk(day) {
+            self.sessions.insert_loaded(day, d);
+        }
+    }
+
+    fn read_day_from_disk(&self, day: &str) -> Option<DayStretches> {
         let unix_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        if let Some((d, _)) = sessions::load_day(&self.sessions_dir, day, unix_ms) {
-            self.sessions.insert_loaded(day, d);
-        }
+        sessions::load_day(&self.sessions_dir, day, unix_ms).map(|(d, _)| d)
+    }
+
+    /// Days of stretches currently held in memory.
+    pub fn loaded_day_count(&self) -> usize {
+        self.sessions.loaded_day_count()
     }
 
     /// Test seeding: replaces the day and saves immediately.
@@ -310,6 +325,7 @@ impl Daemon {
             let secs = (elapsed as u64).min(usage::MAX_SAMPLE_SECS);
             let end = wall_ms.div_euclid(1000);
             let site = usage::site_label(&sample.exe, sample.title.as_deref(), &stems);
+            self.current_day = Some(sample.day.clone());
             self.ensure_day_loaded(&sample.day);
             self.sessions.record(&sample.day, &sample.exe.to_lowercase(), site.as_deref(), end - secs as i64, end, secs);
         }
@@ -342,8 +358,11 @@ impl Daemon {
                 if !usage::is_valid_day(&day) {
                     Response::Error { code: "bad-request".into(), message: "day must be YYYY-MM-DD".into() }
                 } else {
-                    self.ensure_day_loaded(&day);
-                    let d = self.sessions.day(&day).unwrap_or_default();
+                    // Served from disk without keeping the day resident unless it already is.
+                    let d = match self.sessions.day(&day) {
+                        Some(d) => d,
+                        None => self.read_day_from_disk(&day).unwrap_or_default(),
+                    };
                     Response::Sessions { day, truncated: d.truncated, stretches: d.stretches }
                 }
             }
