@@ -313,3 +313,139 @@ test('module render switches home <-> stats and Back restores home', async () =>
     assert.equal(btn(body, '← Back'), undefined);
   } finally { stop(); }
 });
+
+// ---- Today view ----
+const D = Date.UTC(2026, 10, 11) / 1000; // local midnight with tz 0
+const st = (a, b, exe = 'code.exe', site = null) => ({ start: D + a, end: D + b, exe, site });
+function setupToday({ sessions, usage, helper, deps = {} } = {}) {
+  const sessionCalls = [];
+  const r = setup({
+    helper, deps,
+    usage: usage || ((from, to) => ({ ok: true, days: from === to ? [row(from, 3600)] : [row('2026-11-10', 100), row('2026-11-11', 3600)] })),
+  });
+  r.controller.getSessions = async (day) => { sessionCalls.push(day); return sessions ? sessions(day, sessionCalls.length) : { ok: true, day, truncated: false, stretches: [st(3600, 7200), st(7300, 8000, 'chrome.exe')] }; };
+  r.sessionCalls = sessionCalls;
+  return r;
+}
+const todayBtn = (body) => findAll(body, (n) => n.getAttribute('data-fk') === 'p-today')[0];
+const fk = (body, k) => findAll(body, (n) => n.getAttribute('data-fk') === k)[0];
+async function openToday(opts) { const r = setupToday(opts); await tick(); await todayBtn(r.body).click(); await tick(); return r; }
+
+test('Today renders the strip, cards, streaks and requests today', async () => {
+  const { body, sessionCalls, stop } = await openToday();
+  assert.equal(sessionCalls.at(-1), '2026-11-11');
+  assert.ok(findAll(body, (n) => n.tag === 'svg').length >= 1);
+  const t = text(body);
+  assert.match(t, /Longest stretch/); assert.match(t, /1h 00m 00s/); assert.match(t, /Code/);
+  assert.match(t, /Switches per active hour/); assert.match(t, /First activity/); assert.match(t, /01:00:00/); assert.match(t, /Last activity/); assert.match(t, /02:13:20/);
+  assert.match(t, /Current streak/); assert.match(t, /2 days/); assert.match(t, /Best streak/);
+  assert.match(t, /00:00:00 to 24:00:00/);
+  assert.doesNotMatch(t, /NaN|Infinity|undefined/);
+  stop();
+});
+
+test('zoom buttons change the window label and pan shows for sub-day zooms', async () => {
+  const { body, stop } = await openToday();
+  assert.equal(fk(body, 'pan'), undefined);
+  await fk(body, 'zoom-6h').click();
+  assert.ok(fk(body, 'pan'));
+  const lab6 = fk(body, 'window').textContent;
+  assert.match(lab6, /^\d\d:\d\d:\d\d to \d\d:\d\d:\d\d$/);
+  await fk(body, 'zoom-10m').click();
+  const lab10 = fk(body, 'window').textContent;
+  assert.notEqual(lab10, lab6);
+  const pan = fk(body, 'pan');
+  pan.value = '3600';
+  for (const fn of pan.listeners.input) fn({ target: pan });
+  assert.equal(fk(body, 'window').textContent, '01:00:00 to 01:10:00');
+  await fk(body, 'zoom-1h').click();
+  assert.match(fk(body, 'window').textContent, /to/);
+  stop();
+});
+
+test('previous day requests the previous day; next is disabled on today', async () => {
+  const { body, sessionCalls, stop } = await openToday();
+  assert.equal(fk(body, 'next').disabled, true);
+  await fk(body, 'prev').click(); await tick();
+  assert.equal(sessionCalls.at(-1), '2026-11-10');
+  assert.equal(fk(body, 'next').disabled, false);
+  stop();
+});
+
+test('DST day window is 23 hours long', async () => {
+  const X = D + 3600 * 5; // offset +0 before X (on 2026-11-11), +60 after... spring forward at 05:00 UTC
+  const tz = (ms) => (ms / 1000 >= X ? 60 : 0);
+  const { body, stop } = await openToday({ deps: { tzOffsetAt: tz }, sessions: () => ({ ok: true, truncated: false, stretches: [st(10 * 3600, 11 * 3600)] }) });
+  const t = fk(body, 'window').textContent;
+  assert.equal(t, '00:00:00 to 24:00:00');
+  await fk(body, 'zoom-day').click();
+  // the day is 23 h: sliding a 6 h window to the end reaches 24:00 exactly
+  await fk(body, 'zoom-6h').click();
+  const pan = fk(body, 'pan');
+  assert.equal(pan.getAttribute('max'), String(17 * 3600));
+  stop();
+});
+
+test('newest request wins when responses arrive out of order', async () => {
+  const pending = [];
+  const { body, stop } = setupToday({ sessions: (day) => new Promise((res) => pending.push({ day, res })) });
+  await tick();
+  await todayBtn(body).click();
+  await fk(body, 'prev').click();
+  const old = pending.find((p) => p.day === '2026-11-11');
+  const neu = pending.find((p) => p.day === '2026-11-10');
+  neu.res({ ok: true, day: '2026-11-10', truncated: false, stretches: [{ start: D - 86400 + 100, end: D - 86400 + 4000, exe: 'new.exe', site: null }] });
+  await tick();
+  old.res({ ok: true, day: '2026-11-11', truncated: false, stretches: [st(100, 4000, 'old.exe')] });
+  await tick();
+  assert.match(text(body), /New/); assert.doesNotMatch(text(body), /Old/);
+  stop();
+});
+
+test('totals without stretches say detail is not available', async () => {
+  const { body, stop } = await openToday({ sessions: () => ({ ok: true, truncated: false, stretches: [] }) });
+  assert.match(text(body), /Detailed timeline not available for this day; daily totals only/);
+  stop();
+});
+
+test('no usage at all shows the empty note', async () => {
+  const { body, stop } = await openToday({ sessions: () => ({ ok: true, truncated: false, stretches: [] }), usage: () => ({ ok: true, days: [] }) });
+  assert.match(text(body), /No usage recorded yet/);
+  stop();
+});
+
+test('truncated shows the notice with the returned count', async () => {
+  const { body, stop } = await openToday({ sessions: () => ({ ok: true, truncated: true, stretches: [st(10, 20), st(30, 40), st(50, 60)] }) });
+  assert.match(text(body), /Timeline incomplete after 3 stretches; totals are complete/);
+  stop();
+});
+
+test('helper down shows a notice and keeps the last data', async () => {
+  let down = false;
+  const { body, stop } = await openToday({ sessions: () => (down ? { ok: false, down: true, message: 'x' } : { ok: true, truncated: false, stretches: [st(10, 600)] }) });
+  assert.match(text(body), /Longest stretch/);
+  down = true;
+  await todayBtn(body).click(); await tick();
+  assert.match(text(body), /Showing the last data from .+\. The helper isn't running\./);
+  assert.match(text(body), /Longest stretch/);
+  stop();
+});
+
+test('helper down with nothing cached explains it; tracking off explains it', async () => {
+  let r = await openToday({ sessions: () => ({ ok: false, down: true, message: 'x' }), helper: { kind: 'not-running' } });
+  assert.match(text(r.body), /helper isn't running/); r.stop();
+  r = await openToday({ sessions: () => ({ ok: true, truncated: false, stretches: [] }), usage: () => ({ ok: true, days: [] }), helper: { kind: 'ok', status: { usage_tracking: false } } });
+  assert.match(text(r.body), /Usage tracking is off/); r.stop();
+});
+
+test('Show as table renders stretches, capped at 500 rows with a note', async () => {
+  const many = Array.from({ length: 600 }, (_, i) => st(i * 100, i * 100 + 50));
+  const { body, stop } = await openToday({ sessions: () => ({ ok: true, truncated: false, stretches: many }) });
+  await btn(body, 'Show as table').click();
+  const tables = findAll(body, (n) => n.tag === 'table');
+  assert.equal(tables.length, 1);
+  assert.equal(findAll(tables[0], (n) => n.tag === 'tr').length, 501);
+  assert.match(text(body), /Showing first 500 of 600 stretches/);
+  assert.doesNotMatch(text(body), /NaN|Infinity/);
+  stop();
+});

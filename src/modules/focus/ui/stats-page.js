@@ -1,14 +1,24 @@
 import { h } from './dom.js';
 import { formatClock } from './util.js';
 import { makeTzOffsetAt } from '../tz.js';
-import { dayKey, rangeFor, previousRange, shiftRange, summarize, deltaVs, formatDuration } from '../stats.js';
+import { dayKey, addDays, rangeFor, previousRange, shiftRange, summarize, deltaVs, formatDuration } from '../stats.js';
+import { timelineWindow, focusMetrics, activeStreaks, formatDurationSecs } from '../stats-detail.js';
+import { timelineStrip, timelineLegend } from './charts-detail.js';
 import { stackedDailyBars, chartLegend, topAppNames, weekdayBars, yearHeatmap, rankedBars, dataTable } from './charts.js';
 
-const PERIODS = [['day', 'Day'], ['week', 'Week'], ['month', 'Month'], ['year', 'Year']];
+const PERIODS = [['today', 'Today'], ['day', 'Day'], ['week', 'Week'], ['month', 'Month'], ['year', 'Year']];
 const PREVIOUS_WORD = { day: 'yesterday', week: 'last week', month: 'last month', year: 'last year' };
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const REFRESH_MS = 60000;
+const STREAK_DAYS = 400;
+const TABLE_CAP = 500;
+const ZOOMS = [['day', 'Day', 0], ['6h', '6 h', 6 * 3600], ['1h', '1 h', 3600], ['10m', '10 min', 600]];
+const p2 = (n) => String(n).padStart(2, '0');
+const programName = (exe) => {
+  const base = String(exe == null ? '' : exe).split(/[\\/]/).pop().replace(/\.exe$/i, '');
+  return base ? base[0].toUpperCase() + base.slice(1) : 'Unknown';
+};
 
 // Range labels are built by hand from day keys, so no Intl or locale call is needed for correctness.
 function parts(day) { const [y, m, d] = day.split('-').map(Number); return { y, m, d }; }
@@ -40,6 +50,11 @@ export function mountStatsPage(root, controller, deps = {}) {
   let alive = true;
   let period = 'week';
   let range = rangeFor(period, todayKey());
+  let zoom = 'day';
+  let panOff = null; // seconds from the day start; null = automatic position
+  let streak = null; // { key: today, days, v }
+  let stripHost = null;
+  let windowEl = null;
   let asTable = false;
   let status = 'loading'; // 'loading' | 'ok' | 'down' | 'error'
   let message = '';
@@ -50,7 +65,23 @@ export function mountStatsPage(root, controller, deps = {}) {
   let statusKey = null; // the range key `status` describes
   let lastSig = null;
   const cache = new Map(); // `${period}:${from}:${to}` -> { days, prevDays|null, at }
-  const keyOf = () => `${period}:${range.from}:${range.to}`;
+  const isToday = () => period === 'today';
+  const navPeriod = () => (isToday() ? 'day' : period);
+  const keyOf = () => (isToday() ? `today:${range.from}` : `${period}:${range.from}:${range.to}`);
+
+  // Local day boundaries in unix seconds, correct on 23 and 25 hour days.
+  function dayStartSec(day) {
+    const { y, m, d } = parts(day);
+    const dt = new Date(Date.UTC(2000, m - 1, d)); dt.setUTCFullYear(y);
+    const utc = dt.getTime() / 1000;
+    let t = utc;
+    for (let i = 0; i < 2; i++) t = utc - tzOffsetAt(t * 1000) * 60;
+    return t;
+  }
+  function timeLabel(sec) {
+    const d = new Date((sec + tzOffsetAt(sec * 1000) * 60) * 1000);
+    return `${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:${p2(d.getUTCSeconds())}`;
+  }
 
   const trackingOff = () => {
     const helper = controller.state && controller.state.helper;
@@ -67,7 +98,44 @@ export function mountStatsPage(root, controller, deps = {}) {
     }
   }
 
+  async function safeSessions(day) {
+    try {
+      const res = await controller.getSessions(day);
+      return res && typeof res === 'object' ? res : { ok: false, down: false, message: 'No answer from the helper.' };
+    } catch (e) {
+      return { ok: false, down: false, message: e && e.message ? String(e.message) : 'Unknown error' };
+    }
+  }
+
+  async function loadToday() {
+    const mine = ++seq;
+    const day = range.from;
+    const key = keyOf();
+    const today = todayKey();
+    if (key !== statusKey) { status = cache.has(key) ? 'ok' : 'loading'; message = ''; statusKey = key; panOff = null; }
+    render();
+    const needStreak = !streak || streak.key !== today;
+    const [s, u, st] = await Promise.all([
+      safeSessions(day), safeUsage(day, day),
+      needStreak ? safeUsage(addDays(today, -(STREAK_DAYS - 1)), today) : Promise.resolve(null)]);
+    if (!alive) return;
+    if (st && st.ok && Array.isArray(st.days)) streak = { key: today, days: st.days, v: ++version };
+    if (s.ok && Array.isArray(s.stretches)) {
+      let total = null;
+      if (u.ok && Array.isArray(u.days)) total = u.days.filter((r) => r && r.day === day).reduce((a, r) => a + (Number.isFinite(r.total) && r.total > 0 ? r.total : 0), 0);
+      const old = cache.get(key);
+      cache.set(key, { v: ++version, today: true, stretches: s.stretches, truncated: !!s.truncated, total: total == null && old ? old.total : total, at: now() });
+    }
+    if (mine !== seq) return;
+    errCode = null; unavailable = false;
+    if (s.ok && Array.isArray(s.stretches)) { status = 'ok'; message = ''; }
+    else if (s.down) { status = 'down'; message = s.message || ''; unavailable = !!s.unavailable; }
+    else { status = 'error'; message = (s && s.message) || 'Unknown error'; errCode = s.code || null; }
+    render();
+  }
+
   async function load() {
+    if (isToday()) return loadToday();
     const mine = ++seq;
     const per = period;
     const cur = range;
@@ -94,7 +162,7 @@ export function mountStatsPage(root, controller, deps = {}) {
     return h('div', { class: 'fr-period', role: 'group', 'aria-label': 'Period' },
       PERIODS.map(([id, label]) => h('button', {
         type: 'button', class: `fr-pbtn${id === period ? ' fr-on' : ''}`, 'aria-pressed': id === period ? 'true' : 'false', 'data-fk': `p-${id}`,
-        onclick: () => { period = id; range = rangeFor(id, todayKey()); load(); },
+        onclick: () => { period = id; range = rangeFor(id === 'today' ? 'day' : id, todayKey()); load(); },
       }, label)));
   }
 
@@ -102,14 +170,14 @@ export function mountStatsPage(root, controller, deps = {}) {
     const today = todayKey();
     const prevBtn = h('button', {
       type: 'button', class: 'fr-pbtn fr-arrow', 'aria-label': 'Previous period', 'data-fk': 'prev',
-      onclick: () => { range = shiftRange(period, range, -1); load(); },
+      onclick: () => { range = shiftRange(navPeriod(), range, -1); load(); },
     }, '‹');
     const nextBtn = h('button', {
       type: 'button', class: 'fr-pbtn fr-arrow', 'aria-label': 'Next period', 'data-fk': 'next',
-      onclick: () => { if (nextBtn.disabled) return; range = shiftRange(period, range, 1); load(); },
+      onclick: () => { if (nextBtn.disabled) return; range = shiftRange(navPeriod(), range, 1); load(); },
     }, '›');
-    nextBtn.disabled = shiftRange(period, range, 1).from > today; // never into the future
-    return h('div', { class: 'fr-rangenav' }, prevBtn, h('span', { class: 'fr-rangelabel', 'aria-live': 'polite' }, rangeLabel(period, range, today)), nextBtn);
+    nextBtn.disabled = shiftRange(navPeriod(), range, 1).from > today; // never into the future
+    return h('div', { class: 'fr-rangenav' }, prevBtn, h('span', { class: 'fr-rangelabel', 'aria-live': 'polite' }, rangeLabel(navPeriod(), range, today)), nextBtn);
   }
 
   function card(label, value, sub) {
@@ -168,10 +236,120 @@ export function mountStatsPage(root, controller, deps = {}) {
     return out;
   }
 
+  // ---- Today view ----
+  function windowFor(entry) {
+    const day = range.from;
+    const start = dayStartSec(day);
+    const end = dayStartSec(addDays(day, 1));
+    const dayLen = end - start;
+    const z = ZOOMS.find((q) => q[0] === zoom) || ZOOMS[0];
+    const winLen = z[2] > 0 && z[2] < dayLen ? z[2] : dayLen;
+    if (winLen >= dayLen) return { start, end, winLen: dayLen, dayLen, from: start, to: end, off: 0 };
+    const maxOff = dayLen - winLen;
+    let off = panOff;
+    if (!(Number.isFinite(off))) {
+      const nowSec = Math.floor(now() / 1000);
+      if (nowSec >= start && nowSec < end) off = nowSec - start - winLen;
+      else { const m = focusMetrics(entry.stretches); off = m.firstStart != null ? Math.floor((m.firstStart - start) / 3600) * 3600 : 0; }
+    }
+    off = Math.min(maxOff, Math.max(0, Math.floor(off)));
+    return { start, end, winLen, dayLen, from: start + off, to: start + off + winLen, off };
+  }
+
+  function colorMap(stretches) {
+    const secs = new Map();
+    for (const s of stretches) if (s && Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start) secs.set(s.exe, (secs.get(s.exe) || 0) + s.end - s.start);
+    const order = [...secs].sort((a, b) => b[1] - a[1] || (String(a[0]) < String(b[0]) ? -1 : 1)).map((e) => e[0]);
+    return { order, idx: new Map(order.map((e, i) => [e, Math.min(5, i)])) };
+  }
+
+  function stripPieces(entry) {
+    const w = windowFor(entry);
+    const cm = colorMap(entry.stretches);
+    const blocks = timelineWindow(entry.stretches, w.from, w.to);
+    const shown = new Set(blocks.map((b) => b.exe));
+    const names = []; const nameIdx = new Map();
+    for (const exe of cm.order) {
+      if (!shown.has(exe)) continue;
+      const n = programName(exe);
+      if (!nameIdx.has(n)) { nameIdx.set(n, cm.idx.get(exe)); names.push(n); }
+    }
+    const strip = timelineStrip(blocks, { fromSec: w.from, toSec: w.to, colorOf: (exe) => cm.idx.get(exe) || 0, timeLabel, offsetSec: tzOffsetAt(w.from * 1000) * 60 });
+    const label = `${timeLabel(w.from)} to ${w.to === w.end ? '24:00:00' : timeLabel(w.to)}`;
+    return { w, strip, label, legend: timelineLegend(names, (n) => nameIdx.get(n) || 0) };
+  }
+
+  function updateStrip(entry) {
+    if (!stripHost) return;
+    const p = stripPieces(entry);
+    stripHost.textContent = '';
+    stripHost.append(p.strip, p.legend);
+    if (windowEl) windowEl.textContent = p.label;
+  }
+
+  function stretchTable(entry) {
+    const list = entry.stretches.filter((s) => s && Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start).sort((a, b) => a.start - b.start);
+    const rows = list.slice(0, TABLE_CAP).map((s) => ({ start: timeLabel(s.start), end: timeLabel(s.end), dur: formatDurationSecs(s.end - s.start), program: programName(s.exe), site: s.site || '' }));
+    const out = h('div', {});
+    out.append(dataTable(rows, [{ key: 'start', label: 'Start' }, { key: 'end', label: 'End' }, { key: 'dur', label: 'Duration' }, { key: 'program', label: 'Program' }, { key: 'site', label: 'Site' }], 'Stretches'));
+    if (list.length > TABLE_CAP) out.append(h('p', { class: 'fr-muted fr-small', 'data-fk': 'table-cap' }, `Showing first ${TABLE_CAP} of ${list.length} stretches`));
+    return out;
+  }
+
+  function todayView(entry) {
+    const total = Number.isFinite(entry.total) ? entry.total : 0;
+    const m = focusMetrics(entry.stretches);
+    const out = h('div', { class: 'fr-statbody' });
+    if (!entry.stretches.length && !(total > 0)) return h('p', { class: 'fr-statnote', 'data-fk': 'empty' }, 'No usage recorded yet for this period');
+    if (!entry.stretches.length) {
+      out.append(h('p', { class: 'fr-statnote', 'data-fk': 'no-detail' }, 'Detailed timeline not available for this day; daily totals only.'),
+        h('div', { class: 'fr-statcards' }, card('Active time', formatDurationSecs(total))));
+      return out;
+    }
+    if (entry.truncated) out.append(h('p', { class: 'fr-statnote fr-warn', role: 'status', 'data-fk': 'truncated' }, `Timeline incomplete after ${entry.stretches.length} stretches; totals are complete.`));
+    const sk = streak ? activeStreaks(streak.days, todayKey()) : null;
+    const days = (n) => `${n} ${n === 1 ? 'day' : 'days'}`;
+    const active = entry.truncated && total > 0 ? total : m.activeSecs;
+    out.append(h('div', { class: 'fr-statcards' },
+      card('Active time', formatDurationSecs(active)),
+      card('Longest stretch', m.longestStretchSecs > 0 ? formatDurationSecs(m.longestStretchSecs) : '—', m.longestStretchExe != null ? programName(m.longestStretchExe) : ''),
+      card('Switches per active hour', Number.isFinite(m.switchesPerActiveHour) ? m.switchesPerActiveHour.toFixed(1) : '—'),
+      card('First activity', m.firstStart != null ? timeLabel(m.firstStart) : '—'),
+      card('Last activity', m.lastEnd != null ? timeLabel(m.lastEnd) : '—'),
+      card('Current streak', sk ? days(sk.current) : '—'),
+      card('Best streak', sk ? days(sk.best) : '—')));
+    out.append(h('div', { class: 'fr-chart-tools' },
+      h('button', { type: 'button', class: 'fr-pbtn', 'aria-pressed': asTable ? 'true' : 'false', 'data-fk': 'table', onclick: () => { asTable = !asTable; render(); } },
+        asTable ? 'Show as chart' : 'Show as table')));
+    if (asTable) { out.append(section('Timeline', stretchTable(entry))); return out; }
+    const p = stripPieces(entry);
+    windowEl = h('span', { class: 'fr-windowlabel', 'data-fk': 'window', 'aria-live': 'polite' }, p.label);
+    stripHost = h('div', { class: 'fr-chart-scroll', 'data-fk': 'strip' }, p.strip, p.legend);
+    const zoomBar = h('div', { class: 'fr-period', role: 'group', 'aria-label': 'Zoom' },
+      ZOOMS.map(([id, label]) => h('button', {
+        type: 'button', class: `fr-pbtn${id === zoom ? ' fr-on' : ''}`, 'aria-pressed': id === zoom ? 'true' : 'false', 'data-fk': `zoom-${id}`,
+        onclick: () => { zoom = id; panOff = null; render(); },
+      }, label)));
+    const sec = section('Timeline', zoomBar, windowEl);
+    if (p.w.winLen < p.w.dayLen) {
+      const pan = h('input', { type: 'range', min: 0, max: p.w.dayLen - p.w.winLen, step: 60, value: p.w.off, class: 'fr-pan', 'data-fk': 'pan', 'aria-label': 'Scroll the timeline',
+        oninput: () => { const v = Number(pan.value); if (Number.isFinite(v)) { panOff = v; updateStrip(entry); lastSig = signature(); } } });
+      pan.value = String(p.w.off);
+      sec.append(pan);
+    }
+    sec.append(stripHost);
+    out.append(sec);
+    return out;
+  }
+
+  const entryHasData = (entry) => (entry.today
+    ? entry.stretches.length > 0 || entry.total > 0
+    : summarize(entry.days, range, todayKey()).total > 0);
+
   const OFF_HINT = 'Usage tracking runs from a small program that starts when you sign in. If you just installed or updated the helper, sign out and back in.';
   function stateView() {
     const entry = cache.get(keyOf());
-    const hasData = !!entry && summarize(entry.days, range, todayKey()).total > 0;
+    const hasData = !!entry && entryHasData(entry);
     if (trackingOff() && entry && !hasData) {
       return h('div', { class: 'fr-statnote', 'data-fk': 'off' },
         h('strong', {}, 'Usage tracking is off'),
@@ -205,7 +383,7 @@ export function mountStatsPage(root, controller, deps = {}) {
     } else if (status === 'error') {
       out.append(errorView());
     }
-    out.append(dataView(entry));
+    out.append(entry.today ? todayView(entry) : dataView(entry));
     return out;
   }
 
@@ -222,7 +400,7 @@ export function mountStatsPage(root, controller, deps = {}) {
 
   function signature() {
     const entry = cache.get(keyOf());
-    return JSON.stringify([period, range, asTable, status, message, errCode, unavailable, trackingOff(), helperKind(), todayKey(), entry ? [entry.v, status === 'down' ? entry.at : 0] : null]);
+    return JSON.stringify([period, range, asTable, zoom, panOff, streak ? streak.v : 0, status, message, errCode, unavailable, trackingOff(), helperKind(), todayKey(), entry ? [entry.v, status === 'down' ? entry.at : 0] : null]);
   }
 
   function render() {
