@@ -71,6 +71,7 @@ export function mountStatsPage(root, controller, deps = {}) {
   let dseq = 0; // newest day request wins
   let dstatus = 'idle'; // 'idle' | 'loading' | 'ok' | 'down' | 'error'
   let dmessage = '';
+  let drillOpener = null; // data-fk of the button that opened the drill-down
   let focusNext = null; // data-fk to focus after the next render
   const dcache = new Map(); // day -> { v, stretches, truncated, at }
   const cache = new Map(); // `${period}:${from}:${to}` -> { days, prevDays|null, at }
@@ -170,10 +171,11 @@ export function mountStatsPage(root, controller, deps = {}) {
   const detailKept = (day) => day >= addDays(todayKey(), -(KEEP_DETAIL_DAYS - 1));
   function hourOf(sec) { const local = Math.floor(sec) + tzOffsetAt(sec * 1000) * 60; return Math.floor((((local % 86400) + 86400) % 86400) / 3600); }
 
-  function openDrill(name, kind) {
+  function openDrill(name, kind, opener) {
     const entry = cache.get(keyOf());
     if (!entry || !entry.days) return;
     drill = { name, kind };
+    drillOpener = opener || `${kind}-${name}`;
     const info = appDrilldown(entry.days, name, kind);
     const last = todayKey() < range.to ? todayKey() : range.to;
     drillDay = info.daily.length ? info.daily[info.daily.length - 1].day : last;
@@ -181,7 +183,7 @@ export function mountStatsPage(root, controller, deps = {}) {
     loadDrillDay();
   }
   function closeDrill() {
-    focusNext = drill ? `${drill.kind}-${drill.name}` : null;
+    focusNext = drillOpener;
     dseq++; view = 'main'; drill = null; drillDay = null; dstatus = 'idle'; dmessage = '';
     dcache.clear();
     render();
@@ -264,8 +266,8 @@ export function mountStatsPage(root, controller, deps = {}) {
       card('Total', has ? formatDuration(info.total) : '—'),
       card('Active days', has ? String(info.activeDays) : '—'),
       card('Average per active day', has ? formatDuration(info.perActiveDay) : '—'),
-      card('Share of total', has ? (info.shareOfTotal > 0 && pct === 0 ? '<1%' : `${pct}%`) : '—'),
-      card('Peak hour', peak == null ? '—' : `${p2(peak)}:00`)));
+      card('Share of total', has ? (info.shareOfTotal > 0 && pct === 0 ? '<1%' : `${pct}%`) : '—', drill.kind === 'site' ? 'of all usage' : ''),
+      card(`Peak hour on ${drillDay}`, peak == null ? '—' : `${p2(peak)}:00`)));
     out.append(section('Daily trend', h('div', { class: 'fr-chart-scroll' }, dailyTrendBars(info.daily))));
     out.append(drillTimeline(info));
     if (info.sites.length) {
@@ -403,7 +405,7 @@ export function mountStatsPage(root, controller, deps = {}) {
     if (a.perApp.length) {
       sec.append(h('h4', {}, 'Apps by average per active day'),
         h('ol', { class: 'fr-avglist', 'aria-label': 'Apps by average per active day' }, ...a.perApp.slice(0, 10).map((app) =>
-          h('li', { 'data-fk': `avg-app-${app.name}` }, h('span', {}, h('button', { type: 'button', class: 'fr-linkbtn', 'data-fk': `app-${app.name}`, onclick: () => openDrill(app.name, 'app') }, app.name)), h('strong', {}, formatDuration(app.perActiveDay)),
+          h('li', { 'data-fk': `avg-app-${app.name}` }, h('span', {}, h('button', { type: 'button', class: 'fr-linkbtn', 'data-fk': `avgapp-${app.name}`, onclick: () => openDrill(app.name, 'app', `avgapp-${app.name}`) }, app.name)), h('strong', {}, formatDuration(app.perActiveDay)),
             h('span', { class: 'fr-muted fr-small' }, `${dayCount(app.activeDays)} active`)))));
     }
     return sec;

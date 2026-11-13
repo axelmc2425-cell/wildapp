@@ -573,7 +573,7 @@ test('clicking a ranked app opens the drill-down with exact total, active days, 
   assert.ok(cards.includes('Active days2'), cards.join('|'));
   assert.ok(cards.includes('Average per active day1h 15m'), cards.join('|')); // 9000 / 2
   assert.ok(cards.includes('Share of total83%'), cards.join('|')); // 9000 / 10800
-  assert.ok(cards.some((c) => c === 'Peak hour01:00'), cards.join('|'));
+  assert.ok(cards.some((c) => c === 'Peak hour on 2026-11-10' + '01:00'), cards.join('|'));
   assert.ok(findAll(body, (n) => (n.getAttribute('class') || '').includes('fr-chart-trend')).length >= 1);
   assert.equal(sessionCalls.at(-1), '2026-11-10'); // latest day with usage
   assert.doesNotMatch(text(body), /NaN|Infinity|undefined/);
@@ -583,9 +583,11 @@ test('the same rows open from the average-per-active-day list', async () => {
   const r = setupDrill(); await tick();
   const inAvg = findAll(r.body, (n) => n.getAttribute('data-fk') === 'avg-app-code.exe')[0];
   const b = findAll(inAvg, (n) => n.tag === 'button')[0];
-  assert.equal(b.getAttribute('data-fk'), 'app-code.exe');
+  assert.equal(b.getAttribute('data-fk'), 'avgapp-code.exe');
   await b.click(); await tick();
   assert.ok(fk(r.body, 'drill-back'));
+  await fk(r.body, 'drill-back').click();
+  assert.equal(globalThis.document.activeElement.getAttribute('data-fk'), 'avgapp-code.exe'); // focus returns to the opener
 });
 
 test('Back returns to the main view with period and table state intact', async () => {
@@ -612,7 +614,7 @@ test('a day with no stretches for the item says so', async () => {
   const { body } = await openApp({ sessions: (day) => ({ ok: true, day, truncated: false, stretches: [dst(day, 100, 400, 'other.exe')] }) });
   assert.match(text(body), /No time recorded for code\.exe on this day\./);
   assert.ok(findAll(body, (n) => n.tag === 'svg' && (n.getAttribute('class') || '').includes('fr-chart-timeline')).length === 0);
-  assert.ok(findAll(body, (n) => n.className === 'fr-statcard' && n.textContent === 'Peak hour—').length === 1);
+  assert.ok(findAll(body, (n) => n.className === 'fr-statcard' && n.textContent === 'Peak hour on 2026-11-10—').length === 1);
 });
 
 test('day navigation requests the previous day and next is disabled on today', async () => {
@@ -634,7 +636,7 @@ test('a day older than 90 days shows the not-kept message and never calls getSes
   assert.equal(r.sessionCalls.length, 0);
   const cards = findAll(r.body, (n) => n.className === 'fr-statcard').map((n) => n.textContent);
   assert.ok(cards.includes('Total20m'));
-  assert.ok(cards.includes('Peak hour—'));
+  assert.ok(cards.includes('Peak hour on 2026-01-05—'));
   // stepping forward from there into the kept window starts loading again
   for (let i = 0; i < 400 && !r.sessionCalls.length; i++) await fk(r.body, 'drill-next').click();
   assert.ok(r.sessionCalls.length >= 1);
@@ -651,7 +653,7 @@ test('a site drill-down filters the timeline by site and omits the sites-used li
   assert.doesNotMatch(text(body), /Sites used/);
   const cards = findAll(body, (n) => n.className === 'fr-statcard').map((n) => n.textContent);
   assert.ok(cards.includes('Total30m'));
-  assert.ok(cards.includes('Share of total50%')); // 1800 of 3600
+  assert.ok(cards.includes('Share of total50%of all usage')); // 1800 of 3600
 });
 
 test('a browser drill-down lists the sites used inside it', async () => {
@@ -716,4 +718,25 @@ test('a failed session load shows the message', async () => {
   const { body } = await openApp({ sessions: () => ({ ok: false, down: false, message: 'bad day' }) });
   assert.match(text(body), /bad day/);
   assert.ok(fk(body, 'drill-back'));
+});
+
+test('the peak-hour card names the day shown and follows day navigation', async () => {
+  const { body } = await openApp();
+  const peak = () => findAll(body, (n) => n.className === 'fr-statcard' && n.textContent.startsWith('Peak hour')).map((n) => n.textContent);
+  assert.deepEqual(peak(), ['Peak hour on 2026-11-10' + '01:00']);
+  await fk(body, 'drill-prev').click(); await tick();
+  assert.deepEqual(peak(), ['Peak hour on 2026-11-09' + '01:00']);
+});
+
+test('the 90-day boundary: today-89 is kept, today-90 is not', async () => {
+  // today is 2026-11-11: today-89 = 2026-08-14, today-90 = 2026-08-13
+  const usage = () => ({ ok: true, days: [row('2026-08-14', 600, { 'code.exe': 600 })] });
+  const r = setupDrill({ usage }); await tick();
+  await btn(r.body, 'Year').click(); await tick();
+  await fk(r.body, 'app-code.exe').click(); await tick();
+  assert.deepEqual(r.sessionCalls, ['2026-08-14']);
+  assert.doesNotMatch(text(r.body), /kept for 90 days/);
+  await fk(r.body, 'drill-prev').click(); await tick();
+  assert.deepEqual(r.sessionCalls, ['2026-08-14']); // 2026-08-13 loads nothing
+  assert.match(text(r.body), /Detailed timeline is kept for 90 days\./);
 });
