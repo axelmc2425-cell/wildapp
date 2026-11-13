@@ -494,3 +494,151 @@ fn get_usage_rows_include_hours() {
     assert_eq!(r["days"][0]["hours"].as_array().unwrap().len(), 24);
     assert_eq!(r["days"][0]["hours"][9], 7);
 }
+
+fn sessions(d: &mut Daemon, p: &mut Fake, day: &str) -> Value {
+    call(d, p, &json!({"type":"GetSessions","day":day}).to_string(), 0)
+}
+
+#[test]
+fn one_second_reports_make_one_stretch() {
+    let (s, u) = paths("st-one");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    for m in 0..=5 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    let r = sessions(&mut d, &mut p, "2023-11-14");
+    assert_eq!(r["type"], "Sessions");
+    assert_eq!(r["day"], "2023-11-14");
+    assert_eq!(r["truncated"], false);
+    let st = r["stretches"].as_array().unwrap();
+    assert_eq!(st.len(), 1, "{r}");
+    assert_eq!(st[0]["exe"], "a.exe");
+    assert_eq!(st[0]["site"], Value::Null);
+    assert_eq!(st[0]["start"], NOW / 1000 + 0);
+    assert_eq!(st[0]["end"], NOW / 1000 + 5);
+}
+
+#[test]
+fn switching_program_makes_two_stretches() {
+    let (s, u) = paths("st-two");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    for m in 0..=3 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    for m in 4..=6 {
+        call(&mut d, &mut p, &report("b.exe", None, 0), m * 1000);
+    }
+    let r = sessions(&mut d, &mut p, "2023-11-14");
+    let st = r["stretches"].as_array().unwrap();
+    assert_eq!(st.len(), 2, "{r}");
+    assert_eq!((st[0]["exe"].as_str(), st[1]["exe"].as_str()), (Some("a.exe"), Some("b.exe")));
+    assert!(st[0]["end"].as_i64() <= st[1]["start"].as_i64());
+}
+
+#[test]
+fn browser_site_title_sets_site() {
+    let (s, u) = paths("st-site");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    for m in 0..=3 {
+        call(&mut d, &mut p, &chrome("Inbox - Gmail - Google Chrome"), m * 1000);
+    }
+    let r = sessions(&mut d, &mut p, "2023-11-14");
+    let usage_sites = usage(&mut d, &mut p)["days"][0]["sites"].clone();
+    let label = usage_sites.as_object().unwrap().keys().next().cloned();
+    assert_eq!(r["stretches"][0]["site"].as_str().map(String::from), label, "{r} {usage_sites}");
+    assert!(r["stretches"][0]["site"].is_string());
+}
+
+#[test]
+fn idle_sample_ends_the_stretch() {
+    let (s, u) = paths("st-idle");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    for m in 0..=3 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    for m in 4..=9 {
+        call(&mut d, &mut p, &report("a.exe", None, 400), m * 1000);
+    }
+    for m in 10..=12 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    let r = sessions(&mut d, &mut p, "2023-11-14");
+    let st = r["stretches"].as_array().unwrap();
+    assert_eq!(st.len(), 2, "{r}");
+    assert_eq!(st[0]["end"], NOW / 1000 + 3);
+    assert_eq!(st[1]["end"], NOW / 1000 + 12);
+}
+
+#[test]
+fn empty_day_and_bad_day() {
+    let (s, u) = paths("st-empty");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    let r = sessions(&mut d, &mut p, "2023-11-01");
+    assert_eq!(r, json!({"type":"Sessions","day":"2023-11-01","truncated":false,"stretches":[]}));
+    for bad in ["x", "2023-13-01", "../state"] {
+        let r = sessions(&mut d, &mut p, bad);
+        assert_eq!((r["type"].as_str(), r["code"].as_str()), (Some("Error"), Some("bad-request")), "{bad}");
+    }
+}
+
+#[test]
+fn stretches_survive_restart_and_prune_deletes_old_files() {
+    let (s, u) = paths("st-restart");
+    {
+        let mut d = Daemon::load_with_usage(&s, &u);
+        let mut p = Fake;
+        for m in 0..=4 {
+            call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+        }
+        d.flush_usage();
+    }
+    let dir = s.parent().unwrap();
+    assert!(dir.join("sessions-2023-11-14.json").exists());
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    let r = sessions(&mut d, &mut p, "2023-11-14");
+    assert_eq!(r["stretches"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["stretches"][0]["end"], NOW / 1000 + 4);
+
+    // 100 older days on disk: after a flush with new data only the newest 90 remain.
+    let old: Vec<String> = (0..100)
+        .map(|i| {
+            let n = focus_helper::usage::day_number("2023-08-01").unwrap() + i;
+            let (y, m, dd) = civil(n);
+            format!("{y:04}-{m:02}-{dd:02}")
+        })
+        .collect();
+    for day in &old {
+        focus_helper::sessions::save_day(dir, day, &Default::default()).unwrap();
+    }
+    for m in 5..=8 {
+        call(&mut d, &mut p, &report("a.exe", None, 0), m * 1000);
+    }
+    d.flush_usage();
+    let count = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".json") && e.file_name().to_string_lossy().starts_with("sessions-"))
+        .count();
+    assert_eq!(count, 90);
+    assert!(!dir.join(format!("sessions-{}.json", old[0])).exists(), "oldest deleted");
+    assert!(dir.join("sessions-2023-11-14.json").exists(), "newest kept");
+}
+
+fn civil(z: i64) -> (i64, i64, i64) {
+    let z = z + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}

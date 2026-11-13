@@ -91,6 +91,27 @@ fn add_usage(line: &str, daemon: &mut Daemon) -> Option<String> {
     }
 }
 
+/// Test-only: `{"type":"AddSessions","day":"YYYY-MM-DD","truncated":false,"stretches":[...]}`
+/// seeds (and saves) a day of stretches.
+#[cfg(feature = "test-clock")]
+fn add_sessions(line: &str, daemon: &mut Daemon) -> Option<String> {
+    use focus_helper::sessions::{DayStretches, Stretch};
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("type")?.as_str()? != "AddSessions" {
+        return None;
+    }
+    let day = v.get("day").and_then(|d| d.as_str()).filter(|d| focus_helper::usage::is_valid_day(d));
+    let stretches = v.get("stretches").cloned().and_then(|s| serde_json::from_value::<Vec<Stretch>>(s).ok());
+    match (day, stretches) {
+        (Some(day), Some(stretches)) => {
+            let truncated = v.get("truncated").and_then(|t| t.as_bool()).unwrap_or(false);
+            daemon.add_sessions(day, DayStretches { truncated, stretches });
+            Some(r#"{"type":"Ok"}"#.to_string())
+        }
+        _ => Some(r#"{"type":"Error","code":"bad-request","message":"AddSessions needs a day and stretches"}"#.to_string()),
+    }
+}
+
 fn stdio(state: PathBuf) -> ExitCode {
     let mut daemon = Daemon::load(&state);
     let mut platform = NullPlatform;
@@ -114,6 +135,13 @@ fn stdio(state: PathBuf) -> ExitCode {
         }
         #[cfg(feature = "test-clock")]
         if let Some(reply) = add_usage(&line, &mut daemon) {
+            if writeln!(stdout, "{reply}").and_then(|_| stdout.flush()).is_err() {
+                break;
+            }
+            continue;
+        }
+        #[cfg(feature = "test-clock")]
+        if let Some(reply) = add_sessions(&line, &mut daemon) {
             if writeln!(stdout, "{reply}").and_then(|_| stdout.flush()).is_err() {
                 break;
             }

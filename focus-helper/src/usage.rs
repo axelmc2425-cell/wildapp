@@ -58,6 +58,14 @@ pub fn truncate_title(s: &str, max: usize) -> String {
 
 const OTHER: &str = "other";
 
+/// The website label for a browser sample (`None` for other programs or unmatched titles).
+pub fn site_label(exe: &str, title: Option<&str>, stems: &[String]) -> Option<String> {
+    if !is_browser(exe) {
+        return None;
+    }
+    title.and_then(|t| match_site(t, stems))
+}
+
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq, Eq, Debug)]
 pub struct DayUsage {
     pub day: String,
@@ -170,7 +178,7 @@ impl UsageStore {
         day.total += secs;
         add_capped(&mut day.apps, &s.exe.to_lowercase(), secs);
         if is_browser(&s.exe) {
-            match s.title.as_deref().and_then(|t| match_site(t, stems)) {
+            match site_label(&s.exe, s.title.as_deref(), stems) {
                 Some(label) => add_capped(&mut day.sites, &label, secs),
                 None => day.other_browsing += secs,
             }

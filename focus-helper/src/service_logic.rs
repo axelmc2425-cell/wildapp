@@ -158,9 +158,31 @@ pub enum ChildAction {
 /// `.bak`). They are the only copy of the unreadable data and must never be deleted.
 pub fn is_quarantine_name(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    ["state.json.corrupt-", "usage.json.corrupt-", "state.json.bak.corrupt-", "usage.json.bak.corrupt-"]
+    if ["state.json.corrupt-", "usage.json.corrupt-", "state.json.bak.corrupt-", "usage.json.bak.corrupt-"]
         .iter()
         .any(|p| n.starts_with(p))
+    {
+        return true;
+    }
+    session_file_suffix(&n)
+        .and_then(|t| t.strip_prefix(".corrupt-").or_else(|| t.strip_prefix(".bak.corrupt-")))
+        .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// For a lowercased `sessions-YYYY-MM-DD.json<tail>` name with a real date, the `<tail>`
+/// (`""`, `.bak`, `.tmp`, `.corrupt-1`, ...).
+fn session_file_suffix(n: &str) -> Option<&str> {
+    let rest = n.strip_prefix("sessions-")?;
+    let day = rest.get(..10)?;
+    if !crate::usage::is_valid_day(day) {
+        return None;
+    }
+    rest[10..].strip_prefix(".json")
+}
+
+/// `sessions-YYYY-MM-DD.json` and its `.bak` / `.tmp` companions.
+fn is_session_state_name(name: &str) -> bool {
+    matches!(session_file_suffix(&name.to_ascii_lowercase()), Some("" | ".bak" | ".tmp"))
 }
 
 /// Decide what to do with one immediate child of an adopted state directory. Reparse points are
@@ -170,7 +192,7 @@ pub fn classify_child(name: &str, is_dir: bool, is_reparse: bool) -> ChildAction
         ChildAction::RemoveLink
     } else if is_dir {
         ChildAction::QuarantineDir
-    } else if EXPECTED_STATE_FILES.iter().any(|f| f.eq_ignore_ascii_case(name)) || is_quarantine_name(name) {
+    } else if EXPECTED_STATE_FILES.iter().any(|f| f.eq_ignore_ascii_case(name)) || is_session_state_name(name) || is_quarantine_name(name) {
         ChildAction::ResetAcl
     } else {
         ChildAction::RemoveFile
@@ -641,6 +663,19 @@ mod tests {
         assert_eq!(classify_child("STATE.JSON.BAK", false, false), ResetAcl);
         assert_eq!(classify_child("service.log.old", false, false), ResetAcl);
         assert_eq!(classify_child("sub", true, false), QuarantineDir);
+        for n in [
+            "sessions-2026-11-13.json", "sessions-2026-11-13.json.bak", "sessions-2026-11-13.json.tmp",
+            "sessions-2026-11-13.json.corrupt-123", "Sessions-2026-11-13.JSON.BAK", "sessions-2026-11-13.json.bak.corrupt-9",
+        ] {
+            assert_eq!(classify_child(n, false, false), ResetAcl, "{n}");
+        }
+        assert!(is_quarantine_name("sessions-2026-11-13.json.corrupt-123"));
+        assert!(!is_quarantine_name("sessions-2026-11-13.json"));
+        for n in ["sessions-x.json", "sessions-2026-13-45.json", "sessions-2026-11-13.json.evil", "sessions-2026-11-13.txt", "sessions-2026-11-13.json.corruptx", "sessions-2026-11-13.json.corrupt-1x", "sessions-2026-11-13.json.corrupt-"] {
+            assert_eq!(classify_child(n, false, false), RemoveFile, "{n}");
+        }
+        assert_eq!(classify_child("sessions-2026-11-13.json", false, true), RemoveLink);
+        assert_eq!(classify_child("sessions-2026-11-13.json", true, false), QuarantineDir);
         assert_eq!(classify_child("usage.json.corrupt-1700000000000", false, false), ResetAcl);
         assert_eq!(classify_child("state.json.corrupt-1700000000000", false, false), ResetAcl);
         assert_eq!(classify_child("State.json.bak.corrupt-17", false, false), ResetAcl);

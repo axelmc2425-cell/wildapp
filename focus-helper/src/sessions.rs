@@ -12,7 +12,7 @@ use crate::usage::{is_valid_day, with_suffix};
 pub const MAX_STRETCHES_PER_DAY: usize = 20_000;
 pub const KEEP_SESSION_DAYS: usize = 90;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stretch {
     pub start: i64,
     pub end: i64,
@@ -20,7 +20,7 @@ pub struct Stretch {
     pub site: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct DayStretches {
     pub truncated: bool,
     pub stretches: Vec<Stretch>,
@@ -90,6 +90,17 @@ impl SessionStore {
         }
         self.days.insert(day.to_string(), d);
         self.dirty.insert(day.to_string());
+    }
+
+    /// Inserts a day read from disk without marking it dirty.
+    pub fn insert_loaded(&mut self, day: &str, d: DayStretches) {
+        if is_valid_day(day) {
+            self.days.insert(day.to_string(), d);
+        }
+    }
+
+    pub fn has_day(&self, day: &str) -> bool {
+        self.days.contains_key(day)
     }
 
     /// Keeps the newest `KEEP_SESSION_DAYS` days.
