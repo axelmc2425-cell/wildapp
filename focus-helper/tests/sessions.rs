@@ -88,7 +88,7 @@ fn hostile_days_are_rejected() {
     for bad in ["../x", "a/b", "", "2026-11-13/../..", "..\\x"] {
         assert!(session_file(&dir, bad).is_none());
         assert_eq!(save_day(&dir, bad, &d).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
-        assert_eq!(load_day(&dir, bad, 1), None);
+        assert_eq!(load_day(&dir, bad, 1).day, None);
         s.record(bad, "a", None, 1, 2, 1);
         s.set_day(bad, d.clone());
         assert!(s.day(bad).is_none());
@@ -150,7 +150,8 @@ fn save_load_roundtrip() {
     let d = DayStretches { truncated: true, stretches: vec![st(1, 5, "a", Some("x.com"))] };
     save_day(&dir, D, &d).unwrap();
     assert_eq!(session_file(&dir, D).unwrap(), dir.join("sessions-2026-11-13.json"));
-    assert_eq!(load_day(&dir, D, 1), Some((d, false)));
+    let l = load_day(&dir, D, 1);
+    assert_eq!((l.day, l.from_backup, l.quarantined), (Some(d), false, None));
 }
 
 #[test]
@@ -161,7 +162,9 @@ fn load_falls_back_to_bak() {
     save_day(&dir, D, &d1).unwrap();
     save_day(&dir, D, &d2).unwrap();
     fs::write(session_file(&dir, D).unwrap(), b"garbage").unwrap();
-    assert_eq!(load_day(&dir, D, 7), Some((d1, true)));
+    let l = load_day(&dir, D, 7);
+    assert_eq!((l.day, l.from_backup), (Some(d1), true));
+    assert_eq!(l.quarantined, Some(dir.join("sessions-2026-11-13.json.corrupt-7")));
     assert!(dir.join("sessions-2026-11-13.json.corrupt-7").exists());
 }
 
@@ -169,7 +172,9 @@ fn load_falls_back_to_bak() {
 fn corrupt_file_is_quarantined_and_returns_none() {
     let dir = tmp("corrupt");
     fs::write(session_file(&dir, D).unwrap(), b"garbage").unwrap();
-    assert_eq!(load_day(&dir, D, 42), None);
+    let l = load_day(&dir, D, 42);
+    assert_eq!(l.day, None);
+    assert_eq!(l.quarantined, Some(dir.join("sessions-2026-11-13.json.corrupt-42")));
     assert!(!session_file(&dir, D).unwrap().exists());
     assert!(dir.join("sessions-2026-11-13.json.corrupt-42").exists());
 }
@@ -177,7 +182,7 @@ fn corrupt_file_is_quarantined_and_returns_none() {
 #[test]
 fn no_file_returns_none() {
     let dir = tmp("none");
-    assert_eq!(load_day(&dir, D, 1), None);
+    assert_eq!(load_day(&dir, D, 1).day, None);
 }
 
 #[test]
@@ -202,4 +207,15 @@ fn delete_old_files_removes_unlisted_days() {
     assert!(!session_file(&dir, "2026-11-12").unwrap().exists());
     assert!(session_file(&dir, "2026-11-13").unwrap().exists());
     assert!(dir.join("other.json").exists());
+}
+
+#[test]
+fn read_error_is_not_quarantined() {
+    let dir = tmp("readerr");
+    // A directory where the file should be: reading fails, but the bytes were never judged corrupt.
+    fs::create_dir(session_file(&dir, D).unwrap()).unwrap();
+    let l = load_day(&dir, D, 5);
+    assert_eq!((l.day, l.quarantined), (None, None));
+    assert!(session_file(&dir, D).unwrap().exists());
+    assert!(!dir.join("sessions-2026-11-13.json.corrupt-5").exists());
 }

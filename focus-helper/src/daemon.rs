@@ -71,6 +71,8 @@ pub struct Daemon {
     /// Set while the latest usage save failed; cleared by the next successful save.
     usage_error: Option<String>,
     sessions_error: Option<String>,
+    /// Set when a stretch file was quarantined or recovered from its backup; shown in Status.
+    sessions_warning: Option<String>,
     /// Latest reported day; the only clean day kept in memory.
     current_day: Option<String>,
     /// Monotonic time up to which reported seconds have been accounted; `None` before the first report.
@@ -140,6 +142,7 @@ impl Daemon {
             usage_warning,
             usage_error: None,
             sessions_error: None,
+            sessions_warning: None,
             current_day: None,
             report_anchor_mono: None,
             last_report_mono: None,
@@ -163,6 +166,7 @@ impl Daemon {
             .cloned()
             .chain(self.usage_warning.iter().cloned())
             .chain(self.usage_error.iter().map(|e| format!("usage: {e}")))
+            .chain(self.sessions_warning.iter().cloned())
             .chain(self.sessions_error.iter().map(|e| format!("sessions: {e}")))
             .chain(self.persist_error.iter().map(|e| format!("persist: {e}")))
             .chain(self.doh_warnings.iter().cloned())
@@ -260,12 +264,22 @@ impl Daemon {
         }
     }
 
-    fn read_day_from_disk(&self, day: &str) -> Option<DayStretches> {
+    fn read_day_from_disk(&mut self, day: &str) -> Option<DayStretches> {
         let unix_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        sessions::load_day(&self.sessions_dir, day, unix_ms).map(|(d, _)| d)
+        let l = sessions::load_day(&self.sessions_dir, day, unix_ms);
+        if let Some(p) = &l.quarantined {
+            self.sessions_warning = Some(if l.from_backup {
+                format!("sessions: {day} loaded from backup — unreadable file kept as {}", p.display())
+            } else {
+                format!("sessions: {day} unreadable, kept as {}", p.display())
+            });
+        } else if l.from_backup {
+            self.sessions_warning = Some(format!("sessions: {day} loaded from backup"));
+        }
+        l.day
     }
 
     /// Days of stretches currently held in memory.
@@ -324,10 +338,13 @@ impl Daemon {
         if sample.idle_secs <= usage::IDLE_LIMIT_SECS {
             let secs = (elapsed as u64).min(usage::MAX_SAMPLE_SECS);
             let end = wall_ms.div_euclid(1000);
+            // Gap tolerance follows the sampler's nominal interval, not the (capped) elapsed time,
+            // so a lock or stall never lets a stretch be extended over time that was not counted.
+            let nominal = if secs <= 5 { secs } else { 1 };
             let site = usage::site_label(&sample.exe, sample.title.as_deref(), &stems);
             self.current_day = Some(sample.day.clone());
             self.ensure_day_loaded(&sample.day);
-            self.sessions.record(&sample.day, &sample.exe.to_lowercase(), site.as_deref(), end - secs as i64, end, secs);
+            self.sessions.record(&sample.day, &sample.exe.to_lowercase(), site.as_deref(), end - secs as i64, end, nominal);
         }
         self.usage.record(Some(&sample), elapsed as u64, &stems);
         self.maybe_flush_usage(mono_ms);

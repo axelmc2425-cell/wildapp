@@ -148,13 +148,32 @@ pub fn session_file(dir: &Path, day: &str) -> Option<PathBuf> {
     is_valid_day(day).then(|| dir.join(format!("sessions-{day}.json")))
 }
 
-fn read_day(path: &Path) -> Option<DayStretches> {
-    let raw = fs::read(path).ok()?;
-    let f: FileV1 = serde_json::from_slice(&raw).ok()?;
-    if f.version != 1 {
-        return None;
+enum Read {
+    Ok(DayStretches),
+    Missing,
+    /// The bytes were read but are not a valid day file.
+    Bad,
+    /// The file exists but could not be read (sharing violation, permission, ...).
+    Unreadable,
+}
+
+fn read_file(path: &Path) -> Read {
+    let raw = match fs::read(path) {
+        Ok(r) => r,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Read::Missing,
+        Err(_) => return Read::Unreadable,
+    };
+    match serde_json::from_slice::<FileV1>(&raw) {
+        Ok(f) if f.version == 1 => Read::Ok(DayStretches { truncated: f.truncated, stretches: f.stretches }),
+        _ => Read::Bad,
     }
-    Some(DayStretches { truncated: f.truncated, stretches: f.stretches })
+}
+
+fn read_day(path: &Path) -> Option<DayStretches> {
+    match read_file(path) {
+        Read::Ok(d) => Some(d),
+        _ => None,
+    }
 }
 
 /// Atomic save: previous good file kept as `.bak`, new state to `.tmp`, fsync, rename.
@@ -183,21 +202,44 @@ pub fn save_day(dir: &Path, day: &str, d: &DayStretches) -> io::Result<()> {
     Ok(())
 }
 
-/// Loads a day. The bool is true when it came from the backup. Unparseable files are renamed
-/// to `<name>.corrupt-<unix_ms>`; `None` when nothing usable exists.
-pub fn load_day(dir: &Path, day: &str, unix_ms: i64) -> Option<(DayStretches, bool)> {
-    let path = session_file(dir, day)?;
-    if let Some(d) = read_day(&path) {
-        return Some((d, false));
+/// Result of `load_day`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DayLoad {
+    /// `None` when nothing usable exists (or a file could not be read right now).
+    pub day: Option<DayStretches>,
+    /// True when `day` came from the backup.
+    pub from_backup: bool,
+    /// Where the unparseable main file was moved to, if it was.
+    pub quarantined: Option<PathBuf>,
+}
+
+/// Loads a day. Files that were read but do not parse are renamed to
+/// `<name>.corrupt-<unix_ms>`. A file that cannot be read at all (transient error) is left
+/// untouched and nothing is renamed, so the next attempt can try again.
+pub fn load_day(dir: &Path, day: &str, unix_ms: i64) -> DayLoad {
+    let Some(path) = session_file(dir, day) else { return DayLoad::default() };
+    let main = read_file(&path);
+    if let Read::Ok(d) = main {
+        return DayLoad { day: Some(d), from_backup: false, quarantined: None };
     }
     let bak = with_suffix(&path, ".bak");
-    let backup = read_day(&bak);
-    for p in [&path, &bak] {
-        if p.exists() && read_day(p).is_none() {
-            let _ = fs::rename(p, with_suffix(p, &format!(".corrupt-{unix_ms}")));
+    let backup = read_file(&bak);
+    if matches!(main, Read::Unreadable) || matches!(backup, Read::Unreadable) {
+        return DayLoad::default();
+    }
+    let mut quarantined = None;
+    for (p, r) in [(&path, &main), (&bak, &backup)] {
+        if matches!(r, Read::Bad) {
+            let to = with_suffix(p, &format!(".corrupt-{unix_ms}"));
+            if fs::rename(p, &to).is_ok() && quarantined.is_none() {
+                quarantined = Some(to);
+            }
         }
     }
-    backup.map(|d| (d, true))
+    match backup {
+        Read::Ok(d) => DayLoad { day: Some(d), from_backup: true, quarantined },
+        _ => DayLoad { day: None, from_backup: false, quarantined },
+    }
 }
 
 /// Deletes `sessions-<day>.json` (and `.bak`/`.tmp`) for days not in `keep_days`.
