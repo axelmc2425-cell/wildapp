@@ -84,6 +84,15 @@ The owner approved approach 2 in conversation.
 - Screenshots (light and dark) of Today timeline at each zoom, heatmap, averages, drill-down, empty and helper-down states.
 - Windows manual checklist: second accuracy against a stopwatch, idle exclusion, lock exclusion, a browser site, upgrade from an install with existing `usage.json`.
 
+## Decisions from the builder check (my calls; change if wrong)
+
+- **Local time is owned by the sampler.** Each report carries the user's local `day` and local `hour` (the service runs as SYSTEM and may have a different time zone). Stretches are stored as unix seconds plus that local day. On a daylight-saving day the repeated hour is summed into one slot.
+- **Old sampler after upgrade:** it keeps sending 5-second reports without `hour` until the next sign-in. The service accepts them: daily totals and stretches still work, `hours` is skipped for that time. The stretch gap rule is "more than 2 s or 2x the report interval, whichever is larger". The 15 s cap applies to the span of one report.
+- **Storage:** one file per day, rewritten atomically at most once a minute (about 1 MB at the 20,000 cap). A crash can lose up to a minute of stretches; `usage.json` totals are the authority. A day that hit the cap is marked truncated and the UI says "timeline incomplete after N stretches; totals are complete".
+- **Definitions:** a focus stretch is an unbroken run in the same program, ending on a program change, idle or lock. Switches per active hour count program changes only (a website change inside a browser is not a switch). The same stretches feed the timeline and these metrics.
+- **Ranges:** averages and heatmap follow the Day, Week, Month, Year selector. For Day, the hour chart shows that single day. Per-hour averages divide by days that have `hours` data, and the chart says how many days are included.
+- **Drill-down:** the per-day timeline for an app or site covers the last 90 days; its daily trend, averages and the site breakdown inside a browser come from daily totals and so cover the full 730 days.
+
 ## Left to the builder
 
 Report batching, file formats for stretch files, chart styling details, and the exact zoom levels and gestures.
