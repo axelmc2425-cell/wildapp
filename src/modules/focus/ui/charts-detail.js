@@ -101,7 +101,8 @@ export function timelineLegend(names, colorOf = () => 0) {
 export function hourBars(hours, daysCounted) {
   const vals = Array.from({ length: 24 }, (_, i) => secsOf(Array.isArray(hours) ? hours[i] : 0));
   const days = Number.isFinite(daysCounted) && daysCounted > 0 ? Math.floor(daysCounted) : 0;
-  const W = 480; const H = 160; const L = 4; const R = 4; const T = 10; const B = 22;
+  // Same 560-wide frame, left offset and 22-unit hour pitch as the weekday-by-hour heatmap, so the hours line up.
+  const W = 560; const H = 160; const L = 32; const R = 0; const T = 10; const B = 22;
   const pw = W - L - R; const ph = H - T - B;
   if (days === 0) return root(W, H, 'Hour-of-day detail is not recorded for this period.', 'fr-chart-hours');
   const peak = Math.max(...vals);
@@ -132,13 +133,13 @@ export function weekdayHourHeatmap(grid) {
   let max = 0;
   for (let r = 0; r < 7; r += 1) for (let c = 0; c < 24; c += 1) max = Math.max(max, val(r, c));
   const svg = root(W, H, max > 0 ? `Average screen time by weekday and hour of day. Busiest slot ${formatDuration(max)}.` : NO_DATA, 'fr-chart-heat fr-chart-weekhour');
-  for (let c = 0; c < 24; c += 3) svg.append(text(L + c * (CW + GAP), T - 5, 'start', p2(c)));
+  for (let c = 0; c < 24; c += 3) svg.append(text(L + c * (CW + GAP) + (CW + GAP) / 2, T - 5, 'middle', p2(c)));
   for (let r = 0; r < 7; r += 1) {
     svg.append(text(L - 4, T + r * (CH + GAP) + CH - 5, 'end', WEEKDAYS[r]));
     for (let c = 0; c < 24; c += 1) {
       const s = val(r, c);
       svg.append(svgEl('rect', {
-        x: L + c * (CW + GAP), y: T + r * (CH + GAP), width: CW, height: CH, rx: 2,
+        x: L + c * (CW + GAP) + GAP / 2, y: T + r * (CH + GAP), width: CW, height: CH, rx: 2,
         class: `fr-heat-cell fr-heat-${heatLevel(s, max)}`,
       }, title(`${WEEKDAYS[r]} ${p2(c)}:00: ${formatDuration(s)} on average`)));
     }

@@ -243,6 +243,10 @@ export function mountStatsPage(root, controller, deps = {}) {
     const from = dayStartSec(drillDay);
     const to = dayStartSec(addDays(drillDay, 1));
     const blocks = timelineWindow(mine, from, to);
+    if (!data.stretches.length) {
+      sec.append(h('p', { class: 'fr-statnote', 'data-fk': 'drill-nodetail' }, 'Detailed timeline not available for this day; daily totals only.'));
+      return sec;
+    }
     if (!blocks.length) {
       sec.append(h('p', { class: 'fr-statnote', 'data-fk': 'drill-none' }, `No time recorded for ${drill.name} on this day.`));
       return sec;
@@ -379,8 +383,8 @@ export function mountStatsPage(root, controller, deps = {}) {
       sec.append(dataTable(rows, [{ key: 'hour', label: 'Hour' }, { key: 'secs', label: 'Average', format: formatDuration }], 'Hours of the day'));
       return sec;
     }
-    sec.append(hourBars(avg.hours, avg.daysCounted));
-    if (period !== 'day') sec.append(h('div', { class: 'fr-chart-scroll' }, weekdayHourHeatmap(weekdayHourGrid(entry.days).grid)));
+    if (period === 'day') sec.append(hourBars(avg.hours, avg.daysCounted));
+    else sec.append(h('div', { class: 'fr-chart-scroll fr-hourswrap' }, hourBars(avg.hours, avg.daysCounted), weekdayHourHeatmap(weekdayHourGrid(entry.days).grid)));
     return sec;
   }
 
@@ -475,6 +479,7 @@ export function mountStatsPage(root, controller, deps = {}) {
     const total = Number.isFinite(entry.total) ? entry.total : 0;
     const m = focusMetrics(entry.stretches);
     const out = h('div', { class: 'fr-statbody' });
+    if (!entry.stretches.length && entry.total == null) return h('p', { class: 'fr-statnote', 'data-fk': 'totals-unavailable' }, 'Totals unavailable');
     if (!entry.stretches.length && !(total > 0)) return h('p', { class: 'fr-statnote', 'data-fk': 'empty' }, 'No usage recorded yet for this period');
     if (!entry.stretches.length) {
       out.append(h('p', { class: 'fr-statnote', 'data-fk': 'no-detail' }, 'Detailed timeline not available for this day; daily totals only.'),
@@ -484,7 +489,8 @@ export function mountStatsPage(root, controller, deps = {}) {
     if (entry.truncated) out.append(h('p', { class: 'fr-statnote fr-warn', role: 'status', 'data-fk': 'truncated' }, `Timeline incomplete after ${entry.stretches.length} stretches; totals are complete.`));
     const sk = streak ? activeStreaks(streak.days, todayKey()) : null;
     const days = (n) => `${n} ${n === 1 ? 'day' : 'days'}`;
-    const active = entry.truncated && total > 0 ? total : m.activeSecs;
+    // The usage total keeps counting when stretches are dropped (clock steps, truncation), so never show less.
+    const active = Math.max(m.activeSecs, total > 0 ? total : 0);
     out.append(h('div', { class: 'fr-statcards' },
       card('Active time', formatDurationSecs(active)),
       card('Longest stretch', m.longestStretchSecs > 0 ? formatDurationSecs(m.longestStretchSecs) : '—', m.longestStretchExe != null ? programName(m.longestStretchExe) : ''),
@@ -500,17 +506,18 @@ export function mountStatsPage(root, controller, deps = {}) {
     const p = stripPieces(entry);
     windowEl = h('span', { class: 'fr-windowlabel', 'data-fk': 'window', 'aria-live': 'polite' }, p.label);
     stripHost = h('div', { class: 'fr-chart-scroll', 'data-fk': 'strip' }, p.strip, p.legend);
-    const zoomBar = h('div', { class: 'fr-period', role: 'group', 'aria-label': 'Zoom' },
+    const zoomBar = h('div', { class: 'fr-period fr-zoom', role: 'group', 'aria-label': 'Zoom' },
       ZOOMS.map(([id, label]) => h('button', {
         type: 'button', class: `fr-pbtn${id === zoom ? ' fr-on' : ''}`, 'aria-pressed': id === zoom ? 'true' : 'false', 'data-fk': `zoom-${id}`,
         onclick: () => { zoom = id; panOff = null; render(); },
       }, label)));
-    const sec = section('Timeline', zoomBar, windowEl);
+    const ctl = h('div', { class: 'fr-timelinectl' }, zoomBar, windowEl);
+    const sec = section('Timeline', ctl);
     if (p.w.winLen < p.w.dayLen) {
       const pan = h('input', { type: 'range', min: 0, max: p.w.dayLen - p.w.winLen, step: 60, value: p.w.off, class: 'fr-pan', 'data-fk': 'pan', 'aria-label': 'Scroll the timeline',
         oninput: () => { const v = Number(pan.value); if (Number.isFinite(v)) { panOff = v; updateStrip(entry); lastSig = signature(); } } });
       pan.value = String(p.w.off);
-      sec.append(pan);
+      ctl.append(pan);
     }
     sec.append(stripHost);
     out.append(sec);

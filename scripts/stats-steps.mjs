@@ -120,18 +120,20 @@ export default async function steps(page, shot, h) {
 
 // ---- detailed analytics: Today timeline, hour charts, averages, drill-down ----
 const midnight = (back) => { const d = new Date(); return Math.floor(new Date(d.getFullYear(), d.getMonth(), d.getDate() - back).getTime() / 1000); };
-// A believable working day: [startHour, minutes, exe, site]
-const PLAN = [[8.5, 40, 'code.exe', null], [9.2, 25, 'chrome.exe', 'GitHub'], [9.7, 50, 'code.exe', null], [10.6, 12, 'chrome.exe', 'YouTube'], [10.9, 35, 'slack.exe', null],
-  [11.6, 70, 'code.exe', null], [13.1, 20, 'chrome.exe', 'Reddit'], [13.5, 15, 'chrome.exe', null], [14.0, 55, 'WINWORD.EXE', null], [15.1, 30, 'chrome.exe', 'YouTube'],
-  [15.7, 45, 'code.exe', null], [16.5, 18, 'Teams.exe', null], [16.9, 40, 'code.exe', null]];
+// A believable working day: [startHour, minutes, exe, site, adjacent]. `adjacent` starts the stretch the instant the previous one ends (a program switch with no gap).
+const PLAN = [[8.5, 40, 'code.exe', null], [9.2, 25, 'chrome.exe', 'GitHub', true], [9.7, 50, 'code.exe', null], [10.6, 12, 'chrome.exe', 'YouTube'], [10.9, 35, 'slack.exe', null, true],
+  [11.6, 70, 'code.exe', null], [13.1, 20, 'chrome.exe', 'Reddit'], [13.5, 15, 'chrome.exe', null], [14.0, 55, 'WINWORD.EXE', null, true], [15.1, 30, 'chrome.exe', 'YouTube'],
+  [15.7, 45, 'code.exe', null, true], [16.5, 18, 'Teams.exe', null], [16.9, 40, 'code.exe', null]];
 function stretchesFor(back, nowCap) {
   const base = midnight(back);
   const out = [];
-  for (const [startH, mins, exe, site] of PLAN) {
-    const start = base + Math.round(startH * 3600);
+  let prevEnd = null;
+  for (const [startH, mins, exe, site, adjacent] of PLAN) {
+    const start = adjacent && prevEnd != null ? prevEnd : base + Math.round(startH * 3600);
     let end = start + mins * 60;
     if (nowCap && start >= nowCap) continue;
     if (nowCap) end = Math.min(end, nowCap);
+    prevEnd = end;
     out.push({ start, end, exe: exe.toLowerCase(), site });
   }
   return out;

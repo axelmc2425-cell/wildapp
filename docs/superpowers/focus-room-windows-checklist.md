@@ -252,13 +252,13 @@ With no lock pending, uninstall MyBrain.
 
 ## 18. Detailed analytics (second-level timeline, hours, averages, drill-down)
 
-Focus Room > Stats has a Today tab (a second-accurate timeline of the day with zoom 24 h, 6 h, 1 h and 10 min, plus active time, longest stretch, switches per active hour, first and last activity and streaks), Hours-of-the-day charts and Averages on Week, Month and Year, and a drill-down page for any app or site (daily trend, peak hour, per-day timeline). The helper keeps second detail for 90 days and per-hour totals for 730 days. Sign out and in once after installing so the new 1-second sampler runs.
+Focus Room > Stats has a Today tab (a second-accurate timeline of the day with zoom 24 h, 6 h, 1 h and 10 min, plus active time, longest stretch, switches per active hour, first and last activity and streaks), an Hours-of-the-day bar chart on Day, Week, Month and Year (with the weekday-by-hour heatmap on Week, Month and Year) and Averages, and a drill-down page for any app or site (daily trend, peak hour, per-day timeline). The helper keeps second detail for 90 days and per-hour totals for 730 days. Sign out and in once after installing so the new 1-second sampler runs.
 
 - [ ] Open Today, then switch between Notepad and Calculator at times you note with a stopwatch (for example 2 minutes in each, three rounds) — Expected: at the 10 min zoom the stretch edges match your stopwatch within about 2 seconds
 - [ ] Leave the PC untouched for more than 5 minutes with a program in front — Expected: the timeline shows no stretch for the time after the 5 minute idle limit
 - [ ] Lock the PC (Win+L) for a few minutes, then unlock — Expected: a gap in the timeline for the locked time
 - [ ] Browse two different sites in Chrome or Edge for a few minutes each — Expected: the browser stretches are labelled with the site; the site drill-down shows its stretches on the day it was used
-- [ ] Upgrade over an existing install that already has `usage.json` — Expected: old days keep their totals and charts; on Week/Month the Hours-of-the-day section says "Hour detail is recorded from the update onwards" for days without hours; Today and the drill-down timeline say the detailed timeline is not available for old days
+- [ ] Upgrade over an existing install that already has `usage.json` — Expected: old days keep their totals and charts; the Hours-of-the-day section says "Hour detail is recorded from the update onwards" only when NO day in the range has hour data, otherwise its caption reads "Based on N of M days"; Today and the drill-down timeline say the detailed timeline is not available for old days
 - [ ] Restart the service (`sc stop MyBrainFocus`, then `sc start MyBrainFocus`) after working for a few minutes — Expected: Today still shows the earlier stretches (at most the last minute before a stop is lost only in a crash, not in a normal stop)
 - [ ] Look in `C:\ProgramData\MyBrainFocus` — Expected: `sessions-YYYY-MM-DD.json` files next to `usage.json`, and Focus Room > Stats opens without a warning
 - [ ] Reinstall or update with `sessions-*` files present — Expected: the state directory still adopts cleanly (permissions applied, no errors in the install log); then create an unexpected extra file there (for example `junk.txt`) and reinstall — Expected: the extra file is still removed, the `sessions-*` files stay
@@ -273,6 +273,10 @@ Accepted limits (not failures):
 - Second detail is kept for 90 days and hour totals for 730 days; older days show daily totals only.
 - A very busy day can stop recording stretches (the page says "Timeline incomplete"); totals stay complete.
 - The per-app peak hour is shown for the viewed day only.
+- Stretches are dropped while wall time is behind the last recorded end after a clock step; the totals keep counting, so Today's Active time shows the larger of the two.
+- A short lock or stall can merge or split a stretch by up to a few seconds.
+- The day the update is installed has no hour data for the rest of that day (hours are never mixed with pre-update seconds).
+- If an old and a new sampler both report on one day, hours can end up lower than the day's total.
 - A pan drag can be interrupted when the page refreshes itself every 60 seconds.
 
 ## Report back

@@ -509,7 +509,6 @@ test('averages: exact per-day value, dash for week and month on short ranges, no
   assert.equal(rowsOf('avg-week').textContent, 'Per week—needs 7 days');
   assert.equal(rowsOf('avg-month').textContent, 'Per month—needs 28 days');
   assert.match(t, /Code\.exe|code\.exe/);
-  assert.match(rowsOf('avg-app-code.exe').textContent, /1h 30m/); // 10800 s / 2 active days = 5400 s
   assert.equal(rowsOf('avg-app-code.exe').children[1].textContent, '1h 30m');
   // 2026-11-09 is a Monday: its 7200 s is the Monday average; Tuesday gets the other 3600 s
   assert.equal(rowsOf('avg-wd-Mon').textContent, 'Mon2h 0m');
@@ -739,4 +738,32 @@ test('the 90-day boundary: today-89 is kept, today-90 is not', async () => {
   await fk(r.body, 'drill-prev').click(); await tick();
   assert.deepEqual(r.sessionCalls, ['2026-08-14']); // 2026-08-13 loads nothing
   assert.match(text(r.body), /Detailed timeline is kept for 90 days\./);
+});
+
+// ---- fix wave: honest notes ----
+
+test('Today: failed totals with no stretches say totals are unavailable, not "no usage"', async () => {
+  const { body, stop } = await openToday({ sessions: () => ({ ok: true, truncated: false, stretches: [] }), usage: () => ({ ok: false, down: false, message: 'boom' }) });
+  assert.match(text(body), /Totals unavailable/);
+  assert.doesNotMatch(text(body), /No usage recorded/);
+  stop();
+});
+
+test('Today: Active time prefers the usage total when it exceeds the stretch sum', async () => {
+  const { body, stop } = await openToday({ usage: (from, to) => ({ ok: true, days: from === to ? [row(from, 9000)] : [row('2026-11-11', 9000)] }) });
+  const cards = findAll(body, (n) => n.className === 'fr-statcard').map((n) => n.textContent);
+  assert.ok(cards.some((c) => c.startsWith('Active time') && /2h 30m/.test(c)), cards.join('|'));
+  stop();
+});
+
+test('drill-down: a day without any stretches says the timeline is not available', async () => {
+  const { body } = await openApp({ sessions: (day) => ({ ok: true, day, truncated: false, stretches: [] }) });
+  assert.match(text(body), /Detailed timeline not available for this day; daily totals only\./);
+  assert.doesNotMatch(text(body), /No time recorded for/);
+});
+
+test('drill-down: a day with stretches but none for this item says no time was recorded', async () => {
+  const { body } = await openApp({ sessions: (day) => ({ ok: true, day, truncated: false, stretches: [dst(day, 100, 500, 'a.exe')] }) });
+  assert.match(text(body), /No time recorded for code\.exe on this day\./);
+  assert.doesNotMatch(text(body), /Detailed timeline not available/);
 });
