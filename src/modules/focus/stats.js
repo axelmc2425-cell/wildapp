@@ -50,7 +50,7 @@ export function addDays(day, n) {
 }
 
 // 0 = Monday .. 6 = Sunday
-function weekdayIndex(day) {
+export function weekdayIndex(day) {
   return (((toNum(day) + 3) % 7) + 7) % 7; // 1970-01-01 was a Thursday (index 3)
 }
 
