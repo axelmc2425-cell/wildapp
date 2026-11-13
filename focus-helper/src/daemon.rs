@@ -28,7 +28,7 @@ pub const PERSIST_INTERVAL_MS: i64 = 30_000;
 
 /// Reports closer together than this are ignored (also stops two users' samplers from
 /// double counting). In whole seconds of monotonic time.
-pub const MIN_REPORT_GAP_SECS: i64 = 4;
+pub const MIN_REPORT_GAP_SECS: i64 = 1;
 /// `usage_tracking` is true while the latest report is at most this old (monotonic ms).
 pub const REPORT_FRESH_MS: i64 = 15_000;
 /// Usage is written at most this often (monotonic ms) while dirty.
@@ -256,19 +256,21 @@ impl Daemon {
                     .into(),
                 },
             },
-            Ok(Request::ReportForeground { exe, title, idle_secs, day }) => {
+            Ok(Request::ReportForeground { exe, title, idle_secs, day, hour }) => {
                 let bad = |message: &str| Response::Error { code: "bad-request".into(), message: message.into() };
                 if exe.is_empty() || exe.chars().count() > MAX_EXE_CHARS || exe.contains(['\\', '/']) {
                     bad("exe must be a program file name of 1 to 260 characters")
                 } else if title.as_ref().is_some_and(|t| t.chars().count() > MAX_TITLE_CHARS) {
                     bad("title is longer than 1024 characters")
+                } else if hour.is_some_and(|h| h > 23) {
+                    bad("hour must be 0 to 23")
                 } else if !usage::is_valid_day(&day) {
                     bad("day must be YYYY-MM-DD")
                 } else if usage::day_number(&day).is_none_or(|n| (n - wall_ms.div_euclid(86_400_000)).abs() > MAX_DAY_SKEW) {
                     bad("day is too far from today")
                 } else {
                     let now = self.clock.now(wall_ms, mono_ms);
-                    self.report_foreground(Sample { exe, title, idle_secs, day }, now, mono_ms);
+                    self.report_foreground(Sample { exe, title, idle_secs, day, hour }, now, mono_ms);
                     Response::Ok
                 }
             }

@@ -79,14 +79,15 @@ fn idle_secs() -> Option<u64> {
     Some(u64::from(now.wrapping_sub(info.dwTime)) / 1000)
 }
 
-fn local_day() -> String {
+/// Local calendar day and hour of day, read from one clock sample.
+fn local_day_hour() -> (String, u8) {
     // SAFETY: GetLocalTime fills the SYSTEMTIME it is given.
     let t = unsafe {
         let mut t = std::mem::zeroed();
         GetLocalTime(&mut t);
         t
     };
-    day_string(t.wYear, t.wMonth, t.wDay)
+    (day_string(t.wYear, t.wMonth, t.wDay), t.wHour as u8)
 }
 
 /// One foreground observation, or `None` when nothing countable is in front (no window, the
@@ -113,13 +114,14 @@ pub fn sample() -> Option<Sample> {
     let title = if is_browser(&exe) { window_title(hwnd) } else { None };
     // Fail closed: without a trustworthy idle time nothing is counted.
     let idle_secs = idle_secs()?;
-    Some(Sample { exe, title, idle_secs, day: local_day() })
+    let (day, hour) = local_day_hour();
+    Some(Sample { exe, title, idle_secs, day, hour: Some(hour) })
 }
 
 /// How often the sampler reports.
-const REPORT_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+const REPORT_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// The `focus-helper sampler` loop: every 5 s report the foreground program to the service over
+/// The `focus-helper sampler` loop: every 1 s report the foreground program to the service over
 /// the pipe. All errors are ignored (the service may be down or restarting); titles are only
 /// ever put into the request and are never logged. Never returns.
 pub fn run_sampler() -> ! {
@@ -135,6 +137,7 @@ pub fn run_sampler() -> ! {
                 "title": s.title.map(|t| crate::usage::truncate_title(&t, 1000)),
                 "idle_secs": s.idle_secs,
                 "day": s.day,
+                "hour": s.hour,
             });
             let _ = crate::win::client::send(&request.to_string());
         }

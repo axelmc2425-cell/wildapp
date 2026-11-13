@@ -1,7 +1,11 @@
 use focus_helper::usage::*;
 
 fn s(exe: &str, title: Option<&str>, idle: u64, day: &str) -> Sample {
-    Sample { exe: exe.into(), title: title.map(|t| t.into()), idle_secs: idle, day: day.into() }
+    Sample { exe: exe.into(), title: title.map(|t| t.into()), idle_secs: idle, day: day.into(), hour: None }
+}
+
+fn sh(exe: &str, day: &str, hour: u8) -> Sample {
+    Sample { hour: Some(hour), ..s(exe, None, 0, day) }
 }
 
 fn day(d: &str, total: u64) -> DayUsage {
@@ -362,4 +366,67 @@ fn stored_names_are_capped_to_64_chars() {
     st.record(Some(&s("chrome.exe", Some(&format!("Inbox | {long_stem}")), 0, "2026-11-11")), 5, &[long_stem]);
     let d = &st.range("2026-11-11", "2026-11-11").unwrap()[0];
     assert!(d.sites.keys().all(|k| k.chars().count() <= 64), "{:?}", d.sites);
+}
+
+#[test]
+fn record_with_hour_adds_to_that_hour_slot() {
+    let mut u = UsageStore::new();
+    u.record(Some(&sh("a.exe", "2026-01-01", 14)), 5, &[]);
+    let r = u.range("2026-01-01", "2026-01-01").unwrap();
+    assert_eq!(r[0].hours.len(), 24);
+    assert_eq!(r[0].hours[14], 5);
+    assert_eq!(r[0].total, 5);
+}
+
+#[test]
+fn record_without_hour_leaves_hours_empty() {
+    let mut u = UsageStore::new();
+    u.record(Some(&s("a.exe", None, 0, "2026-01-01")), 5, &[]);
+    let r = u.range("2026-01-01", "2026-01-01").unwrap();
+    assert!(r[0].hours.is_empty());
+    assert_eq!(r[0].total, 5);
+}
+
+#[test]
+fn hours_sum_to_total_when_every_sample_has_hour() {
+    let mut u = UsageStore::new();
+    for (h, secs) in [(0u8, 3u64), (9, 7), (9, 4), (23, 15)] {
+        u.record(Some(&sh("a.exe", "2026-01-01", h)), secs, &[]);
+    }
+    let r = u.range("2026-01-01", "2026-01-01").unwrap();
+    assert_eq!(r[0].hours.iter().map(|&x| u64::from(x)).sum::<u64>(), r[0].total);
+    assert_eq!(r[0].hours[9], 11);
+}
+
+#[test]
+fn day_with_seconds_but_no_hours_stays_unrecorded() {
+    let mut u = UsageStore::new();
+    u.record(Some(&s("a.exe", None, 0, "2026-01-01")), 5, &[]);
+    u.record(Some(&sh("a.exe", "2026-01-01", 3)), 5, &[]);
+    let r = u.range("2026-01-01", "2026-01-01").unwrap();
+    assert!(r[0].hours.is_empty());
+    assert_eq!(r[0].total, 10);
+}
+
+#[test]
+fn hours_roundtrip_and_old_file_without_hours_loads() {
+    let dir = tmpdir("hours-rt");
+    let path = dir.join("usage.json");
+    let mut u = UsageStore::new();
+    u.record(Some(&sh("a.exe", "2026-01-01", 14)), 5, &[]);
+    u.record(Some(&s("a.exe", None, 0, "2026-01-02")), 5, &[]);
+    save(&path, &u).unwrap();
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(raw.contains("\"hours\""));
+    let (loaded, how) = load(&path, 0);
+    assert_eq!(how, UsageLoad::Main);
+    assert_eq!(loaded, u);
+
+    let old = r#"{"version":1,"days":[{"day":"2026-01-01","total":9,"apps":{"a.exe":9},"sites":{},"other_browsing":0}]}"#;
+    std::fs::write(&path, old).unwrap();
+    let (loaded, how) = load(&path, 0);
+    assert_eq!(how, UsageLoad::Main);
+    let r = loaded.range("2026-01-01", "2026-01-01").unwrap();
+    assert_eq!(r[0].total, 9);
+    assert!(r[0].hours.is_empty());
 }

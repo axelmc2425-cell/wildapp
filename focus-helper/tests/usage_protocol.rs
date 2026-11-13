@@ -55,6 +55,10 @@ fn report(exe: &str, title: Option<&str>, idle: u64) -> String {
     json!({"type":"ReportForeground","exe":exe,"title":title,"idle_secs":idle,"day":"2023-11-14"}).to_string()
 }
 
+fn report_hour(hour: Value) -> String {
+    json!({"type":"ReportForeground","exe":"a.exe","title":null,"idle_secs":0,"day":"2023-11-14","hour":hour}).to_string()
+}
+
 fn call(d: &mut Daemon, p: &mut Fake, line: &str, mono: i64) -> Value {
     serde_json::from_str(&d.handle_line(line, NOW + mono, mono, [0; 16], p)).unwrap()
 }
@@ -102,24 +106,24 @@ fn first_report_records_nothing() {
 }
 
 #[test]
-fn reports_less_than_four_seconds_apart_count_once() {
+fn reports_less_than_one_second_apart_count_once() {
     let (s, u) = paths("double");
     let mut d = Daemon::load_with_usage(&s, &u);
     let mut p = Fake;
     call(&mut d, &mut p, &chrome("Inbox"), 0);
-    // Two signed-in users: each sampler reports every 5 s, interleaved 1 s apart.
+    // Two signed-in users: each sampler reports every 1 s, interleaved 0.5 s apart.
     call(&mut d, &mut p, &chrome("Inbox"), 5_000);
-    call(&mut d, &mut p, &chrome("Inbox"), 6_000);
+    call(&mut d, &mut p, &chrome("Inbox"), 5_500);
     call(&mut d, &mut p, &chrome("Inbox"), 10_000);
-    call(&mut d, &mut p, &chrome("Inbox"), 11_000);
+    call(&mut d, &mut p, &chrome("Inbox"), 10_500);
     assert_eq!(usage(&mut d, &mut p)["days"][0]["total"], 10);
-    // The anchor stays at 10 s: a report 3.999 s later counts nothing.
-    call(&mut d, &mut p, &chrome("Inbox"), 13_999);
+    // The anchor stays at 10 s: a report 0.999 s later counts nothing.
+    call(&mut d, &mut p, &chrome("Inbox"), 10_999);
     assert_eq!(usage(&mut d, &mut p)["days"][0]["total"], 10);
 }
 
 #[test]
-fn four_second_boundary() {
+fn one_second_boundary() {
     let total = |name: &str, monos: &[i64]| {
         let (s, u) = paths(name);
         let mut d = Daemon::load_with_usage(&s, &u);
@@ -129,10 +133,10 @@ fn four_second_boundary() {
         }
         usage(&mut d, &mut p)["days"][0]["total"].as_u64().unwrap_or(0)
     };
-    assert_eq!(total("b4000", &[0, 4_000]), 4, "exactly 4 s counts");
-    assert_eq!(total("b3999", &[0, 3_999]), 0, "3.999 s counts nothing");
-    assert_eq!(total("b3999late", &[0, 3_999, 8_000]), 8, "the ignored report is not lost");
-    assert_eq!(total("b3900", &[0, 3_900, 8_000]), 8);
+    assert_eq!(total("b1000", &[0, 1_000]), 1, "exactly 1 s counts");
+    assert_eq!(total("b999", &[0, 999]), 0, "0.999 s counts nothing");
+    assert_eq!(total("b999late", &[0, 999, 2_000]), 2, "the ignored report is not lost");
+    assert_eq!(total("b900", &[0, 900, 2_000]), 2);
 }
 
 #[test]
@@ -442,4 +446,51 @@ fn rejected_far_day_changes_nothing() {
     // The rejected reports did not move the anchor: the next good one counts the whole gap (capped at 15).
     call(&mut d, &mut p, &chrome("Inbox"), 25_000);
     assert_eq!(usage(&mut d, &mut p)["days"][0]["total"], 20);
+}
+
+#[test]
+fn report_with_hour_ok() {
+    let (s, u) = paths("hour-ok");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    assert_eq!(call(&mut d, &mut p, &report_hour(json!(14)), 0)["type"], "Ok");
+    assert_eq!(call(&mut d, &mut p, &report_hour(json!(14)), 5_000)["type"], "Ok");
+    let r = usage(&mut d, &mut p);
+    assert_eq!(r["days"][0]["hours"][14], 5);
+}
+
+#[test]
+fn report_with_hour_24_is_bad_request() {
+    let (s, u) = paths("hour-24");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    let r = call(&mut d, &mut p, &report_hour(json!(24)), 0);
+    assert_eq!(r["type"], "Error");
+    assert_eq!(r["code"], "bad-request");
+    assert_eq!(r["message"], "hour must be 0 to 23");
+}
+
+#[test]
+fn report_without_hour_still_ok() {
+    let (s, u) = paths("hour-none");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    assert_eq!(call(&mut d, &mut p, &report("a.exe", None, 0), 0)["type"], "Ok");
+    call(&mut d, &mut p, &report("a.exe", None, 0), 5_000);
+    let r = usage(&mut d, &mut p);
+    assert_eq!(r["days"][0]["total"], 5);
+    assert!(r["days"][0].get("hours").is_none(), "unrecorded hours are omitted");
+}
+
+#[test]
+fn get_usage_rows_include_hours() {
+    let (s, u) = paths("hour-rows");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake;
+    let mut hours = vec![0u32; 24];
+    hours[9] = 7;
+    d.add_usage(DayUsage { day: "2023-11-10".into(), total: 7, hours, ..Default::default() });
+    let r = usage(&mut d, &mut p);
+    assert_eq!(r["days"][0]["hours"].as_array().unwrap().len(), 24);
+    assert_eq!(r["days"][0]["hours"][9], 7);
 }

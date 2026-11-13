@@ -20,6 +20,8 @@ pub struct Sample {
     pub idle_secs: u64,
     /// Local calendar day, `YYYY-MM-DD`.
     pub day: String,
+    /// Local hour of day, 0 to 23, when the sampler reported one.
+    pub hour: Option<u8>,
 }
 
 /// File name of a Windows (or forward-slash) path; the whole input when it has no separator.
@@ -63,6 +65,9 @@ pub struct DayUsage {
     pub apps: BTreeMap<String, u64>,
     pub sites: BTreeMap<String, u64>,
     pub other_browsing: u64,
+    /// Seconds per local hour. Empty means not recorded; otherwise exactly 24 slots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hours: Vec<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,6 +158,15 @@ impl UsageStore {
             .days
             .entry(s.day.clone())
             .or_insert_with(|| DayUsage { day: s.day.clone(), ..Default::default() });
+        // A day that already holds seconds without hours stays unrecorded: never mix.
+        if let Some(h) = s.hour.filter(|&h| h < 24) {
+            if day.hours.is_empty() && day.total == 0 {
+                day.hours = vec![0; 24];
+            }
+            if let Some(slot) = day.hours.get_mut(usize::from(h)) {
+                *slot = slot.saturating_add(secs as u32);
+            }
+        }
         day.total += secs;
         add_capped(&mut day.apps, &s.exe.to_lowercase(), secs);
         if is_browser(&s.exe) {

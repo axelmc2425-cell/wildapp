@@ -15,9 +15,9 @@ pub enum Request {
     GetStatus,
     /// Usage days in the inclusive local-day range `from_day..=to_day` (`YYYY-MM-DD`); daemon only.
     GetUsage { from_day: String, to_day: String },
-    /// Sent every 5 s by the per-user sampler process (`focus-helper sampler`): the foreground
+    /// Sent every 1 s by the per-user sampler process (`focus-helper sampler`): the foreground
     /// program in that user's session. Daemon only; the title is used in memory, never kept.
-    ReportForeground { exe: String, title: Option<String>, idle_secs: u64, day: String },
+    ReportForeground { exe: String, title: Option<String>, idle_secs: u64, day: String, #[serde(default)] hour: Option<u8> },
     RequestChallenge { window_id: String },
     SubmitToken { token: String },
     /// Starts the waiting period of a Locked window; answered with `UnlockPending`.
