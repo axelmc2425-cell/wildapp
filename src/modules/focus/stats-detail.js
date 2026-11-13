@@ -32,9 +32,14 @@ export function weekdayHourGrid(days) {
   return { grid, counts };
 }
 
-/** perWeek is perDay * 7 and perMonth is perDay * 30 (flat conversions of the per-day average). */
+/**
+ * perWeek (perDay * 7) is null until 7 days have elapsed in the range, and perMonth (perDay * 365.25/12,
+ * rounded) is null until 28 have: before that they would be extrapolations, not averages.
+ */
 export function periodAverages(days, range, today) {
   const sum = summarize(days, range, today);
+  const lastElapsed = today < range.to ? today : range.to;
+  const elapsed = lastElapsed < range.from ? 0 : (Date.parse(lastElapsed) - Date.parse(range.from)) / 86400000 + 1;
   const perApp = [];
   for (const app of sum.topApps) {
     let activeDays = 0;
@@ -44,8 +49,8 @@ export function periodAverages(days, range, today) {
   return {
     perDay: sum.dailyAverage,
     perWeekday: sum.perWeekday,
-    perWeek: sum.dailyAverage * 7,
-    perMonth: sum.dailyAverage * 30,
+    perWeek: elapsed >= 7 ? sum.dailyAverage * 7 : null,
+    perMonth: elapsed >= 28 ? Math.round(sum.dailyAverage * (365.25 / 12)) : null,
     perApp,
   };
 }
@@ -67,7 +72,7 @@ export function focusMetrics(stretches) {
     if (last && last.exe === s.exe && s.start - last.end <= GAP_SECS) {
       last.end = Math.max(last.end, s.end);
     } else {
-      if (last && last.exe !== s.exe) switches += 1;
+      if (last && last.exe !== s.exe && s.start - last.end <= GAP_SECS) switches += 1;
       runs.push({ exe: s.exe, start: s.start, end: s.end });
     }
   }
@@ -78,7 +83,7 @@ export function focusMetrics(stretches) {
     longestStretchExe: best ? best.exe : null,
     switchesPerActiveHour: activeSecs > 0 ? switches / (activeSecs / 3600) : 0,
     firstStart: list.length ? list[0].start : null,
-    lastEnd: list.length ? Math.max(...list.map((s) => s.end)) : null,
+    lastEnd: list.length ? list.reduce((m, s) => Math.max(m, s.end), -Infinity) : null,
     activeSecs,
     stretchCount: runs.length,
   };
@@ -132,44 +137,86 @@ export function mergeTiny(blocks, secsPerPx, minPx = 1) {
   return out;
 }
 
-const BROWSER_RE = /(chrome|msedge|edge|firefox|brave|opera|vivaldi|arc|safari|iexplore)/i;
+const BROWSERS = new Set(['chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe', 'vivaldi.exe']);
+const baseName = (exe) => String(exe).split(/[\\/]/).pop().toLowerCase();
+const isBrowser = (exe) => BROWSERS.has(baseName(exe));
 
-/** `kind` is 'app' or 'site'. peakHour uses the day-level hours of the days the item was used. */
+/**
+ * `kind` is 'app' or 'site'. `sites` lists sites only for a browser; `sitesApproximate` is true when more
+ * than one browser has usage, because site totals are not attributed per browser.
+ */
 export function appDrilldown(days, name, kind) {
   const key = kind === 'site' ? 'sites' : 'apps';
-  const hourSum = new Array(24).fill(0);
-  let anyHours = false;
+  const byDay = new Map(); // duplicate rows for one day are merged
+  for (const row of days ?? []) {
+    if (!validDay(row)) continue;
+    const cur = byDay.get(row.day) ?? { total: 0, item: 0, sites: {}, browsers: new Set() };
+    cur.total += num(row.total);
+    cur.item += num(row[key]?.[name]);
+    for (const [site, s] of Object.entries(row.sites ?? {})) cur.sites[site] = (cur.sites[site] ?? 0) + num(s);
+    for (const [app, s] of Object.entries(row.apps ?? {})) if (num(s) > 0 && isBrowser(app)) cur.browsers.add(baseName(app));
+    byDay.set(row.day, cur);
+  }
+  const browser = kind === 'app' && isBrowser(name);
   let total = 0;
   let grand = 0;
   const daily = [];
   const sites = new Map();
-  const browser = kind === 'app' && BROWSER_RE.test(String(name));
-  for (const row of [...(days ?? [])].filter(validDay).sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0))) {
-    grand += num(row.total);
-    const secs = num(row[key]?.[name]);
-    if (secs <= 0) continue;
-    total += secs;
-    daily.push({ day: row.day, secs });
-    if (hasHours(row)) {
-      anyHours = true;
-      for (let h = 0; h < 24; h += 1) hourSum[h] += num(row.hours[h]);
-    }
-    if (browser) for (const [site, s] of Object.entries(row.sites ?? {})) if (num(s) > 0) sites.set(site, (sites.get(site) ?? 0) + s);
-  }
-  let peakHour = null;
-  if (anyHours) {
-    let max = 0;
-    hourSum.forEach((v, h) => { if (v > max) { max = v; peakHour = h; } });
+  const browsers = new Set();
+  for (const day of [...byDay.keys()].sort()) {
+    const r = byDay.get(day);
+    grand += r.total;
+    r.browsers.forEach((b) => browsers.add(b));
+    if (r.item <= 0) continue;
+    total += r.item;
+    daily.push({ day, secs: r.item });
+    if (browser) for (const [site, s] of Object.entries(r.sites)) if (s > 0) sites.set(site, (sites.get(site) ?? 0) + s);
   }
   return {
     total,
     activeDays: daily.length,
     perActiveDay: daily.length ? total / daily.length : 0,
     shareOfTotal: grand > 0 ? total / grand : 0,
-    peakHour,
     daily,
     sites: [...sites].map(([n, secs]) => ({ name: n, secs })).sort((a, b) => b.secs - a.secs || (a.name < b.name ? -1 : 1)),
+    sitesApproximate: browser && browsers.size > 1,
   };
+}
+
+/**
+ * The hour (0-23) in which the item's own stretches add up to the most seconds, or null when it has none.
+ * `hourOf(unixSec)` gives the local hour of an instant; stretches are split at hour changes found by
+ * probing every 60 s and bisecting to the exact second, so the split is exact.
+ */
+export function itemPeakHour(stretches, name, kind, hourOf) {
+  const want = String(name).toLowerCase();
+  const secs = new Array(24).fill(0);
+  for (const s of cleanStretches(stretches)) {
+    const match = kind === 'site' ? s.site != null && String(s.site).toLowerCase() === want : String(s.exe).toLowerCase() === want;
+    if (!match) continue;
+    let from = s.start;
+    while (from < s.end) {
+      const h = hourOf(from);
+      let hi = Math.min(from + 60, s.end);
+      if (hourOf(hi - 1) === h) { // no change inside this slice (a change then back within 60 s is not expected)
+        secs[h] += hi - from;
+        from = hi;
+        continue;
+      }
+      let lo = from; // hourOf(lo) === h, hourOf(hi - 1) !== h: find the first second with another hour
+      let top = hi - 1;
+      while (top - lo > 1) {
+        const mid = Math.floor((lo + top) / 2);
+        if (hourOf(mid) === h) lo = mid; else top = mid;
+      }
+      secs[h] += top - from;
+      from = top;
+    }
+  }
+  let peak = null;
+  let max = 0;
+  secs.forEach((v, h) => { if (v > max) { max = v; peak = h; } });
+  return peak;
 }
 
 const p2 = (n) => String(n).padStart(2, '0');

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   hourlyAverages, weekdayHourGrid, periodAverages, focusMetrics, activeStreaks,
-  timelineWindow, mergeTiny, appDrilldown, formatDurationSecs,
+  timelineWindow, mergeTiny, appDrilldown, itemPeakHour, formatDurationSecs,
 } from '../src/modules/focus/stats-detail.js';
 import { rangeFor } from '../src/modules/focus/stats.js';
 
@@ -59,8 +59,8 @@ test('periodAverages counts empty days up to today as zero and averages apps ove
   ];
   const r = periodAverages(days, range, '2026-11-11');
   assert.equal(r.perDay, 3600); // 10800 / 3 elapsed days
-  assert.equal(r.perWeek, 3600 * 7);
-  assert.equal(r.perMonth, 3600 * 30);
+  assert.equal(r.perWeek, null); // only 3 days elapsed: not an average yet
+  assert.equal(r.perMonth, null);
   assert.equal(r.perWeekday.length, 7);
   assert.equal(r.perWeekday[0], 3600);
   assert.equal(r.perWeekday[1], 0);
@@ -177,7 +177,8 @@ test('appDrilldown summarises one app across days', () => {
   assert.equal(d.activeDays, 2);
   assert.equal(d.perActiveDay, 2000);
   assert.equal(d.shareOfTotal, 0.5);
-  assert.equal(d.peakHour, 9);
+  assert.equal(d.sitesApproximate, false);
+  assert.equal('peakHour' in d, false);
   assert.deepEqual(d.daily, [{ day: '2026-11-09', secs: 3000 }, { day: '2026-11-11', secs: 1000 }]);
   assert.deepEqual(d.sites, [{ name: 'x.com', secs: 2500 }, { name: 'y.com', secs: 500 }]);
 
@@ -189,13 +190,63 @@ test('appDrilldown summarises one app across days', () => {
   const none = appDrilldown(days, 'nope.exe', 'app');
   assert.ok(allFinite(none));
   assert.equal(none.total, 0);
-  assert.equal(none.peakHour, null);
   assert.deepEqual(none.daily, []);
   assert.equal(appDrilldown([], 'a', 'app').shareOfTotal, 0);
 });
 
-test('appDrilldown peakHour is null when no day has hours', () => {
-  assert.equal(appDrilldown([row('2026-11-09', 10, { apps: { 'a.exe': 10 } })], 'a.exe', 'app').peakHour, null);
+test('periodAverages perWeek/perMonth appear only after 7 / 28 elapsed days', () => {
+  const mk = (n) => Array.from({ length: n }, (_, i) => row(`2026-11-${String(i + 1).padStart(2, '0')}`, 3600));
+  const at = (n) => periodAverages(mk(n), rangeFor('month', '2026-11-01'), `2026-11-${String(n).padStart(2, '0')}`);
+  assert.deepEqual([at(1).perWeek, at(1).perMonth], [null, null]);
+  assert.deepEqual([at(6).perWeek, at(6).perMonth], [null, null]);
+  assert.deepEqual([at(7).perWeek, at(7).perMonth], [3600 * 7, null]);
+  assert.deepEqual([at(28).perWeek, at(28).perMonth], [3600 * 7, Math.round(3600 * 365.25 / 12)]);
+});
+
+test('appDrilldown: only exact browser exe names are browsers; two browsers flag approximate sites', () => {
+  const days = [row('2026-11-09', 100, { apps: { 'chrome.exe': 50, 'firefox.exe': 40, 'knowledge.exe': 5, 'search.exe': 5 }, sites: { 'x.com': 60 } })];
+  assert.deepEqual(appDrilldown(days, 'knowledge.exe', 'app').sites, []);
+  assert.deepEqual(appDrilldown(days, 'search.exe', 'app').sites, []);
+  const c = appDrilldown(days, 'CHROME.EXE', 'app');
+  assert.equal(c.total, 0); // names are exact keys; case only matters for browser detection
+  const c2 = appDrilldown(days, 'chrome.exe', 'app');
+  assert.deepEqual(c2.sites, [{ name: 'x.com', secs: 60 }]);
+  assert.equal(c2.sitesApproximate, true);
+});
+
+test('appDrilldown merges duplicate rows for the same day', () => {
+  const d = appDrilldown([row('2026-11-09', 10, { apps: { 'a.exe': 10 } }), row('2026-11-09', 20, { apps: { 'a.exe': 20 } })], 'a.exe', 'app');
+  assert.equal(d.activeDays, 1);
+  assert.deepEqual(d.daily, [{ day: '2026-11-09', secs: 30 }]);
+  assert.equal(d.perActiveDay, 30);
+  assert.equal(d.shareOfTotal, 1);
+});
+
+test('itemPeakHour sums the item own seconds per local hour, splitting at hour boundaries', () => {
+  const hourOf = (t) => Math.floor(t / 3600) % 24;
+  const st = [
+    { start: 0 * 3600, end: 5 * 3600, exe: 'busy.exe', site: null }, // busiest hours overall: 0-4
+    { start: 7 * 3600 + 3000, end: 8 * 3600 + 1000, exe: 'A.exe', site: 's.com' }, // 600 s in h7, 1000 s in h8
+    { start: 8 * 3600 + 2000, end: 8 * 3600 + 2300, exe: 'a.exe', site: null },     // +300 in h8
+    { start: 9 * 3600, end: 9 * 3600 + 1200, exe: 'other.exe', site: 's.com' },     // 1200 in h9
+  ];
+  assert.equal(itemPeakHour(st, 'a.exe', 'app', hourOf), 8);
+  assert.equal(itemPeakHour(st, 'busy.exe', 'app', hourOf), 0);
+  assert.equal(itemPeakHour(st, 's.com', 'site', hourOf), 9); // 600 + 1000 across 7/8 vs 1200 in h9
+  assert.equal(itemPeakHour(st, 'nope.exe', 'app', hourOf), null);
+  assert.equal(itemPeakHour([], 'a.exe', 'app', hourOf), null);
+  assert.equal(itemPeakHour(undefined, 'a.exe', 'app', hourOf), null);
+  // a stretch that crosses an hour exactly: 30 s before, 90 s after
+  assert.equal(itemPeakHour([{ start: 3570, end: 3690, exe: 'z.exe', site: null }], 'z.exe', 'app', hourOf), 1);
+});
+
+test('focusMetrics: a program change after an idle gap is a resume, not a switch', () => {
+  const m = focusMetrics([
+    { start: 0, end: 600, exe: 'A', site: null },
+    { start: 600 + 1800, end: 3000, exe: 'B', site: null },
+  ]);
+  assert.equal(m.switchesPerActiveHour, 0);
+  assert.equal(m.stretchCount, 2);
 });
 
 test('formatDurationSecs', () => {
@@ -206,4 +257,9 @@ test('formatDurationSecs', () => {
   assert.equal(formatDurationSecs(3600), '1h 00m 00s');
   assert.equal(formatDurationSecs(NaN), '0s');
   assert.equal(formatDurationSecs(-5), '0s');
+  assert.equal(formatDurationSecs(59), '59s');
+  assert.equal(formatDurationSecs(60), '1m 00s');
+  assert.equal(formatDurationSecs(3661), '1h 01m 01s');
+  assert.equal(formatDurationSecs(86400), '24h 00m 00s');
+  assert.equal(formatDurationSecs(90061), '25h 01m 01s');
 });
