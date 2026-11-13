@@ -1,5 +1,7 @@
 # Focus Room analytics, sub-project 6a: usage tracking and Stats
 
+See also the 7a spec (2026-11-13-focus-detailed-analytics-design.md): the Stats page also has a Today timeline, hour-of-day charts, averages and app/site drill-down.
+
 Date: 2026-11-10. Status: built.
 
 Builds on `2026-11-08-focus-room-design.md` (helper, pipe protocol) and `2026-11-09-focus-room-ui-design.md` (screens). Order agreed with the owner: 5a pickers (building), recurring schedules (sub-project 3), daily and weekly time limits (6b), 6a analytics. Time limits reuse this tracking, so 6a's helper part ships before 6b. Uninstall protection is its own spec.

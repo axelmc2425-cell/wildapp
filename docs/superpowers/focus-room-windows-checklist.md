@@ -223,7 +223,7 @@ Use a list with one site you can test (for example `reddit.com`). Set the schedu
 
 ## 16. Usage analytics
 
-A small sampler process (`focus-helper sampler`) runs in your signed-in session and reports the foreground program to the helper service every 5 seconds. Titles are read only for browsers, to attribute time to a site. The sampler is started by a Run entry at sign-in, so after installing, sign out and in once before testing this section.
+A small sampler process (`focus-helper sampler`) runs in your signed-in session and reports the foreground program to the helper service every second (older installs report every 5 seconds until the next sign-in). Titles are read only for browsers, to attribute time to a site. The sampler is started by a Run entry at sign-in, so after installing, sign out and in once before testing this section.
 
 - [ ] After install, sign out and sign back in — Expected: Task Manager (Details tab) shows `focus-helper.exe` running in your user session (not as SYSTEM) with the `sampler` argument, and no window or console appears
 - [ ] Check `HKLM\Software\Microsoft\Windows\CurrentVersion\Run` — Expected: a value `MyBrainFocusSampler` with the quoted installed exe path followed by `sampler`
@@ -249,6 +249,31 @@ With no lock pending, uninstall MyBrain.
 - [ ] Open the hosts file — Expected: no managed block and no BEGIN/END MYBRAIN-FOCUS markers
 - [ ] Check the Chrome/Edge/Firefox policy pages — Expected: DoH values written by the helper are gone
 - [ ] Search `C:\Windows\System32\drivers\etc` and `C:\Program Files\MyBrainFocus` for `.focus-tmp` and `.new` files — Expected: none left (and the Program Files folder is gone)
+
+## 18. Detailed analytics (second-level timeline, hours, averages, drill-down)
+
+Focus Room > Stats has a Today tab (a second-accurate timeline of the day with zoom 24 h, 6 h, 1 h and 10 min, plus active time, longest stretch, switches per active hour, first and last activity and streaks), Hours-of-the-day charts and Averages on Week, Month and Year, and a drill-down page for any app or site (daily trend, peak hour, per-day timeline). The helper keeps second detail for 90 days and per-hour totals for 730 days. Sign out and in once after installing so the new 1-second sampler runs.
+
+- [ ] Open Today, then switch between Notepad and Calculator at times you note with a stopwatch (for example 2 minutes in each, three rounds) — Expected: at the 10 min zoom the stretch edges match your stopwatch within about 2 seconds
+- [ ] Leave the PC untouched for more than 5 minutes with a program in front — Expected: the timeline shows no stretch for the time after the 5 minute idle limit
+- [ ] Lock the PC (Win+L) for a few minutes, then unlock — Expected: a gap in the timeline for the locked time
+- [ ] Browse two different sites in Chrome or Edge for a few minutes each — Expected: the browser stretches are labelled with the site; the site drill-down shows its stretches on the day it was used
+- [ ] Upgrade over an existing install that already has `usage.json` — Expected: old days keep their totals and charts; on Week/Month the Hours-of-the-day section says "Hour detail is recorded from the update onwards" for days without hours; Today and the drill-down timeline say the detailed timeline is not available for old days
+- [ ] Restart the service (`sc stop MyBrainFocus`, then `sc start MyBrainFocus`) after working for a few minutes — Expected: Today still shows the earlier stretches (at most the last minute before a stop is lost only in a crash, not in a normal stop)
+- [ ] Look in `C:\ProgramData\MyBrainFocus` — Expected: `sessions-YYYY-MM-DD.json` files next to `usage.json`, and Focus Room > Stats opens without a warning
+- [ ] Reinstall or update with `sessions-*` files present — Expected: the state directory still adopts cleanly (permissions applied, no errors in the install log); then create an unexpected extra file there (for example `junk.txt`) and reinstall — Expected: the extra file is still removed, the `sessions-*` files stay
+- [ ] Use a day with a time change (spring forward 23 hours, or fall back 25 hours; set the Windows time zone to one with DST and move the date) — Expected: the Today/drill-down timeline spans the real 23 or 25 hours with correct clock labels and no overlap or missing hour
+- [ ] Watch `focus-helper.exe` (sampler and service) in Task Manager for a minute while idle and while working — Expected: CPU stays near 0 percent for the 1-second reports
+- [ ] Open the drill-down for a program, use the previous-day button, and drag the zoom pan — Expected: the timeline moves; note if the 60 second auto refresh interrupts a drag
+
+Accepted limits (not failures):
+- A crash or power loss can lose up to the last minute of stretches (they are flushed about once a minute and on a normal stop); totals follow the same flush.
+- Seconds at an hour boundary can be attributed one second to the neighbouring hour.
+- A sampler started before the update keeps reporting every 5 seconds until the next sign-in, so its time has coarser stretches.
+- Second detail is kept for 90 days and hour totals for 730 days; older days show daily totals only.
+- A very busy day can stop recording stretches (the page says "Timeline incomplete"); totals stay complete.
+- The per-app peak hour is shown for the viewed day only.
+- A pan drag can be interrupted when the page refreshes itself every 60 seconds.
 
 ## Report back
 

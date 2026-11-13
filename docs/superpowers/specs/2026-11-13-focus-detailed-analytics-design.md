@@ -1,6 +1,6 @@
 # Focus Room detailed analytics (sub-project 7a): second-level tracking and deep stats
 
-Date: 2026-11-13. Status: draft for approval.
+Date: 2026-11-13. Status: built (Tasks 1-9 of the plan; Windows checks in checklist section 18).
 
 Builds on `2026-11-10-focus-analytics-design.md` (6a: daily totals, Stats page). Order agreed with the owner: 7a (this) first, then daily and weekly time limits (6b), then uninstall protection (6c).
 
