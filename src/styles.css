@@ -357,6 +357,12 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-bar .fr-seg { stroke: var(--panel); stroke-width: 1; }
 .fr-bar.fr-thin .fr-seg { stroke: none; } /* hairline bars (year view) would be all separator */
 .fr-chart-weekday { max-width: 440px; min-width: 260px; }
+.fr-chart-timeline { min-width: 520px; }
+.fr-chart-hours { max-width: 560px; min-width: 300px; }
+.fr-chart-weekhour { min-width: 560px; }
+.fr-chart-trend { min-width: 420px; }
+.fr-block { stroke: var(--panel); stroke-width: 0.5; }
+.fr-block:hover { stroke: var(--text); stroke-width: 1; }
 .fr-chart-stacked { min-width: 480px; } /* scrolls inside its section on phones instead of shrinking the labels to nothing */
 .fr-legend { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; }
 .fr-legend li { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
