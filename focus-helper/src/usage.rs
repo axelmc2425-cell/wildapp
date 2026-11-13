@@ -226,7 +226,7 @@ struct FileV1 {
     days: Vec<DayUsage>,
 }
 
-fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+pub(crate) fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name: OsString = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
     name.push(suffix);
     path.with_file_name(name)
