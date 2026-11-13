@@ -2,8 +2,8 @@ import { h } from './dom.js';
 import { formatClock } from './util.js';
 import { makeTzOffsetAt } from '../tz.js';
 import { dayKey, addDays, rangeFor, previousRange, shiftRange, summarize, deltaVs, formatDuration } from '../stats.js';
-import { timelineWindow, focusMetrics, activeStreaks, formatDurationSecs, hourlyAverages, weekdayHourGrid, periodAverages } from '../stats-detail.js';
-import { timelineStrip, timelineLegend, hourBars, weekdayHourHeatmap } from './charts-detail.js';
+import { timelineWindow, focusMetrics, activeStreaks, formatDurationSecs, hourlyAverages, weekdayHourGrid, periodAverages, appDrilldown, itemPeakHour } from '../stats-detail.js';
+import { timelineStrip, timelineLegend, hourBars, weekdayHourHeatmap, dailyTrendBars } from './charts-detail.js';
 import { stackedDailyBars, chartLegend, topAppNames, weekdayBars, yearHeatmap, rankedBars, dataTable } from './charts.js';
 
 const PERIODS = [['today', 'Today'], ['day', 'Day'], ['week', 'Week'], ['month', 'Month'], ['year', 'Year']];
@@ -13,6 +13,7 @@ const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 
 const REFRESH_MS = 60000;
 const STREAK_DAYS = 400;
 const TABLE_CAP = 500;
+const KEEP_DETAIL_DAYS = 90; // the helper keeps exact stretches this long
 const ZOOMS = [['day', 'Day', 0], ['6h', '6 h', 6 * 3600], ['1h', '1 h', 3600], ['10m', '10 min', 600]];
 const p2 = (n) => String(n).padStart(2, '0');
 const programName = (exe) => {
@@ -64,6 +65,14 @@ export function mountStatsPage(root, controller, deps = {}) {
   let seq = 0; // newest request wins
   let statusKey = null; // the range key `status` describes
   let lastSig = null;
+  let view = 'main'; // 'main' | 'drill'
+  let drill = null; // { name, kind: 'app' | 'site' }
+  let drillDay = null; // the day whose timeline is shown
+  let dseq = 0; // newest day request wins
+  let dstatus = 'idle'; // 'idle' | 'loading' | 'ok' | 'down' | 'error'
+  let dmessage = '';
+  let focusNext = null; // data-fk to focus after the next render
+  const dcache = new Map(); // day -> { v, stretches, truncated, at }
   const cache = new Map(); // `${period}:${from}:${to}` -> { days, prevDays|null, at }
   const isToday = () => period === 'today';
   const navPeriod = () => (isToday() ? 'day' : period);
@@ -157,6 +166,118 @@ export function mountStatsPage(root, controller, deps = {}) {
     render();
   }
 
+  // ---- drill-down ----
+  const detailKept = (day) => day >= addDays(todayKey(), -(KEEP_DETAIL_DAYS - 1));
+  function hourOf(sec) { const local = Math.floor(sec) + tzOffsetAt(sec * 1000) * 60; return Math.floor((((local % 86400) + 86400) % 86400) / 3600); }
+
+  function openDrill(name, kind) {
+    const entry = cache.get(keyOf());
+    if (!entry || !entry.days) return;
+    drill = { name, kind };
+    const info = appDrilldown(entry.days, name, kind);
+    const last = todayKey() < range.to ? todayKey() : range.to;
+    drillDay = info.daily.length ? info.daily[info.daily.length - 1].day : last;
+    view = 'drill'; focusNext = 'drill-back';
+    loadDrillDay();
+  }
+  function closeDrill() {
+    focusNext = drill ? `${drill.kind}-${drill.name}` : null;
+    dseq++; view = 'main'; drill = null; drillDay = null; dstatus = 'idle'; dmessage = '';
+    dcache.clear();
+    render();
+  }
+  async function loadDrillDay() {
+    const mine = ++dseq;
+    const day = drillDay;
+    dmessage = '';
+    if (!detailKept(day)) { dstatus = 'idle'; render(); return; }
+    dstatus = dcache.has(day) ? 'ok' : 'loading';
+    render();
+    const res = await safeSessions(day);
+    if (!alive || mine !== dseq) return; // closed, or a newer day was asked for
+    if (res.ok && Array.isArray(res.stretches)) {
+      dcache.set(day, { v: ++version, stretches: res.stretches, truncated: !!res.truncated, at: now() });
+      dstatus = 'ok';
+    } else if (res.down) { dstatus = 'down'; dmessage = res.message || ''; }
+    else { dstatus = 'error'; dmessage = (res && res.message) || 'Unknown error'; }
+    render();
+  }
+  function moveDrillDay(delta) {
+    const next = addDays(drillDay, delta);
+    if (next > todayKey()) return;
+    drillDay = next;
+    loadDrillDay();
+  }
+
+  function itemStretches(stretches) {
+    const want = drill.name.toLowerCase();
+    return stretches.filter((s) => s && (drill.kind === 'site'
+      ? s.site != null && String(s.site).toLowerCase() === want
+      : String(s.exe).toLowerCase() === want));
+  }
+
+  function drillTimeline(info) {
+    const sec = section('Timeline');
+    const today = todayKey();
+    sec.append(h('div', { class: 'fr-drillnav' },
+      h('button', { type: 'button', class: 'fr-pbtn fr-arrow', 'aria-label': 'Previous day', 'data-fk': 'drill-prev', onclick: () => moveDrillDay(-1) }, '‹'),
+      h('span', { class: 'fr-windowlabel', 'data-fk': 'drill-day', 'aria-live': 'polite' }, `${weekdayName(drillDay)} ${short(drillDay)}, ${parts(drillDay).y}`),
+      (() => { const b = h('button', { type: 'button', class: 'fr-pbtn fr-arrow', 'aria-label': 'Next day', 'data-fk': 'drill-next', onclick: () => { if (!b.disabled) moveDrillDay(1); } }, '›'); b.disabled = drillDay >= today; return b; })()));
+    if (!detailKept(drillDay)) {
+      sec.append(h('p', { class: 'fr-statnote', 'data-fk': 'drill-notkept' }, `Detailed timeline is kept for ${KEEP_DETAIL_DAYS} days.`));
+      return sec;
+    }
+    const data = dcache.get(drillDay);
+    if (!data) {
+      if (dstatus === 'down') sec.append(h('p', { class: 'fr-statnote', role: 'status' }, "The helper isn't running, so the timeline can't be loaded."));
+      else if (dstatus === 'error') sec.append(h('p', { class: 'fr-statnote fr-err-box', role: 'alert', 'data-fk': 'drill-error' }, `Couldn't load this day: ${dmessage || 'Unknown error'}`));
+      else sec.append(h('p', { class: 'fr-statnote', role: 'status' }, 'Loading timeline…'));
+      return sec;
+    }
+    if (dstatus === 'down') sec.append(h('p', { class: 'fr-statnote fr-warn', role: 'status' }, `Showing the last data from ${formatClock(data.at, now())}. The helper isn't running.`));
+    else if (dstatus === 'error') sec.append(h('p', { class: 'fr-statnote fr-err-box', role: 'alert', 'data-fk': 'drill-error' }, `Couldn't refresh this day: ${dmessage || 'Unknown error'}`));
+    if (data.truncated) sec.append(h('p', { class: 'fr-statnote fr-warn', role: 'status', 'data-fk': 'truncated' }, `Timeline incomplete after ${data.stretches.length} stretches; totals are complete.`));
+    const mine = itemStretches(data.stretches);
+    const from = dayStartSec(drillDay);
+    const to = dayStartSec(addDays(drillDay, 1));
+    const blocks = timelineWindow(mine, from, to);
+    if (!blocks.length) {
+      sec.append(h('p', { class: 'fr-statnote', 'data-fk': 'drill-none' }, `No time recorded for ${drill.name} on this day.`));
+      return sec;
+    }
+    const label = drill.kind === 'site' ? drill.name : programName(drill.name);
+    const strip = timelineStrip(blocks, { fromSec: from, toSec: to, colorOf: () => 0, timeLabel, offsetSec: tzOffsetAt(from * 1000) * 60, nameOf: () => label });
+    sec.append(h('div', { class: 'fr-chart-scroll', 'data-fk': 'strip' }, strip, timelineLegend([label], () => 0)));
+    return sec;
+  }
+
+  function drillView(entry) {
+    const info = appDrilldown(entry.days, drill.name, drill.kind);
+    const out = h('div', { class: 'fr-statbody' });
+    const num = (v) => (Number.isFinite(v) ? v : 0);
+    const has = num(info.total) > 0;
+    const pct = Math.round(num(info.shareOfTotal) * 100);
+    const data = dcache.get(drillDay);
+    const peak = data && detailKept(drillDay) ? itemPeakHour(data.stretches, drill.name, drill.kind, hourOf) : null;
+    out.append(h('p', { class: 'fr-muted fr-small', 'data-fk': 'drill-range' }, `${drill.kind === 'site' ? 'Website' : 'App'} · ${rangeLabel(navPeriod(), range, todayKey())}`));
+    out.append(h('div', { class: 'fr-statcards' },
+      card('Total', has ? formatDuration(info.total) : '—'),
+      card('Active days', has ? String(info.activeDays) : '—'),
+      card('Average per active day', has ? formatDuration(info.perActiveDay) : '—'),
+      card('Share of total', has ? (info.shareOfTotal > 0 && pct === 0 ? '<1%' : `${pct}%`) : '—'),
+      card('Peak hour', peak == null ? '—' : `${p2(peak)}:00`)));
+    out.append(section('Daily trend', h('div', { class: 'fr-chart-scroll' }, dailyTrendBars(info.daily))));
+    out.append(drillTimeline(info));
+    if (info.sites.length) {
+      const sec = section('Sites used');
+      if (info.sitesApproximate) sec.append(h('p', { class: 'fr-muted fr-small', 'data-fk': 'drill-approx' }, 'approximate: several browsers used'));
+      sec.append(h('ul', { class: 'fr-avglist', 'data-fk': 'drill-sites', 'aria-label': 'Sites used' }, ...info.sites.slice(0, 20).map((x) =>
+        h('li', {}, h('span', {}, x.name), h('strong', {}, formatDuration(x.secs))))));
+      out.append(sec);
+    }
+    return out;
+  }
+
   // ---- view pieces ----
   function periodSwitch() {
     return h('div', { class: 'fr-period', role: 'group', 'aria-label': 'Period' },
@@ -224,10 +345,10 @@ export function mountStatsPage(root, controller, deps = {}) {
       if (period === 'year') out.append(section('Year at a glance', h('div', { class: 'fr-chart-scroll' }, yearHeatmap(sum.perDay, parts(range.from).y))));
       if (period !== 'day') out.append(section('Average by weekday', weekdayBars(sum.perWeekday)));
     }
-    out.append(section('Top apps', rankedBars(sum.topApps.slice(0, 10))));
+    out.append(section('Top apps', rankedBars(sum.topApps.slice(0, 10), { onOpen: (n) => openDrill(n, 'app'), fkPrefix: 'app' })));
     const sites = section('Top sites', h('p', { class: 'fr-muted fr-small' }, 'Estimated from browser tab titles'));
     if (sum.topSites.length) {
-      sites.append(rankedBars(sum.topSites.slice(0, 10)), h('p', { class: 'fr-muted fr-small' }, 'Percentages are of identified sites.'));
+      sites.append(rankedBars(sum.topSites.slice(0, 10), { onOpen: (n) => openDrill(n, 'site'), fkPrefix: 'site' }), h('p', { class: 'fr-muted fr-small' }, 'Percentages are of identified sites.'));
     } else {
       sites.append(h('p', { class: 'fr-chart-empty' }, 'No websites identified in this period.'));
     }
@@ -275,14 +396,14 @@ export function mountStatsPage(root, controller, deps = {}) {
       sec.append(dataTable(a.perApp.slice(0, 10), [{ key: 'name', label: 'App' }, { key: 'perActiveDay', label: 'Per active day', format: formatDuration }, { key: 'activeDays', label: 'Active days' }], 'Apps by average per active day'));
       return sec;
     }
-    sec.append(h('ul', { class: 'fr-avglist' }, ...items.map(([fk, label, value, hint]) =>
+    sec.append(h('ul', { class: 'fr-avglist', 'aria-label': 'Averages' }, ...items.map(([fk, label, value, hint]) =>
       h('li', { 'data-fk': fk }, h('span', {}, label), h('strong', {}, value), hint ? h('span', { class: 'fr-muted fr-small' }, hint) : null))));
     sec.append(h('ul', { class: 'fr-avglist', 'aria-label': 'Average per weekday' }, ...WEEKDAYS.map((name, i) =>
       h('li', { 'data-fk': `avg-wd-${name}` }, h('span', {}, name), h('strong', {}, formatDuration(a.perWeekday[i]))))));
     if (a.perApp.length) {
       sec.append(h('h4', {}, 'Apps by average per active day'),
-        h('ol', { class: 'fr-avglist' }, ...a.perApp.slice(0, 10).map((app) =>
-          h('li', { 'data-fk': `avg-app-${app.name}` }, h('span', {}, app.name), h('strong', {}, formatDuration(app.perActiveDay)),
+        h('ol', { class: 'fr-avglist', 'aria-label': 'Apps by average per active day' }, ...a.perApp.slice(0, 10).map((app) =>
+          h('li', { 'data-fk': `avg-app-${app.name}` }, h('span', {}, h('button', { type: 'button', class: 'fr-linkbtn', 'data-fk': `app-${app.name}`, onclick: () => openDrill(app.name, 'app') }, app.name)), h('strong', {}, formatDuration(app.perActiveDay)),
             h('span', { class: 'fr-muted fr-small' }, `${dayCount(app.activeDays)} active`)))));
     }
     return sec;
@@ -452,7 +573,8 @@ export function mountStatsPage(root, controller, deps = {}) {
 
   function signature() {
     const entry = cache.get(keyOf());
-    return JSON.stringify([period, range, asTable, zoom, panOff, streak ? streak.v : 0, status, message, errCode, unavailable, trackingOff(), helperKind(), todayKey(), entry ? [entry.v, status === 'down' ? entry.at : 0] : null]);
+    return JSON.stringify([period, range, asTable, zoom, panOff, streak ? streak.v : 0, status, message, errCode, unavailable, trackingOff(), helperKind(), todayKey(), entry ? [entry.v, status === 'down' ? entry.at : 0] : null,
+      view, drill, drillDay, dstatus, dmessage, dcache.has(drillDay) ? [dcache.get(drillDay).v, dstatus === 'down' ? dcache.get(drillDay).at : 0] : null]);
   }
 
   function render() {
@@ -460,14 +582,22 @@ export function mountStatsPage(root, controller, deps = {}) {
     const sig = signature();
     if (sig === lastSig) return;
     lastSig = sig;
-    const active = typeof document !== 'undefined' && document.activeElement && document.activeElement.getAttribute
-      ? document.activeElement.getAttribute('data-fk') : null;
-    const page = h('div', { class: 'page fr-home fr-stats' },
-      h('div', { class: 'fr-head' },
-        h('button', { type: 'button', class: 'fr-back', 'data-fk': 'back', onclick: () => deps.onBack && deps.onBack() }, '← Back'),
-        h('h2', {}, 'Stats')),
-      h('div', { class: 'fr-statbar' }, periodSwitch(), rangeNav()),
-      stateView());
+    const active = focusNext || (typeof document !== 'undefined' && document.activeElement && document.activeElement.getAttribute
+      ? document.activeElement.getAttribute('data-fk') : null);
+    focusNext = null;
+    const drilling = view === 'drill' && drill && cache.get(keyOf()) && cache.get(keyOf()).days;
+    const page = drilling
+      ? h('div', { class: 'page fr-home fr-stats' },
+        h('div', { class: 'fr-head' },
+          h('button', { type: 'button', class: 'fr-back', 'data-fk': 'drill-back', onclick: closeDrill }, '← Back'),
+          h('h2', {}, drill.name)),
+        drillView(cache.get(keyOf())))
+      : h('div', { class: 'page fr-home fr-stats' },
+        h('div', { class: 'fr-head' },
+          h('button', { type: 'button', class: 'fr-back', 'data-fk': 'back', onclick: () => deps.onBack && deps.onBack() }, '← Back'),
+          h('h2', {}, 'Stats')),
+        h('div', { class: 'fr-statbar' }, periodSwitch(), rangeNav()),
+        stateView());
     root.textContent = '';
     root.append(page);
     if (active) {

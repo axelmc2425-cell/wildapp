@@ -226,7 +226,10 @@ export function yearHeatmap(perDay, year) {
 
 // ---- ranked bars (HTML) ---------------------------------------------------------------------
 
-export function rankedBars(items, { unit = 'time' } = {}) {
+/**
+ * With `onOpen(name)` every row holds a button (data-fk `${fkPrefix}-${name}`) that opens that item.
+ */
+export function rankedBars(items, { unit = 'time', onOpen = null, fkPrefix = 'item' } = {}) {
   const rows = (Array.isArray(items) ? items : []).filter(Boolean);
   const sum = rows.reduce((s, r) => s + secsOf(r.secs), 0);
   const max = Math.max(0, ...rows.map(r => secsOf(r.secs)));
@@ -244,11 +247,15 @@ export function rankedBars(items, { unit = 'time' } = {}) {
     const name = String(r.name ?? '');
     const fill = h('div', { class: 'fr-rank-fill' });
     fill.style.width = `${r1(max > 0 ? (secs / max) * 100 : 0)}%`;
-    wrap.append(h('div', { class: 'fr-rank-row', role: 'listitem' },
+    const cells = [
       h('span', { class: 'fr-rank-name', title: name }, name),
       h('div', { class: 'fr-rank-track' }, fill),
       h('span', { class: 'fr-rank-time' }, fmt(secs)),
-      h('span', { class: 'fr-rank-pct' }, pctText)));
+      h('span', { class: 'fr-rank-pct' }, pctText)];
+    wrap.append(typeof onOpen === 'function'
+      ? h('div', { class: 'fr-rank-row fr-rank-open', role: 'listitem' },
+        h('button', { type: 'button', class: 'fr-rank-btn', 'data-fk': `${fkPrefix}-${name}`, 'aria-label': `${name}, ${fmt(secs)}, ${pctText}. Open details`, onclick: () => onOpen(name) }, ...cells))
+      : h('div', { class: 'fr-rank-row', role: 'listitem' }, ...cells));
   }
   return wrap;
 }
