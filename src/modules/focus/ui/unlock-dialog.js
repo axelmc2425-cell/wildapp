@@ -21,6 +21,7 @@ export function openUnlockDialog({ controller, block, onDone, subscribe, onClose
   let pendingAt = pendingFromState();
 
   function pendingFromState() {
+    if (block.limit) return pendingUnlockFor({ pending_unlocks: controller.state.limitsState?.pendingUnlocks }, windowId);
     const helper = controller.state.helper;
     return helper && helper.kind === 'ok' ? pendingUnlockFor(helper.status, windowId) : null;
   }
@@ -133,6 +134,7 @@ export function openUnlockDialog({ controller, block, onDone, subscribe, onClose
     ? `Ask ${partnerName} to sign a code, or wait out the waiting period.`
     : 'Ask your partner to sign a code, or wait out the waiting period.';
   const body = h('div', { class: 'fr-un' },
+    block.title ? h('p', { class: 'fr-un-for' }, h('strong', {}, block.title)) : null,
     h('p', { class: 'fr-muted fr-un-intro' }, intro),
     h('section', { class: 'fr-un-opt', 'aria-labelledby': `fr-un-h1-${uid}` },
       h('h4', { class: 'fr-un-title', id: `fr-un-h1-${uid}` }, 'Ask my partner'),
@@ -161,6 +163,12 @@ export function openUnlockDialog({ controller, block, onDone, subscribe, onClose
       unsub = subscribe(() => {
         if (busy) return;
         const st = controller.state;
+        if (block.limit) {
+          // A limit lives in limitsState, not in the blocks; the dialog is pointless once its lock is gone.
+          if (!(st.limitsState?.limits || []).some((l) => `limit-${l.id}` === block.key && l.lock === 'locked')) { dlg.close(); return; }
+          pendingAt = pendingFromState(); refresh();
+          return;
+        }
         if (!st.blocks.some((b) => b.key === block.key && b.lock === 'locked')) { dlg.close(); return; }
         if (st.helper && st.helper.kind === 'ok') { pendingAt = pendingFromState(); refresh(); }
       }) || (() => {});
