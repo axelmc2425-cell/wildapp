@@ -153,10 +153,8 @@ export function openLimitEditor(controller, limit, { onDone, onClose, openUnlock
   const isLocked = () => lockedRadio.checked;
   const helperOk = () => controller.state?.helper?.kind === 'ok';
   // Whether the limit is locked right now (the row may have been unlocked since the editor opened).
-  let unlockedHere = false; // after an unlock in this dialog the lock was already acknowledged
   const wasLocked = () => {
     if (!editing) return false;
-    if (unlockedHere) return true;
     const row = (controller.state?.limitsState?.limits || []).find((l) => l.id === limit.id) || limit;
     return row.lock === 'locked';
   };
@@ -176,7 +174,7 @@ export function openLimitEditor(controller, limit, { onDone, onClose, openUnlock
     show(helperMsg, ok ? '' : HELPER_REQUIRED);
     const lk = isLocked();
     lockedOpts.hidden = !lk;
-    lockedNote.hidden = !(lk && wasLocked() && !unlockedHere);
+    lockedNote.hidden = !(lk && wasLocked());
     confirmBox.checked = confirmed;
     const hasCustom = delayInput.value.trim() !== '';
     delayChips.forEach((b, i) => b.setAttribute('aria-pressed', String(!hasCustom && delayPreset === UNLOCK_DELAY_PRESETS_H[i])));
@@ -200,7 +198,7 @@ export function openLimitEditor(controller, limit, { onDone, onClose, openUnlock
       controller, block: limitBlock(row), subscribe,
       onDone: () => {
         // Keep the editor and the user's edits open; the next Save applies them.
-        unlockedHere = true;
+        confirmed = false; // the retry creates a new lock: confirm it again
         show(errEls.form, '');
         unlockedNote.textContent = 'Unlocked. Save again to apply your changes.'; unlockedNote.hidden = false;
         refresh();

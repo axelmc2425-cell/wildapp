@@ -384,27 +384,72 @@ test('Locked is disabled with a hint when the helper is down, and no helper kind
   }
 });
 
-test('unlock then retry: the editor stays open with the edits and Save succeeds', async () => {
+async function unlockedEditor(helper = { kind: 'ok' }) {
   const body = installDom();
   const l = lim({ lock: 'locked', unlockDelayMs: 3600000 });
-  let unlockOpts; let attempts = 0; let sent;
+  let unlockOpts; const sent = []; let unlockCalls = 0;
   const controller = {
-    saveLimit: async (x) => { attempts++; if (attempts === 1) return { ok: false, needsUnlock: true, limitId: 1 }; sent = x; return { ok: true }; },
-    state: { ...okState, limitsState: { limits: [l] } },
+    state: { partner: { set: true }, helper, limitsState: { limits: [l] } },
+    saveLimit: async (x) => {
+      const cur = controller.state.limitsState.limits[0];
+      if (cur.lock === 'locked') return { ok: false, needsUnlock: true, limitId: 1 };
+      sent.push(x); return { ok: true };
+    },
   };
   let done = 0;
-  openLimitEditor(controller, l, { onDone: () => done++, openUnlockDialog: (o) => { unlockOpts = o; } });
+  openLimitEditor(controller, l, { onDone: () => done++, openUnlockDialog: (o) => { unlockCalls++; unlockOpts = o; } });
   field(body, 'hours').value = '5';
   await addChip(body, 'site', 'x.com');
   await btn(body, 'Save').click();
   controller.state.limitsState.limits = [lim()];
   unlockOpts.onDone({ ok: true });
+  return { body, controller, sent, calls: () => unlockCalls, done: () => done };
+}
+
+test('unlock then retry: the editor stays open with the edits; the lock must be confirmed again', async () => {
+  const { body, sent, done } = await unlockedEditor();
   assert.match(text(body), /Unlocked\. Save again to apply your changes\./);
   assert.equal(findAll(body, (n) => n.className === 'fr-overlay').length, 1);
   assert.equal(field(body, 'hours').value, '5');
+  assert.equal(confirmEl(body).checked, false);
   await btn(body, 'Save').click();
-  assert.equal(done, 1);
-  assert.deepEqual(sent.sites, ['reddit.com', 'x.com']);
+  assert.ok(visibleErrs(body).includes('Tick the box to confirm the lock.'));
+  assert.equal(sent.length, 0);
+  await tick(body);
+  await btn(body, 'Save').click();
+  assert.equal(done(), 1);
+  assert.deepEqual(sent[0].sites, ['reddit.com', 'x.com']);
+});
+
+test('after an unlock, Locked -> Normal -> Locked still needs the tick', async () => {
+  const { body, sent } = await unlockedEditor();
+  await tick(body);
+  await pick(body, radio(body, 'none')); await pick(body, radio(body, 'locked'));
+  await btn(body, 'Save').click();
+  assert.ok(visibleErrs(body).includes('Tick the box to confirm the lock.'));
+  assert.equal(sent.length, 0);
+});
+
+test('after an unlock with the helper down, Locked is disabled and not saved', async () => {
+  const { body, controller, sent } = await unlockedEditor();
+  controller.state.helper = { kind: 'not-running' };
+  await pick(body, radio(body, 'none')); // any change re-runs refresh
+  assert.equal(radio(body, 'locked').disabled, true);
+  assert.match(text(body), /The helper must be running to lock a limit\./);
+  await btn(body, 'Save').click();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].lock, 'none');
+});
+
+test('a weakening save after the unlock does not open the unlock again', async () => {
+  const { body, calls, sent } = await unlockedEditor();
+  assert.equal(calls(), 1);
+  await tick(body);
+  field(body, 'hours').value = '10';
+  await btn(body, 'Save').click();
+  assert.equal(calls(), 1);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].capSecs, 36000);
 });
 
 test('cap parsing: decimals, negatives, text, huge numbers, zero', async () => {
