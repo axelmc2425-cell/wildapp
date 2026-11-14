@@ -44,7 +44,7 @@ fn names(v: &[Proc]) -> Vec<&str> {
     v.iter().map(|p| p.name.as_str()).collect()
 }
 fn empty() -> Decision {
-    Decision { block_sites: vec![], block_apps: vec![], block_folders: vec![], allow: None, frozen: false, locks: vec![] }
+    Decision { block_sites: vec![], block_apps: vec![], block_folders: vec![], allow: None, frozen: false, locks: vec![], limit_blocks: vec![] }
 }
 fn blocking(apps: &[&str]) -> Decision {
     Decision { block_apps: s(apps), ..empty() }

@@ -26,7 +26,7 @@ test('migrateFocus is idempotent when run twice', async () => {
   await migrateFocus(db);
   const rows = await db.all("SELECT value FROM focus_meta WHERE key='schema_version'");
   assert.equal(rows.length, 1);
-  assert.equal(rows[0].value, '4');
+  assert.equal(rows[0].value, '5');
 });
 
 test("inserting a list with mode 'nope' is rejected", async () => {
@@ -59,7 +59,7 @@ test('migrates a v1 database to v2 keeping existing rows', async () => {
   assert.deepEqual(rows.map(r => r.lock), ['none', 'locked', 'frozen']);
   assert.ok(rows.every(r => r.unlock_delay_ms === null));
   const v = await db.all("SELECT value FROM focus_meta WHERE key='schema_version'");
-  assert.equal(v[0].value, '4');
+  assert.equal(v[0].value, '5');
 });
 
 test('fresh database has a nullable unlock_delay_ms column', async () => {
@@ -91,7 +91,7 @@ test('migrates a v2 database to v3 keeping items and allowing folder items', asy
   await db.run("INSERT INTO focus_items(list_id, kind, value) VALUES (1, 'folder', 'C:\\x')");
   await assert.rejects(db.run("INSERT INTO focus_items(list_id, kind, value) VALUES (1, 'nope', 'x')"));
   const v = await db.all("SELECT value FROM focus_meta WHERE key='schema_version'");
-  assert.equal(v[0].value, '4');
+  assert.equal(v[0].value, '5');
 });
 
 async function v3Db() {
@@ -109,7 +109,7 @@ test('migrates a v3 database to v4 keeping the schedule and linking its list', a
   const db = await v3Db();
   await migrateFocus(db);
   const v = await db.all("SELECT value FROM focus_meta WHERE key='schema_version'");
-  assert.equal(v[0].value, '4');
+  assert.equal(v[0].value, '5');
   const [r] = await db.all('SELECT * FROM focus_schedules');
   assert.equal(r.name, '');
   assert.equal(r.enabled, 1);
@@ -126,4 +126,21 @@ test('running migrateFocus twice on a v3 database changes nothing further', asyn
   const before = [await db.all('SELECT * FROM focus_schedules'), await db.all('SELECT * FROM focus_schedule_lists')];
   await migrateFocus(db);
   assert.deepEqual([await db.all('SELECT * FROM focus_schedules'), await db.all('SELECT * FROM focus_schedule_lists')], before);
+});
+
+test('migrating from v4 adds the limit tables and keeps schedule data', async () => {
+  const db = await fresh();
+  await migrateFocus(db);
+  await db.run("INSERT INTO focus_lists(name, mode) VALUES ('L', 'block')");
+  await db.run("INSERT INTO focus_schedules(list_id, weekdays, start_time, end_time, lock, name) VALUES (1, '[1]', '09:00', '10:00', 'none', 'S')");
+  await db.run('DROP TABLE focus_limits');
+  await db.run('DROP TABLE focus_limit_items');
+  await db.run("UPDATE focus_meta SET value = '4' WHERE key = 'schema_version'");
+  await migrateFocus(db);
+  const names = (await db.all("SELECT name FROM sqlite_master WHERE type='table'")).map(r => r.name);
+  assert.ok(names.includes('focus_limits') && names.includes('focus_limit_items'));
+  assert.equal((await db.all('SELECT name FROM focus_schedules'))[0].name, 'S');
+  assert.equal((await db.all("SELECT value FROM focus_meta WHERE key='schema_version'"))[0].value, '5');
+  await db.run("INSERT INTO focus_limits(name, period, cap_secs) VALUES ('x', 'daily', 60)");
+  assert.equal((await db.all('SELECT lock, enabled FROM focus_limits'))[0].lock, 'none');
 });

@@ -56,4 +56,14 @@ pub struct Decision {
     pub allow: Option<Allow>,
     pub frozen: bool,
     pub locks: Vec<LockInfo>,
+    /// Time limits that are used up now. Omitted from JSON when empty (shared decide vectors).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub limit_blocks: Vec<LimitBlock>,
+}
+
+/// An exceeded time limit; it blocks until `until_day` (the first day it lifts).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LimitBlock {
+    pub id: String,
+    pub until_day: String,
 }

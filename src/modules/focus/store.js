@@ -5,6 +5,7 @@ import { validateSchedule, isLockedActive, nextOccurrence } from './schedule-log
 import { localDayEnd, listTargets } from './expand.js';
 import { MAX_ITEMS_PER_WINDOW } from './limits.js';
 import { makeTzOffsetAt } from './tz.js';
+import { validateLimit, MAX_LIMITS } from './limit-logic.js';
 
 const MAX_ITEMS = 512;
 const MAX_NAME = 60;
@@ -306,3 +307,84 @@ export async function restoreSchedule(db, id, prev) {
 
 /** @returns {Promise<ScheduleRec|null>} */
 export const readSchedule = (db, id) => getSchedule(db, id);
+
+/** @typedef {{ id: number, name: string, period: 'daily'|'weekly', capSecs: number, lock: 'none'|'locked', unlockDelayMs: number|null, enabled: boolean, apps: string[], sites: string[] }} LimitRec */
+
+/** @returns {Promise<LimitRec[]>} ordered by id */
+export async function listLimits(db) {
+  const rows = await db.all('SELECT id, name, period, cap_secs, lock, unlock_delay_ms, enabled FROM focus_limits ORDER BY id');
+  const items = await db.all('SELECT limit_id, kind, value FROM focus_limit_items ORDER BY rowid');
+  const byId = new Map(rows.map(r => [r.id, {
+    id: r.id, name: r.name, period: r.period, capSecs: r.cap_secs, lock: r.lock,
+    unlockDelayMs: r.unlock_delay_ms ?? null, enabled: r.enabled !== 0, apps: [], sites: [],
+  }]));
+  for (const it of items) {
+    const rec = byId.get(it.limit_id);
+    if (rec) (it.kind === 'site' ? rec.sites : rec.apps).push(it.value);
+  }
+  return [...byId.values()];
+}
+
+/** Inserts (no id) or replaces (id) a limit and its items. Throws on an invalid limit. @returns {Promise<number>} id */
+export async function saveLimit(db, limit, { adopt = false } = {}) {
+  const sites = [], apps = [];
+  for (const [kind, raws, out] of [['site', limit.sites, sites], ['app', limit.apps, apps]]) {
+    for (const raw of Array.isArray(raws) ? raws : []) {
+      const r = checkEntry(kind, raw);
+      if (!r.ok) throw new Error(`invalid limit: ${r.message}`);
+      if (!out.includes(r.value)) out.push(r.value);
+    }
+  }
+  const rec = { ...limit, name: typeof limit.name === 'string' ? limit.name.trim() : limit.name, sites, apps };
+  const v = validateLimit(rec);
+  if (!v.ok) throw new Error(`invalid limit: ${Object.values(v.errors).join(' ')}`);
+  const delay = rec.lock === 'locked' ? rec.unlockDelayMs : null;
+  const enabled = rec.enabled === false ? 0 : 1;
+  const itemStmts = (idSql, idParams) => [
+    ...sites.map(x => ({ sql: `INSERT INTO focus_limit_items(limit_id, kind, value) VALUES (${idSql}, 'site', ?)`, params: [...idParams, x] })),
+    ...apps.map(x => ({ sql: `INSERT INTO focus_limit_items(limit_id, kind, value) VALUES (${idSql}, 'app', ?)`, params: [...idParams, x] })),
+  ];
+  if (limit.id !== undefined && limit.id !== null) {
+    const id = limit.id;
+    const exists = await db.all('SELECT id FROM focus_limits WHERE id = ?', [id]);
+    if (!exists.length) {
+      if (!adopt) throw new Error('no such limit');
+      // Adoption of a limit the helper holds: keep its id (AUTOINCREMENT continues above it).
+      const [{ n }] = await db.all('SELECT COUNT(*) AS n FROM focus_limits');
+      if (n >= MAX_LIMITS) throw new Error('invalid limit: too many limits');
+      await db.batch([
+        { sql: 'INSERT INTO focus_limits(id, name, period, cap_secs, lock, unlock_delay_ms, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          params: [id, rec.name, rec.period, rec.capSecs, rec.lock, delay, enabled] },
+        ...itemStmts('?', [id]),
+      ]);
+      return id;
+    }
+    await db.batch([
+      { sql: 'UPDATE focus_limits SET name = ?, period = ?, cap_secs = ?, lock = ?, unlock_delay_ms = ?, enabled = ? WHERE id = ?',
+        params: [rec.name, rec.period, rec.capSecs, rec.lock, delay, enabled, id] },
+      { sql: 'DELETE FROM focus_limit_items WHERE limit_id = ?', params: [id] },
+      ...itemStmts('?', [id]),
+    ]);
+    return id;
+  }
+  const [{ n }] = await db.all('SELECT COUNT(*) AS n FROM focus_limits');
+  if (n >= MAX_LIMITS) throw new Error('invalid limit: too many limits');
+  await db.batch([
+    { sql: 'INSERT INTO focus_limits(name, period, cap_secs, lock, unlock_delay_ms, enabled) VALUES (?, ?, ?, ?, ?, ?)',
+      params: [rec.name, rec.period, rec.capSecs, rec.lock, delay, enabled] },
+    ...itemStmts('(SELECT MAX(id) FROM focus_limits)', []),
+  ]);
+  const [row] = await db.all('SELECT MAX(id) AS id FROM focus_limits');
+  return row.id;
+}
+
+export async function deleteLimit(db, id) {
+  await db.batch([
+    { sql: 'DELETE FROM focus_limit_items WHERE limit_id = ?', params: [id] },
+    { sql: 'DELETE FROM focus_limits WHERE id = ?', params: [id] },
+  ]);
+}
+
+export async function setLimitEnabled(db, id, enabled) {
+  await db.run('UPDATE focus_limits SET enabled = ? WHERE id = ?', [enabled ? 1 : 0, id]);
+}

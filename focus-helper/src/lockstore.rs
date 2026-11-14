@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::limits::{is_weaker, validate_limit, Limit, LIMIT_ID_PREFIX, MAX_LIMITS};
 use crate::model::{Lock, Mode, Window};
 use crate::unlock::{self, Challenge, UnlockError, CHALLENGE_TTL_MS};
 
@@ -27,6 +28,8 @@ pub enum Invalid {
     BadLock,
     TooLong,
     BadDelay,
+    /// Window id uses the `limit-` prefix or a reserved id.
+    BadId,
 }
 
 impl Invalid {
@@ -37,6 +40,7 @@ impl Invalid {
             Invalid::BadLock => "bad-lock",
             Invalid::TooLong => "too-long",
             Invalid::BadDelay => "bad-delay",
+            Invalid::BadId => "bad-id",
         }
     }
 }
@@ -59,7 +63,28 @@ pub enum PushError {
     TooMany,
     /// Two windows in one push share an id.
     DuplicateId,
+    /// A limit failed validation (reason code, e.g. `bad-cap`), the push has too many limits, or
+    /// its id is reserved.
+    BadLimit(String),
 }
+
+/// Ids a limit may not use (reserved for other protected items).
+pub const RESERVED_LIMIT_IDS: &[&str] = &["uninstall"];
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LimitPushReport {
+    /// Ids of stored locked limits whose incoming copy was missing or weaker (ignored).
+    pub kept_locked: Vec<String>,
+    /// Incoming limits stored or replaced.
+    pub applied: usize,
+    /// Incoming locked limits skipped because a partner unlocked that id and the app has not yet
+    /// synced the unlock (push it unlocked first).
+    pub skipped_tombstoned: Vec<String>,
+}
+
+/// Most limit tombstones kept; the oldest are dropped.
+pub const MAX_LIMIT_TOMBSTONES: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PartnerError {
@@ -128,6 +153,11 @@ pub struct LockStore {
     pub high_water_ms: i64,
     pub ended_early: Vec<Tombstone>,
     pub pending_unlocks: Vec<PendingUnlock>,
+    /// Time limits (portable pool caps). Absent in state written before limits existed.
+    pub limits: Vec<Limit>,
+    /// Locked limits unlocked by a partner (`ends` is `i64::MAX`). A stale locked copy stays
+    /// skipped until the app pushes the id unlocked or deleted. At most `MAX_LIMIT_TOMBSTONES`.
+    pub limit_tombstones: Vec<Tombstone>,
 }
 
 impl Default for LockStore {
@@ -140,6 +170,8 @@ impl Default for LockStore {
             high_water_ms: 0,
             ended_early: Vec::new(),
             pending_unlocks: Vec::new(),
+            limits: Vec::new(),
+            limit_tombstones: Vec::new(),
         }
     }
 }
@@ -153,6 +185,9 @@ fn cap_for(lock: Lock) -> Option<i64> {
 }
 
 fn validate_window(w: &Window) -> Result<(), Invalid> {
+    if w.id.starts_with(LIMIT_ID_PREFIX) || RESERVED_LIMIT_IDS.contains(&w.id.as_str()) {
+        return Err(Invalid::BadId);
+    }
     if w.ends <= w.starts {
         return Err(Invalid::BadTimes);
     }
@@ -325,13 +360,97 @@ impl LockStore {
         Ok(report)
     }
 
+    /// True when any stored limit is locked.
+    pub fn has_locked_limit(&self) -> bool {
+        self.limits.iter().any(|l| l.lock == Lock::Locked)
+    }
+
+    fn locked_limit(&self, id: &str) -> Option<&Limit> {
+        self.limits.iter().find(|l| l.id == id && l.lock == Lock::Locked)
+    }
+
+    /// Replaces the stored limits with the app's list, keeping locked limits from being weakened
+    /// or removed. Validates everything first; a rejected push changes nothing.
+    pub fn push_limits(&mut self, incoming: Vec<Limit>, now_ms: i64) -> Result<LimitPushReport, PushError> {
+        let now_ms = now_ms.max(self.high_water_ms);
+        if incoming.len() > MAX_LIMITS {
+            return Err(PushError::BadLimit("too-many".into()));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for l in &incoming {
+            if RESERVED_LIMIT_IDS.contains(&l.id.as_str()) {
+                return Err(PushError::BadLimit("reserved-id".into()));
+            }
+            validate_limit(l).map_err(PushError::BadLimit)?;
+            if l.lock == Lock::Locked && self.partner_key.is_none() {
+                return Err(PushError::NoPartner);
+            }
+            if !seen.insert(l.id.as_str()) {
+                return Err(PushError::DuplicateId);
+            }
+        }
+
+        let incoming_unlocked: Vec<String> =
+            incoming.iter().filter(|l| l.lock == Lock::None).map(|l| l.id.clone()).collect();
+        let mut report = LimitPushReport::default();
+        let mut next: Vec<Limit> = Vec::new();
+        for old in self.limits.iter().filter(|l| l.lock == Lock::Locked) {
+            match incoming.iter().find(|n| n.id == old.id) {
+                Some(n) if !is_weaker(old, n) => {
+                    next.push(n.clone());
+                    report.applied += 1;
+                }
+                _ => {
+                    next.push(old.clone());
+                    report.kept_locked.push(old.id.clone());
+                }
+            }
+        }
+        for n in incoming {
+            if next.iter().any(|k| k.id == n.id) {
+                continue; // a retained locked limit was handled above
+            }
+            let was_locked = self.locked_limit(&n.id).is_some();
+            if !was_locked && n.lock == Lock::Locked && self.limit_tombstones.iter().any(|t| t.id == n.id) {
+                // Stale locked copy of an unlocked id: skipped, the unlocked one stays.
+                next.extend(self.limits.iter().find(|l| l.id == n.id).cloned());
+                report.skipped_tombstoned.push(n.id.clone());
+                continue;
+            }
+            report.applied += 1;
+            next.push(n);
+        }
+        if next.len() > MAX_LIMITS {
+            return Err(PushError::BadLimit("too-many".into()));
+        }
+        // An unlocked incoming copy proves the app synced the unlock; an id that is gone from the
+        // result proves it synced the delete. Either way the tombstone has done its job.
+        let mut tombs = std::mem::take(&mut self.limit_tombstones);
+        tombs.retain(|t| {
+            let synced_unlock = incoming_unlocked.contains(&t.id);
+            !synced_unlock && (next.iter().any(|l| l.id == t.id) || report.skipped_tombstoned.contains(&t.id))
+        });
+        let excess = tombs.len().saturating_sub(MAX_LIMIT_TOMBSTONES);
+        tombs.drain(..excess);
+        self.limit_tombstones = tombs;
+        self.limits = next;
+        self.high_water_ms = now_ms;
+        Ok(report)
+    }
+
+    /// True when `id` names an active locking window or a locked limit.
+    fn has_lock_target(&self, id: &str, now_ms: i64) -> bool {
+        self.windows.iter().any(|w| w.id == id && is_locking(w) && is_active(w, now_ms))
+            || self.locked_limit(id).is_some()
+    }
+
     pub fn set_partner(&mut self, public_key_b64: &str, now_ms: i64) -> Result<(), PartnerError> {
         let now_ms = now_ms.max(self.high_water_ms);
         self.high_water_ms = now_ms;
         if unlock::parse_public_key(public_key_b64).is_none() {
             return Err(PartnerError::BadKey);
         }
-        if self.windows.iter().any(|w| is_locking(w) && w.ends > now_ms) {
+        if self.windows.iter().any(|w| is_locking(w) && w.ends > now_ms) || self.has_locked_limit() {
             return Err(PartnerError::LockActive);
         }
         self.partner_key = Some(public_key_b64.to_string());
@@ -346,8 +465,7 @@ impl LockStore {
     ) -> Result<String, ChallengeError> {
         let now_ms = now_ms.max(self.high_water_ms);
         self.high_water_ms = now_ms;
-        let ok = self.windows.iter().any(|w| w.id == window_id && is_locking(w) && is_active(w, now_ms));
-        if !ok {
+        if !self.has_lock_target(window_id, now_ms) {
             return Err(ChallengeError::NoSuchLock);
         }
         self.challenges.retain(|c| now_ms - c.issued <= CHALLENGE_TTL_MS);
@@ -401,7 +519,7 @@ impl LockStore {
     /// active: an already-ended window keeps its existing tombstone.
     fn end_early(&mut self, window_id: &str, now_ms: i64) -> bool {
         let Some(w) = self.windows.iter_mut().find(|w| w.id == window_id && is_locking(w) && is_active(w, now_ms)) else {
-            return false;
+            return self.unlock_limit(window_id);
         };
         let original_ends = w.ends;
         w.ends = w.ends.min(now_ms);
@@ -411,17 +529,35 @@ impl LockStore {
         true
     }
 
+    /// Unlocks a locked limit (it stays, editable), tombstones its id and drops its pending
+    /// delayed unlock. False (changing nothing) when there is no locked limit with that id.
+    fn unlock_limit(&mut self, id: &str) -> bool {
+        let Some(l) = self.limits.iter_mut().find(|l| l.id == id && l.lock == Lock::Locked) else {
+            return false;
+        };
+        l.lock = Lock::None;
+        l.unlock_delay_ms = None;
+        self.limit_tombstones.retain(|t| t.id != id);
+        self.limit_tombstones.push(Tombstone { id: id.to_string(), ends: i64::MAX });
+        let excess = self.limit_tombstones.len().saturating_sub(MAX_LIMIT_TOMBSTONES);
+        self.limit_tombstones.drain(..excess);
+        self.pending_unlocks.retain(|p| p.window_id != id);
+        true
+    }
+
     /// Starts the waiting period of a Locked window; returns when it ends. A repeat request
     /// returns the existing time rather than restarting the wait.
     pub fn request_delayed_unlock(&mut self, window_id: &str, now_ms: i64) -> Result<i64, DelayError> {
         let now_ms = now_ms.max(self.high_water_ms);
         self.high_water_ms = now_ms;
-        let w = self
-            .windows
-            .iter()
-            .find(|w| w.id == window_id && is_active(w, now_ms))
-            .ok_or(DelayError::NoSuchLock)?;
-        let delay = match (w.lock, w.unlock_delay_ms) {
+        let target = match self.windows.iter().find(|w| w.id == window_id && is_active(w, now_ms)) {
+            Some(w) => (w.lock, w.unlock_delay_ms),
+            None => self
+                .locked_limit(window_id)
+                .map(|l| (l.lock, l.unlock_delay_ms))
+                .ok_or(DelayError::NoSuchLock)?,
+        };
+        let delay = match target {
             (Lock::Locked, Some(d)) => d,
             _ => return Err(DelayError::NotDelayable),
         };
@@ -447,7 +583,8 @@ impl LockStore {
         let pending = std::mem::take(&mut self.pending_unlocks);
         let mut changed = false;
         for p in pending {
-            let live = self.windows.iter().any(|w| w.id == p.window_id && is_locking(w) && w.ends > now_ms);
+            let live = self.windows.iter().any(|w| w.id == p.window_id && is_locking(w) && w.ends > now_ms)
+                || self.locked_limit(&p.window_id).is_some();
             if !live {
                 changed = true;
             } else if p.unlock_at <= now_ms {

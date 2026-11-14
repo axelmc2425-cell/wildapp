@@ -6,6 +6,7 @@ import { bannerFor, formatCountdown } from '../model.js';
 import { STARTERS } from '../starters.js';
 import { windowIdForBlock, pendingUnlockFor, lockedBlockHolding } from '../lock-logic.js';
 import { renderSchedules } from './schedule-list.js';
+import { renderLimits, limitBlock, LOCKED_MSG } from './limit-list.js';
 import { nextOccurrence, isLockedActive } from '../schedule-logic.js';
 import { makeTzOffsetAt } from '../tz.js';
 
@@ -31,12 +32,13 @@ const FINISHED = 'That block has already finished.';
 
 /**
  * Renders the Focus Room home view. Returns a cleanup that unsubscribes and stops every timer.
- * deps = { subscribe, openListEditor?, openScheduleEditor?, openStartDialog?, openPartnerSetup?, openUnlockDialog?, mountHelperDetails?, openStats?, tzOffsetAt? }
+ * deps = { subscribe, openListEditor?, openScheduleEditor?, openLimitEditor?, openStartDialog?, openPartnerSetup?, openUnlockDialog?, mountHelperDetails?, openStats?, tzOffsetAt? }
  */
 export function mountHome(root, controller, ctx, deps = {}) {
   const now = () => Date.now();
   const tzOffsetAt = deps.tzOffsetAt || makeTzOffsetAt();
   let schedMsg = null;   // message about a schedule action
+  let limitMsg = null;   // message about a time limit action
   let alive = true;
   let lastSig = '';
   let local = null;      // { text, retry } - a message from the last action
@@ -66,8 +68,9 @@ export function mountHome(root, controller, ctx, deps = {}) {
   const welcomeEl = h('div', {});
   const listsEl = h('section', { class: 'fr-lists', 'aria-labelledby': 'fr-lists-title' });
   const schedsEl = h('section', { class: 'fr-lists fr-schedules', 'aria-labelledby': 'fr-scheds-title' });
+  const limitsEl = h('section', { class: 'fr-lists fr-limits-sec', 'aria-labelledby': 'fr-limits-title' });
   const detailsEl = h('div', {});
-  const page = h('div', { class: 'page fr-home' }, headEl, notesEl, cardsEl, welcomeEl, listsEl, schedsEl, detailsEl);
+  const page = h('div', { class: 'page fr-home' }, headEl, notesEl, cardsEl, welcomeEl, listsEl, schedsEl, limitsEl, detailsEl);
   root.innerHTML = '';
   root.append(page);
 
@@ -178,6 +181,32 @@ export function mountHome(root, controller, ctx, deps = {}) {
       onClose: () => { if (d) dialogs.delete(d); },
     });
     dialogs.add(d);
+  }
+
+  function limitUnlock(limit) {
+    if (typeof deps.openUnlockDialog !== 'function') { limitMsg = LOCKED_MSG; afterAction(); return; }
+    let d = null;
+    d = deps.openUnlockDialog({
+      controller, block: limitBlock(limit), subscribe: deps.subscribe,
+      onDone: () => { limitMsg = null; afterAction(); },
+      onClose: () => { if (d) dialogs.delete(d); },
+    });
+    dialogs.add(d);
+  }
+
+  function openLimit(limit) {
+    if (typeof deps.openLimitEditor !== 'function') return;
+    let d = null;
+    const track = (x) => { if (x && typeof x.close === 'function') dialogs.add(x); return x; };
+    d = deps.openLimitEditor(controller, limit || null, {
+      subscribe: deps.subscribe,
+      openUnlockDialog: typeof deps.openUnlockDialog === 'function'
+        ? (o) => { let u = null; u = track(deps.openUnlockDialog({ ...o, onClose: () => { if (u) dialogs.delete(u); o.onClose?.(); } })); return u; }
+        : undefined,
+      onClose: () => { if (d) dialogs.delete(d); },
+      onDone: (res) => { limitMsg = res && typeof res.warning === 'string' && res.warning ? res.warning : null; afterAction(); },
+    });
+    track(d);
   }
 
   function cancelDialog(block) {
@@ -373,6 +402,7 @@ export function mountHome(root, controller, ctx, deps = {}) {
     const sig = JSON.stringify([
       bannerFor(state.helper), state.syncPending, state.notice, local, listMsg,
       state.loaded, state.lists, blocks.map(b => [b.key, b.state, b.listNames, b.lock, b.lock === 'locked' && state.helper?.kind === 'ok' ? pendingUnlockFor(state.helper.status, windowIdForBlock(b)) : null]),
+      limitMsg, state.limitsState || null, typeof deps.openLimitEditor,
       schedMsg, schedules, schedules.map(sc => [nextOccurrence(sc, t, tzOffsetAt), isLockedActive(sc, t, tzOffsetAt)]),
       typeof deps.openScheduleEditor,
       typeof deps.openListEditor, typeof deps.openStartDialog, typeof deps.openPartnerSetup, typeof deps.openUnlockDialog,
@@ -434,7 +464,29 @@ export function mountHome(root, controller, ctx, deps = {}) {
       }));
     }
 
+    renderLimitSection(state);
     restore();
+  }
+
+  function renderLimitSection(state) {
+    const ls = state.limitsState;
+    limitsEl.textContent = '';
+    const canEdit = typeof deps.openLimitEditor === 'function';
+    limitsEl.append(h('div', { class: 'fr-sec-head' },
+      h('h3', { id: 'fr-limits-title' }, 'Time limits'),
+      ls && ls.loaded ? h('button', {
+        type: 'button', 'data-fk': 'limit-add', disabled: !canEdit, title: canEdit ? null : SOON,
+        onclick: () => openLimit(null),
+      }, 'Add limit') : null));
+    if (!ls) return;
+    if (limitMsg) limitsEl.append(h('p', { class: 'fr-note', role: 'alert' }, limitMsg));
+    limitsEl.append(renderLimits({ ...ls, helperKind: state.helper?.kind, trackingOff: state.helper?.kind === 'ok' && state.helper.status?.usage_tracking === false }, {
+      controller, confirm: confirmD, openEditor: canEdit ? openLimit : undefined, openUnlock: limitUnlock,
+      onResult: (res) => {
+        limitMsg = res && res.ok === false ? (res.message || 'That did not work.') : (res && res.warning) || null;
+        afterAction();
+      },
+    }));
   }
 
   // ---- wiring ----
@@ -442,7 +494,7 @@ export function mountHome(root, controller, ctx, deps = {}) {
   const timers = [
     setInterval(tick, 1000),
     setInterval(() => { lastSig = ''; render(); }, 60000), // schedule rows show times that move on
-    setInterval(() => { controller.refreshStatus(); }, 5000),
+    setInterval(() => { controller.refreshStatus(); if (typeof controller.refreshLimits === 'function') controller.refreshLimits(); }, 5000),
     setInterval(() => { if (controller.state.syncPending) controller.resync(); }, 30000),
   ];
   render();

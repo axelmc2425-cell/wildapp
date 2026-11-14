@@ -38,6 +38,8 @@ export function createHelperClient(call) {
     cancelDelayedUnlock: (windowId) => send({ type: 'CancelDelayedUnlock', window_id: windowId }),
     getUsage: (fromDay, toDay) => send({ type: 'GetUsage', from_day: fromDay, to_day: toDay }),
     getSessions: (day) => send({ type: 'GetSessions', day }),
+    pushLimits: (limits) => send({ type: 'PushLimits', limits }),
+    getLimits: () => send({ type: 'GetLimits' }),
     /** Recovery from a bogus far-future clock; refused (`lock-active`) while any lock is pending. */
     resetClock: () => send({ type: 'ResetClock' }),
   };

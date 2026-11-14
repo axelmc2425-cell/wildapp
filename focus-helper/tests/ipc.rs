@@ -283,3 +283,32 @@ fn push_with_bad_delay_reports_bad_window_through_handle_line() {
     let v: Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v, json!({"type":"Error","code":"bad-window","message":"bad-delay"}));
 }
+
+#[test]
+fn limits_requests_are_daemon_only_over_stdio() {
+    let mut store = focus_helper::lockstore::LockStore::default();
+    let mut clock = focus_helper::clock::EffectiveClock::new(0);
+    for line in [r#"{"type":"GetLimits"}"#, r#"{"type":"PushLimits","limits":[]}"#] {
+        let r: serde_json::Value =
+            serde_json::from_str(&focus_helper::ipc::handle_line(&mut store, &mut clock, line, 1_000, 1_000, [0; 16])).unwrap();
+        assert_eq!(r["type"], "Error", "{line}");
+        assert_eq!(r["code"], "bad-request", "{line}");
+    }
+}
+
+#[test]
+fn reset_clock_refused_while_a_locked_limit_exists() {
+    let (mut s, mut c) = with_partner();
+    let lim = focus_helper::limits::Limit {
+        id: "limit-1".into(),
+        name: "Games".into(),
+        apps: vec!["game.exe".into()],
+        sites: vec![],
+        period: focus_helper::limits::Period::Daily,
+        cap_secs: 3600,
+        lock: Lock::Locked,
+        unlock_delay_ms: Some(86_400_000),
+    };
+    s.push_limits(vec![lim], NOW).unwrap();
+    assert_eq!(code_of(run(&mut s, &mut c, Request::ResetClock)), "lock-active");
+}

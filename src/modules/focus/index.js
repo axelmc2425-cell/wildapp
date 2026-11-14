@@ -6,6 +6,7 @@ import { startAutoResync } from './auto-resync.js';
 import { mountHome } from './ui/home.js';
 import { openListEditor } from './ui/list-editor.js';
 import { openScheduleEditor } from './ui/schedule-editor.js';
+import { openLimitEditor } from './ui/limit-editor.js';
 import { openStartDialog } from './ui/start-dialog.js';
 import { openPartnerSetup } from './ui/partner-setup.js';
 import { openUnlockDialog } from './ui/unlock-dialog.js';
@@ -67,7 +68,7 @@ registerModule({
       if (cleanup) { const c = cleanup; cleanup = null; try { c(); } catch { /* ignore */ } }
       cleanup = view === 'stats'
         ? mountStatsPage(root, ctl, { onBack: () => show('home'), subscribe })
-        : mountHome(root, ctl, ctx, { subscribe, openListEditor, openScheduleEditor, openStartDialog, openPartnerSetup, openUnlockDialog, mountHelperDetails, openStats: () => show('stats') });
+        : mountHome(root, ctl, ctx, { subscribe, openListEditor, openScheduleEditor, openLimitEditor, openStartDialog, openPartnerSetup, openUnlockDialog, mountHelperDetails, openStats: () => show('stats') });
     }
     show('home');
     return () => {

@@ -10,6 +10,7 @@ const PERIODS = [['today', 'Today'], ['day', 'Day'], ['week', 'Week'], ['month',
 const PREVIOUS_WORD = { day: 'yesterday', week: 'last week', month: 'last month', year: 'last year' };
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const TABS = [['overview', 'Overview'], ['apps', 'Apps & sites'], ['hours', 'Hours'], ['averages', 'Averages']];
 const REFRESH_MS = 60000;
 const STREAK_DAYS = 400;
 const TABLE_CAP = 500;
@@ -57,6 +58,7 @@ export function mountStatsPage(root, controller, deps = {}) {
   let stripHost = null;
   let windowEl = null;
   let asTable = false;
+  let sect = 'overview'; // selected Stats tab; kept across period, range and table changes
   let status = 'loading'; // 'loading' | 'ok' | 'down' | 'error'
   let message = '';
   let errCode = null;
@@ -329,6 +331,35 @@ export function mountStatsPage(root, controller, deps = {}) {
     return h('section', { class: 'fr-statsec' }, h('h3', {}, title), ...kids);
   }
 
+  function selectTab(id) {
+    if (id === sect) return;
+    sect = id; focusNext = `sec-${id}`;
+    render();
+  }
+
+  function tabBar() {
+    const bar = h('div', { class: 'fr-tabs', role: 'tablist', 'aria-label': 'Stats sections' });
+    TABS.forEach(([id, label], i) => {
+      const on = id === sect;
+      bar.append(h('button', {
+        type: 'button', role: 'tab', class: 'fr-tab', id: `fr-tab-${id}`, 'aria-selected': on ? 'true' : 'false', 'aria-controls': `fr-panel-${id}`,
+        tabindex: on ? '0' : '-1', 'data-fk': `sec-${id}`,
+        onclick: () => selectTab(id),
+        onkeydown: (e) => {
+          let to = null;
+          if (e.key === 'ArrowRight') to = (i + 1) % TABS.length;
+          else if (e.key === 'ArrowLeft') to = (i + TABS.length - 1) % TABS.length;
+          else if (e.key === 'Home') to = 0;
+          else if (e.key === 'End') to = TABS.length - 1;
+          if (to == null) return;
+          if (e.preventDefault) e.preventDefault();
+          selectTab(TABS[to][0]);
+        },
+      }, label));
+    });
+    return bar;
+  }
+
   function dataView(entry) {
     const today = todayKey();
     const sum = summarize(entry.days, range, today);
@@ -343,24 +374,35 @@ export function mountStatsPage(root, controller, deps = {}) {
       h('button', { type: 'button', class: 'fr-pbtn', 'aria-pressed': asTable ? 'true' : 'false', 'data-fk': 'table', onclick: () => { asTable = !asTable; render(); } },
         asTable ? 'Show as chart' : 'Show as table')));
     const weekdayRows = WEEKDAYS.map((name, i) => ({ name, secs: sum.perWeekday[i] }));
-    if (asTable) {
-      out.append(section('Daily totals', dataTable(sum.perDay, [{ key: 'day', label: 'Day' }, { key: 'total', label: 'Total', format: formatDuration }], 'Daily totals')));
-      if (period !== 'day') out.append(section('Average by weekday', dataTable(weekdayRows, [{ key: 'name', label: 'Weekday' }, { key: 'secs', label: 'Average', format: formatDuration }], 'Average by weekday')));
-    } else {
-      out.append(section('Daily totals', stackedDailyBars(sum.perDay), chartLegend(topAppNames(sum.perDay))));
-      if (period === 'year') out.append(section('Year at a glance', h('div', { class: 'fr-chart-scroll' }, yearHeatmap(sum.perDay, parts(range.from).y))));
-      if (period !== 'day') out.append(section('Average by weekday', weekdayBars(sum.perWeekday)));
-    }
-    out.append(section('Top apps', rankedBars(sum.topApps.slice(0, 10), { onOpen: (n) => openDrill(n, 'app'), fkPrefix: 'app' })));
-    const sites = section('Top sites', h('p', { class: 'fr-muted fr-small' }, 'Estimated from browser tab titles'));
-    if (sum.topSites.length) {
-      sites.append(rankedBars(sum.topSites.slice(0, 10), { onOpen: (n) => openDrill(n, 'site'), fkPrefix: 'site' }), h('p', { class: 'fr-muted fr-small' }, 'Percentages are of identified sites.'));
-    } else {
-      sites.append(h('p', { class: 'fr-chart-empty' }, 'No websites identified in this period.'));
-    }
-    if (sum.otherBrowsing > 0) sites.append(h('p', { class: 'fr-otherline' }, `Other browsing: ${formatDuration(sum.otherBrowsing)}`));
-    out.append(sites);
-    out.append(hoursSection(entry, today), averagesSection(entry, today));
+    const panels = {
+      overview: () => {
+        const nodes = [];
+        if (asTable) {
+          nodes.push(section('Daily totals', dataTable(sum.perDay, [{ key: 'day', label: 'Day' }, { key: 'total', label: 'Total', format: formatDuration }], 'Daily totals')));
+          if (period !== 'day') nodes.push(section('Average by weekday', dataTable(weekdayRows, [{ key: 'name', label: 'Weekday' }, { key: 'secs', label: 'Average', format: formatDuration }], 'Average by weekday')));
+        } else {
+          nodes.push(section('Daily totals', stackedDailyBars(sum.perDay), chartLegend(topAppNames(sum.perDay))));
+          if (period === 'year') nodes.push(section('Year at a glance', h('div', { class: 'fr-chart-scroll' }, yearHeatmap(sum.perDay, parts(range.from).y))));
+          if (period !== 'day') nodes.push(section('Average by weekday', weekdayBars(sum.perWeekday)));
+        }
+        return nodes;
+      },
+      apps: () => {
+        const nodes = [section('Top apps', rankedBars(sum.topApps.slice(0, 10), { onOpen: (n) => openDrill(n, 'app'), fkPrefix: 'app' }))];
+        const sites = section('Top sites', h('p', { class: 'fr-muted fr-small' }, 'Estimated from browser tab titles'));
+        if (sum.topSites.length) {
+          sites.append(rankedBars(sum.topSites.slice(0, 10), { onOpen: (n) => openDrill(n, 'site'), fkPrefix: 'site' }), h('p', { class: 'fr-muted fr-small' }, 'Percentages are of identified sites.'));
+        } else {
+          sites.append(h('p', { class: 'fr-chart-empty' }, 'No websites identified in this period.'));
+        }
+        if (sum.otherBrowsing > 0) sites.append(h('p', { class: 'fr-otherline' }, `Other browsing: ${formatDuration(sum.otherBrowsing)}`));
+        nodes.push(sites);
+        return nodes;
+      },
+      hours: () => [hoursSection(entry, today)],
+      averages: () => [averagesSection(entry, today)],
+    };
+    out.append(tabBar(), h('div', { role: 'tabpanel', id: `fr-panel-${sect}`, 'aria-labelledby': `fr-tab-${sect}`, class: 'fr-tabpanel' }, ...panels[sect]()));
     return out;
   }
 
@@ -582,7 +624,7 @@ export function mountStatsPage(root, controller, deps = {}) {
 
   function signature() {
     const entry = cache.get(keyOf());
-    return JSON.stringify([period, range, asTable, zoom, panOff, streak ? streak.v : 0, status, message, errCode, unavailable, trackingOff(), helperKind(), todayKey(), entry ? [entry.v, status === 'down' ? entry.at : 0] : null,
+    return JSON.stringify([period, range, asTable, sect, zoom, panOff, streak ? streak.v : 0, status, message, errCode, unavailable, trackingOff(), helperKind(), todayKey(), entry ? [entry.v, status === 'down' ? entry.at : 0] : null,
       view, drill, drillDay, dstatus, dmessage, dcache.has(drillDay) ? [dcache.get(drillDay).v, dstatus === 'down' ? dcache.get(drillDay).at : 0] : null]);
   }
 

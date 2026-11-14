@@ -279,6 +279,49 @@ Accepted limits (not failures):
 - If an old and a new sampler both report on one day, hours can end up lower than the day's total.
 - A pan drag can be interrupted when the page refreshes itself every 60 seconds.
 
+## 19. Time limits (sub-project 6b)
+
+Focus Room > Time limits keeps a daily or weekly allowance per group of apps and sites. The helper counts the time from the usage the sampler reports (the same numbers as Stats) and, once a limit is used up, ends the apps and blocks the sites until the period ends. All items in one limit share one pool. A locked limit cannot be deleted or made weaker from the app. Snapshot the VM first; sign out and in once after installing so the sampler runs. Limit ids are `limit-<n>` (see GetLimits below).
+
+- GetLimits: `Send-Focus @{type='GetLimits'}` (shows `limits`, `status` with `used_secs`, `cap_secs`, `blocked`, `period_ends_day`, and `pending_unlocks`; a limit appears in `status` once the sampler has reported a day)
+- PushLimits (a 2 minute daily limit on Notepad): `Send-Focus @{type='PushLimits'; limits=@(@{id='limit-1'; name='Notepad'; apps=@('notepad.exe'); sites=@(); period='daily'; cap_secs=120; lock='none'})}`; the reply is `LimitsPushed` with `kept_locked` and `skipped_tombstoned`
+
+- [ ] Add a daily limit of 2 minutes for `notepad.exe` in the app, then work in Notepad — Expected: the row shows the time used and left growing; at 2 minutes Notepad is closed, reopening it is closed again within a few seconds, and the row says "Blocked" and "Used up, back on" tomorrow's date
+- [ ] While Notepad is blocked, run `Send-Focus @{type='GetStatus'}` — Expected: `blockApps` lists `notepad.exe` and `limitBlocks` lists the limit with its `until_day`
+- [ ] Add a daily limit of 2 minutes for a site (for example `youtube.com`) and use that site in Chrome or Edge for 2 minutes (tab title carrying the site name) — Expected: the site stops loading (hosts file) and the row says Blocked; other sites still load
+- [ ] Add a limit that holds two apps (for example Notepad and Calculator) and use both — Expected: their time is added into one pool and the block hits both together
+- [ ] With a limit used up, wait for local midnight with the PC on and keep working (the sampler reports the new day) — Expected: the limit lifts at midnight, the row shows the full allowance again, and the program/site works
+- [ ] With a weekly limit used up, check on a Sunday night and then on Monday — Expected: it still blocks on Sunday and lifts at the start of Monday (local time); the row says "back on" the Monday date
+- [ ] Use a limit up, then leave the PC idle across midnight without any program in front (nothing reports) and check GetLimits — Expected: still `blocked` until the first sampler report of the new day
+- [ ] Pause a limit in the app, then resume it — Expected: while paused nothing is blocked; resume restores enforcement from the day's recorded usage. Usage keeps being recorded during the pause for apps and for sites in the built-in site map only: a paused limit is not pushed to the helper, so a site outside that map is labelled `other` while paused (or before the limit existed) and is never counted retroactively
+- [ ] Create a locked limit (the partner key must be set; choose a 1 hour wait) and try to delete it, raise its cap, remove an app, switch daily to weekly, and set it to Normal in the editor — Expected: the app cannot weaken it; each attempt is refused or reported and `GetLimits` still shows the original terms; lowering the cap or adding an app works
+- [ ] With the locked limit, `Send-Focus` a push that omits it or raises its cap — Expected: the reply lists its id in `kept_locked` and `GetLimits` is unchanged
+- [ ] Unlock the locked limit with the partner code (Unlock in the editor or the unlock dialog, sign the code on the partner page, paste the token) — Expected: the limit becomes a normal limit; an older locked copy cannot come back (a re-push reports the id in `skipped_tombstoned`)
+- [ ] Create another locked limit and choose Unlock by waiting; leave it for the full wait (reboot and reopen the app in between) — Expected: the pending card survives, and after the wait the limit becomes a normal limit; cancelling the wait keeps it locked
+- [ ] Use a limit up, close the app completely, then reboot and, before you sign in, check from another admin session or the service log (or sign in and test the program at once) — Expected: limits survive the reboot with the app closed, and an exceeded limit still blocks right after the service starts, before any new sampler report
+- [ ] With a limit used up, run `sc stop MyBrainFocus` then `sc start MyBrainFocus` (no lock pending) and immediately check `GetStatus` — Expected: `limitBlocks` still lists the limit
+- [ ] Use a day with a time change (spring forward or fall back, set the time zone to one with DST) with a daily limit — Expected: the limit resets at the local midnight of that 23 or 25 hour day, not an hour early or late
+- [ ] Change the Windows time zone while a limit is used up (for example to one 5 hours behind) — Expected: it keeps blocking until the sampler reports a later day; the used time never drops because of the change
+- [ ] As a standard user (no admin), change the Windows time zone to one far east (for example UTC+14 or UTC+13) while a limit is used up, and keep working until the sampler reports — Expected on this build: the sampler reports local date = UTC date + 1, which is accepted as the current day, so the limit lifts for the rest of that real day (an accepted limit, see below); record it, do not file it as a failure
+- [ ] End the sampler process (Task Manager, as the signed-in standard user) while a limit is not yet used up, and keep using the program — Expected: nothing is counted while it is not running and the limit never reaches its cap; Focus Room shows "Not counting right now" with no bar after a short while (accepted limit, see below)
+- [ ] With only a limit used up (no block window active), start `openvpn.exe` or `tor.exe` if available and check that DoH settings are unchanged — Expected: the limit's app is closed but VPN apps are not killed and encrypted DNS is not turned off; start a block window and both friction measures apply as before
+- [ ] Day spoof: with a limit used up, send `Send-Focus @{type='ReportForeground'; exe='x.exe'; title=$null; idle_secs=0; day='<yesterday>'}` — Expected: still blocked (a day going backwards never lowers used time); a report for a day more than 2 days from today is refused (`bad-request`), and a day one ahead of the UTC date is accepted and can lift a limit (see accepted limits)
+- [ ] Stop the service and open Focus Room > Time limits — Expected: saved limits are listed with "Enforcement is not running", no zero or "0m left" numbers
+
+Accepted limits (not failures):
+- Site limits are approximate: time is attributed from browser tab titles, so a tab whose title does not carry the site name (or a page title that happens to) counts wrongly, and a limit on a site that is not in the title alias table needs the title to contain the site's name. The alias table maps multi-word labels such as X (titles ending in "/ X"), Twitter, YouTube, Reddit, Google Docs, Google Sheets, Google Slides, Google Drive, Google Calendar, Google Maps, Google Meet, Google Photos, Google Translate, Google Scholar, Google News, Microsoft Teams, Stack Overflow and Hacker News, plus many common sites (Facebook, Instagram, TikTok, Twitch, GitHub, Gmail, LinkedIn, Discord, Spotify, ChatGPT, Notion, Slack, Zoom and others). Other multi-word labels may not match.
+- There are no notifications when a limit is nearly used up; the program or site is simply closed or blocked at the cap.
+- Silence never unblocks: a used-up limit stays blocking until the first sampler report of a new day, which can be a while after sign-in.
+- A local user who can write to the helper pipe can spoof a report for a day one ahead of the UTC date and so lift a day early, the same trust level as spoofing usage reports.
+- Moving the system clock forward can lift a limit a day early, as it can for locks.
+- Locked limits do not yet gate uninstall or stopping the service; that is part of the uninstall protection project (6c).
+- One shared pool per limit: there is no per-app split inside a limit.
+- A standard user can change the Windows time zone without admin rights. Moving east makes the sampler report local date = UTC date + 1, which the helper accepts as the current day, so a used-up limit resets for the rest of that real day. Moving west does not lift anything. This is not prevented.
+- The sampler runs as the signed-in user, who can end it. While it is not running nothing is counted, so the limit never reaches its cap; the app shows "Not counting right now" (the helper reports `usage_tracking: false`), but nothing restarts it by force.
+- An unlisted site (one outside the built-in site map) counts only while its limit exists in the helper: the domain stem used to label usage comes from pushed limits, so earlier or paused time on it was recorded as `other` and is never counted retroactively.
+- Limit blocks do not trigger the VPN-kill or encrypted-DNS-off friction; only block windows do. So DoH and VPN apps can bypass a site limit. Accepted, the same trust level as the rest of the friction design.
+- Weeks start on Monday (local time), not on a setting.
+
 ## Report back
 
 If any check fails, send: the section and line number, what you saw instead, the contents of `C:\ProgramData\MyBrainFocus\service.log` and `%TEMP%\mybrain-focus-install.log`, the output of `sc qc` for both services, a screenshot of any error dialog, your Windows version (`winver`), and the exact names of any process that was wrongly closed.
