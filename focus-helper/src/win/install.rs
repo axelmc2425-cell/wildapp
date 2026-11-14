@@ -6,7 +6,9 @@
 //! the service descriptor to let the elevated Administrator running them stop and delete the
 //! services; every error path restores the restrictive state (`restore`).
 //!
-//! Exit codes (see installer-hooks.nsh): 0 ok, 1 refused because of a pending lock, 3 failure.
+//! Exit codes (see installer-hooks.nsh): 0 ok, 1 refused (a pending lock, or no uninstall permit when
+//! a helper service exists: an upgrade over a running helper and any uninstall of an installed one
+//! need a permit), 3 failure.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -140,8 +142,6 @@ pub fn install() -> Result<(), CmdError> {
     if let Err(e) = paths::ensure_state_dir_for_install() {
         return Err(failed(format!("cannot prepare state directory: {e}")));
     }
-    let (store, now) = load_store_and_now();
-    let lock = logic::uninstall_decision(&store.windows, now);
     let existing = existing_services()?;
     for (role, st) in &existing {
         if *st == ServiceState::Stopped && matches!(scm::is_disabled(*role), Ok(Some(true))) {
@@ -150,9 +150,13 @@ pub fn install() -> Result<(), CmdError> {
         }
     }
 
-    // Upgrade safety: never stop running services while a lock is pending.
-    if let Err(why) = &lock {
-        if existing.iter().any(|(_, st)| *st != ServiceState::Stopped) {
+    // An upgrade over a RUNNING helper stops it, and the service honours Stop only with a permit
+    // (and no pending lock): refuse early with the how-to instead of timing out after 30 s. A first
+    // install, or one where every service is stopped, needs neither.
+    let any_running = existing.iter().any(|(_, st)| *st != ServiceState::Stopped);
+    let needs_gate = logic::install_needs_gate(any_running);
+    if needs_gate {
+        if let (Err(why), _) = gate_now() {
             let msg = format!("install refused: the helper is running and {why}");
             ilog(&msg);
             return Err(CmdError::LockPending(msg));
@@ -160,7 +164,7 @@ pub fn install() -> Result<(), CmdError> {
     }
 
     ilog("install: starting");
-    let result = mutate(&existing);
+    let result = mutate(&existing, needs_gate);
     if let Err(e) = &result {
         ilog(&format!("install failed: {e}; restoring protected state"));
         restore();
@@ -171,13 +175,18 @@ pub fn install() -> Result<(), CmdError> {
     Ok(())
 }
 
-fn mutate(existing: &[(Role, ServiceState)]) -> Result<(), String> {
+fn mutate(existing: &[(Role, ServiceState)], used_permit: bool) -> Result<(), String> {
     let target_dir = paths::install_dir();
     let target_exe = paths::install_exe();
 
     // Stopped services (the only case when a lock is pending) are merely disabled; running ones
     // exist here only when no lock is pending.
     disable_and_stop(existing)?;
+    if used_permit {
+        // The permit did its job: drop it while the services are down, so the new helper starts
+        // protected and the upgrade leaves no open uninstall window behind.
+        clear_permit_after_removal();
+    }
     // Running samplers hold the installed exe open; stop them so it can be replaced.
     stop_samplers_for(&target_exe);
 
@@ -278,9 +287,14 @@ fn same_file(a: &Path, b: &Path) -> bool {
 }
 
 pub fn uninstall(purge_state: bool) -> Result<(), CmdError> {
-    let (verdict, _) = gate_now();
-    verdict.map_err(|why| CmdError::LockPending(format!("uninstall refused: {why}")))?;
     let existing = existing_services()?;
+    // With no helper service (failed install, manual recovery) there is nothing to protect and no
+    // permit to ask for: skip the gate and just clean up.
+    let needs_gate = logic::uninstall_needs_gate(existing.len());
+    if needs_gate {
+        let (verdict, _) = gate_now();
+        verdict.map_err(|why| CmdError::LockPending(format!("uninstall refused: {why}")))?;
+    }
     ilog("uninstall: starting");
 
     if let Err(e) = disable_and_stop(&existing) {
@@ -290,10 +304,12 @@ pub fn uninstall(purge_state: bool) -> Result<(), CmdError> {
     }
 
     // A lock may have been pushed while we were stopping; re-check right before deleting.
-    let (verdict, _) = gate_now();
-    if let Err(why) = verdict {
-        restore();
-        return Err(CmdError::LockPending(format!("uninstall refused: {why}")));
+    if needs_gate {
+        let (verdict, _) = gate_now();
+        if let Err(why) = verdict {
+            restore();
+            return Err(CmdError::LockPending(format!("uninstall refused: {why}")));
+        }
     }
 
     let mut problems = Vec::new();

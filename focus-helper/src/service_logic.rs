@@ -475,6 +475,18 @@ pub fn uninstall_gate(store: &LockStore, now_ms: i64) -> Result<(), String> {
     if store.permit_valid(now_ms) { Ok(()) } else { Err(UNINSTALL_HOWTO.to_string()) }
 }
 
+/// An install needs the permit gate only when it would stop a running helper (an upgrade). A first
+/// install, or one where no service exists or all are stopped (disabled, recovering), needs none.
+pub fn install_needs_gate(any_service_running: bool) -> bool {
+    any_service_running
+}
+
+/// An uninstall needs the permit gate whenever any helper service exists, even stopped or
+/// disabled. With none (failed install, manual recovery) there is nothing to protect: just clean up.
+pub fn uninstall_needs_gate(existing_service_count: usize) -> bool {
+    existing_service_count > 0
+}
+
 /// `uninstall_gate` on a store that first has a due waiting period converted to a permit.
 /// Returns the verdict and whether the store changed (the caller persists it so the file agrees).
 pub fn uninstall_gate_converting(store: &mut LockStore, now_ms: i64) -> (Result<(), String>, bool) {
@@ -579,6 +591,19 @@ mod tests {
         assert!(!stop_allowed_ignoring_permit(&[w(Lock::Locked, 200, 300)], 50), "pending future lock also blocks Stop");
         assert!(stop_allowed_ignoring_permit(&[w(Lock::Locked, 200, 300)], 300));
         assert!(stop_allowed_ignoring_permit(&[w(Lock::None, 0, 100)], 50));
+    }
+
+    #[test]
+    fn install_gate_applies_only_over_a_running_helper() {
+        assert!(!install_needs_gate(false), "first install or all services stopped: no permit");
+        assert!(install_needs_gate(true), "upgrade over a running helper needs a permit");
+    }
+
+    #[test]
+    fn uninstall_gate_applies_only_when_a_service_exists() {
+        assert!(!uninstall_needs_gate(0), "nothing installed: just clean up");
+        assert!(uninstall_needs_gate(1));
+        assert!(uninstall_needs_gate(2));
     }
 
     #[test]

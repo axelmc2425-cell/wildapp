@@ -17,7 +17,8 @@ The owner wants the app to be hard to remove in a weak moment. Today uninstall i
 - The Windows service Stop control (already refused during locks) is also refused unless a permit is active, so the service cannot be stopped from the Services panel in a weak moment.
 - The Focus Room shows an "Uninstall protection" section: protected/unprotected state, the waiting period and how to change it, a pending request with a countdown and a cancel button, an active permit with its expiry, and the partner-code route (reusing the unlock dialog).
 - The uninstaller's refusal message says exactly what to do (open MyBrain, Focus Room, Uninstall protection; ask the partner or start the waiting period; run the uninstaller again).
-- Upgrades by installing a newer MyBrain keep working under today's rules (refused only while a lock is pending); they never need a permit.
+- Upgrades by installing a newer MyBrain over a RUNNING helper need a permit too (the service honours Stop only with a permit, so an upgrade must stop it): `install` refuses early with the how-to message (exit code 1) instead of timing out, and is still refused while a lock is pending. A first install, or an install when no service exists or all are stopped, needs no permit. Uninstalling when no helper service exists (failed install, manual recovery) needs no permit either: the uninstaller just cleans up.
+- A newly set partner key can approve an uninstall only after one waiting period has passed since the key was set (`partner_since`, grandfathered when absent), so a client cannot swap in its own key and sign itself a permit. Window and limit unlock tokens are unaffected; `ResetClock` is refused while an uninstall wait or permit exists.
 
 ## Non-goals
 
@@ -51,7 +52,7 @@ Protection against an Administrator who takes ownership of the services or insta
 - **Wait setting:** `SetUninstallWait { wait_ms }`: increasing is applied at once; decreasing is refused (`needs-permit`) unless a permit is active, in which case it applies and the permit stays. Out-of-bounds is `bad-request`.
 - **Status:** new field `uninstall: { wait_ms, pending_at: Option<i64>, permit_until: Option<i64> }` (default when missing).
 - **Gate:** `pub fn uninstall_gate(store: &LockStore, now_ms: i64) -> Result<(), String>`: Err with the lock message when a window is pending (existing text), else Err with the how-to message when no valid permit, else Ok. `stop_allowed` additionally requires a valid permit or no helper protection state... it requires a valid permit whenever the service Stop is requested (a stop with no permit is refused), keeping the lock rule.
-- **Windows wiring (cannot be compiled in CI):** `uninstall()` uses `uninstall_gate` at both of its checks; a successful removal clears the permit (state is purged when `purge_state`, otherwise the permit is cleared and saved); the pipe/service Stop handling calls the updated `stop_allowed`; `install` (upgrade) keeps `uninstall_decision` (locks only). NSIS: exit code 1 message updated to the how-to text.
+- **Windows wiring (cannot be compiled in CI):** `uninstall()` uses `uninstall_gate` at both of its checks; a successful removal clears the permit (state is purged when `purge_state`, otherwise the permit is cleared and saved); the pipe/service Stop handling calls the updated `stop_allowed`; `install` over a running helper applies the same gate (`gate_now`, exit code 1 with the how-to message) and clears the used permit while the services are down; `uninstall` skips the gate when no service exists. NSIS: exit code 1 messages (uninstall and post-install) updated to the how-to text.
 
 ### App (JavaScript)
 
@@ -70,7 +71,7 @@ Protection against an Administrator who takes ownership of the services or insta
 - Rust: default load of old state; challenge for `uninstall` anytime; token grants a 30-minute permit and is single use, wrong token or wrong target rejected; waiting route creates, repeats, cancels, becomes a permit at `unlock_at` on the effective clock, permit expires after 60 minutes, clock moved back never shortens; wait setting increase/decrease rules and bounds; reserved id rejected for windows and limits; `uninstall_gate` messages for each case incl. lock pending plus permit; `stop_allowed` with and without a permit; status field; persistence round trip.
 - JS: client messages, controller state, pure logic, section states and flows with fake controller, unlock dialog for the `uninstall` target.
 - End to end with the real helper over stdio using test-clock `AdvanceClock`: request challenge, delay route to a permit, permit expiry, wait setting rules.
-- Windows checklist: uninstaller refused without a permit with the how-to message; partner code then uninstall works; waiting period then uninstall works; permit expiry; Stop from the Services panel refused then allowed with a permit; upgrade install still works with no permit; recovery steps for an Administrator (documented).
+- Windows checklist: uninstaller refused without a permit with the how-to message; partner code then uninstall works; waiting period then uninstall works; permit expiry; Stop from the Services panel refused then allowed with a permit; upgrade install over a running helper refused without a permit and works with one; uninstall with no helper installed needs no permit; recovery steps for an Administrator (documented).
 
 ## Left to the builder
 
@@ -78,4 +79,4 @@ Exact JSON field names beyond those given, dialog layout, where in the Focus Roo
 
 ## Calls made without the owner (change if wrong)
 
-30-minute permit after a partner code, 60 minutes after a wait, default wait 24 hours (1 hour to 7 days), service Stop also gated, upgrades exempt, no off switch.
+30-minute permit after a partner code, 60 minutes after a wait, default wait 24 hours (1 hour to 7 days), service Stop also gated, upgrades over a running helper need a permit, a new partner key waits one waiting period, no off switch.

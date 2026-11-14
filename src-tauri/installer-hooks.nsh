@@ -1,7 +1,7 @@
 ; Tauri v2 NSIS installer hooks. The helper copies itself to %ProgramFiles%\MyBrainFocus and
 ; registers the Focus Room services (install is per-machine, so this runs elevated).
 ;
-; focus-helper exit codes: 0 ok, 1 refused (a lock is pending, or no uninstall permit: a partner code or the waiting period), 3 any other failure.
+; focus-helper exit codes: 0 ok, 1 refused (a lock is pending, or no uninstall permit: a partner code or the waiting period; install needs it only to replace a RUNNING helper, uninstall only when a helper service exists), 3 any other failure.
 ;
 ; UNVERIFIED (no Tauri sources were available offline): the macro names NSIS_HOOK_POSTINSTALL /
 ; NSIS_HOOK_PREUNINSTALL, the installerHooks key, the $UpdateMode variable (assumed to be 1 when
@@ -13,6 +13,8 @@
   ExecWait '"$INSTDIR\resources\focus-helper.exe" install' $0
   ${If} ${Errors}
     MessageBox MB_OK|MB_ICONEXCLAMATION "MyBrain was installed, but the Focus Room helper could not be started (could not run focus-helper.exe). Focus Room blocking will not work until it is installed." /SD IDOK
+  ${ElseIf} $0 = 1
+    MessageBox MB_OK|MB_ICONEXCLAMATION "The MyBrain update could not replace the running Focus Room helper because uninstall protection is on. Open MyBrain, then Focus Room, then Uninstall protection, get a permit, then run the installer again. (If a lock is still active, wait until it ends.)" /SD IDOK
   ${ElseIf} $0 <> 0
     MessageBox MB_OK|MB_ICONEXCLAMATION "MyBrain was installed, but the Focus Room helper could not be installed or upgraded (exit code $0). Focus Room blocking will not work until it is installed. If a lock is active, the upgrade is deferred until it ends." /SD IDOK
   ${EndIf}
