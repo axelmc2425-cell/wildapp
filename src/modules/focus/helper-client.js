@@ -40,6 +40,11 @@ export function createHelperClient(call) {
     getSessions: (day) => send({ type: 'GetSessions', day }),
     pushLimits: (limits) => send({ type: 'PushLimits', limits }),
     getLimits: () => send({ type: 'GetLimits' }),
+    requestUninstallDelay: () => send({ type: 'RequestUninstallDelay' }),
+    cancelUninstallDelay: () => send({ type: 'CancelUninstallDelay' }),
+    setUninstallWait: (waitMs) => send({ type: 'SetUninstallWait', wait_ms: waitMs }),
+    requestUninstallChallenge: () => send({ type: 'RequestChallenge', window_id: 'uninstall' }),
+    submitUninstallToken: (token) => send({ type: 'SubmitToken', token }),
     /** Recovery from a bogus far-future clock; refused (`lock-active`) while any lock is pending. */
     resetClock: () => send({ type: 'ResetClock' }),
   };

@@ -7,6 +7,7 @@ import { makeTzOffsetAt } from './tz.js';
 import { describeUnlockError, windowIdForBlock, pendingUnlockFor, resolveDelayHours } from './lock-logic.js';
 import { validateLimit, isWeakening } from './limit-logic.js';
 import { syncLimits, fromWire, limitDiffers } from './limit-sync.js';
+import { validateWait, DEFAULT_WAIT_MS } from './uninstall-logic.js';
 
 const MIN = 60000;
 const MAX_MINUTES = 1440;
@@ -42,6 +43,8 @@ export function createUnavailableClient(message) {
     pushWindows: fail, status: fail, requestChallenge: fail, submitToken: fail, setPartner: fail,
     requestDelayedUnlock: fail, cancelDelayedUnlock: fail, getUsage: fail, getSessions: fail,
     pushLimits: fail, getLimits: fail,
+    requestUninstallDelay: fail, cancelUninstallDelay: fail, setUninstallWait: fail,
+    requestUninstallChallenge: fail, submitUninstallToken: fail,
   };
 }
 
@@ -898,6 +901,68 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
     return lockRequest(blockKey, 'Ok', (id) => client.cancelDelayedUnlock(id), () => ({ ok: true }));
   }
 
+  // Uninstall protection: not tied to a block or limit, so it skips lockRequest's lookup.
+  function uninstallRequest(expectType, call, done) {
+    return enqueue(async () => {
+      let res;
+      try {
+        res = await call();
+      } catch (err) {
+        return { ...requestFailure(err), code: err && err.code };
+      }
+      if (!res || res.type !== expectType) {
+        return { ok: false, message: 'The helper sent an unexpected reply. Refresh and try again.', code: 'bad-response' };
+      }
+      await pollAndReconcile();
+      changed();
+      return done(res);
+    });
+  }
+
+  function uninstallRequestDelay() {
+    return uninstallRequest('UninstallPending', () => client.requestUninstallDelay(), (res) => (
+      Number.isFinite(res.unlock_at)
+        ? { ok: true, unlockAt: res.unlock_at }
+        : { ok: false, message: 'The helper sent an unreadable reply. Try again.', code: 'bad-response' }));
+  }
+
+  function uninstallCancelDelay() {
+    return uninstallRequest('Ok', () => client.cancelUninstallDelay(), () => ({ ok: true }));
+  }
+
+  function uninstallSetWait(ms) {
+    const v = validateWait(ms);
+    if (!v.ok) return Promise.resolve({ ok: false, message: v.reason, code: 'bad-request' });
+    return uninstallRequest('Ok', () => client.setUninstallWait(ms), () => ({ ok: true }));
+  }
+
+  function uninstallChallenge() {
+    return uninstallRequest('Challenge', () => client.requestUninstallChallenge(), (res) => (
+      typeof res.code === 'string' && res.code
+        ? { ok: true, code: res.code }
+        : { ok: false, message: 'The helper sent an unreadable reply. Try again.', code: 'bad-response' }));
+  }
+
+  function uninstallSubmitToken(token) {
+    if (typeof token !== 'string' || token.trim() === '' || token.length > 4096) {
+      return Promise.resolve({ ok: false, message: describeUnlockError({ code: 'bad-format' }), code: 'bad-format' });
+    }
+    return uninstallRequest('Ok', () => client.submitUninstallToken(token.trim()), () => ({ ok: true }));
+  }
+
+  function uninstallState() {
+    const u = helper.kind === 'ok' && helper.status ? helper.status.uninstall : null;
+    if (!u || typeof u !== 'object' || !Number.isFinite(u.wait_ms)) {
+      return { waitMs: DEFAULT_WAIT_MS, pendingAt: null, permitUntil: null, known: false };
+    }
+    return {
+      waitMs: u.wait_ms,
+      pendingAt: Number.isFinite(u.pending_at) ? u.pending_at : null,
+      permitUntil: Number.isFinite(u.permit_until) ? u.permit_until : null,
+      known: true,
+    };
+  }
+
   function setPartner(input) {
     return enqueue(async () => {
       const { publicKey, name } = input || {};
@@ -986,10 +1051,12 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
         },
         loaded, lists, schedules, blocks: allBlocks(now()), helper, syncPending: syncPending || limitsUnsent, lastSync, notice,
         partner: { set: partnerSet, name: partnerSet ? partnerName : null },
+        uninstall: uninstallState(),
       };
     },
     saveLimit, setLimitEnabled, deleteLimit, refreshLimits,
     load, saveList, deleteList, saveSchedule, setScheduleEnabled, deleteSchedule, startBlock, extendBlock, cancelBlock, refreshStatus, resync,
     getUsage, getSessions, startLockedBlock, setPartner, requestPartnerChallenge, submitPartnerToken, startDelayedUnlock, cancelDelayedUnlock,
+    uninstallRequestDelay, uninstallCancelDelay, uninstallSetWait, uninstallChallenge, uninstallSubmitToken,
   };
 }
