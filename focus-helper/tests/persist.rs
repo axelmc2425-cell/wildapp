@@ -152,3 +152,20 @@ fn pending_survives_save_and_load() {
     fs::write(&p, br#"{"windows":[],"partner_key":"k","challenges":[],"high_water_ms":9}"#).unwrap();
     assert!(load(&p).pending_unlocks.is_empty());
 }
+
+#[test]
+fn uninstall_state_round_trips_and_old_files_default() {
+    use focus_helper::lockstore::{UninstallPending, UninstallPermit};
+    let d = dir("uninstall");
+    let p = d.join("state.json");
+    let mut s = store("w", 5);
+    s.uninstall_wait_ms = 7_200_000;
+    s.uninstall_pending = Some(UninstallPending { unlock_at: 99 });
+    s.uninstall_permit = Some(UninstallPermit { granted_at: 1, expires_at: 2 });
+    save(&p, &s).unwrap();
+    let l = load(&p);
+    assert_eq!((l.uninstall_wait_ms, l.uninstall_pending, l.uninstall_permit), (7_200_000, s.uninstall_pending, s.uninstall_permit));
+    fs::write(&p, br#"{"windows":[],"partner_key":"k","challenges":[],"high_water_ms":9}"#).unwrap();
+    let l = load(&p);
+    assert_eq!((l.uninstall_wait_ms, l.uninstall_pending, l.uninstall_permit), (86_400_000, None, None));
+}
