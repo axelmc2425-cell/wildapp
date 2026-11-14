@@ -1739,3 +1739,29 @@ test('HELPER_UNAVAILABLE_CLIENT answers uninstall calls without throwing', async
     await assert.rejects(() => HELPER_UNAVAILABLE_CLIENT[m]('x'), (e) => e.code === 'unreachable');
   }
 });
+
+test('uninstallSetWait bounds are checked locally; edges reach the helper', async () => {
+  const x = await unSetup();
+  await x.ctl.load();
+  for (const bad of [1.5 * 3600000 + 0.5, NaN, '7200000', 3599999, 604800001]) {
+    const r = await x.ctl.uninstallSetWait(bad);
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'bad-request');
+  }
+  assert.equal(x.client.unCalls.length, 0);
+  assert.equal((await x.ctl.uninstallSetWait(3600000)).ok, true);
+  assert.equal((await x.ctl.uninstallSetWait(604800000)).ok, true);
+  assert.deepEqual(x.client.unCalls, [['wait', 3600000], ['wait', 604800000]]);
+});
+
+test('uninstall error path refreshes status', async () => {
+  const x = await unSetup();
+  await x.ctl.load();
+  x.client.statusValue = { ...x.client.statusValue, uninstall: { ...UN, pending_at: null, wait_ms: 5 * 3600000 } };
+  x.client.unErr = mkErr('no-pending-uninstall', 'x');
+  const before = x.calls.statuses;
+  const r = await x.ctl.uninstallCancelDelay();
+  assert.equal(r.code, 'no-pending-uninstall');
+  assert.ok(x.calls.statuses > before);
+  assert.equal(x.ctl.state.uninstall.waitMs, 5 * 3600000);
+});

@@ -63,13 +63,30 @@ test('status text: pending countdown', () => {
 
 test('status text: pending already past is not a countdown', () => {
   const r = uninstallStatusText(st({ pendingAt: NOW - 1000 }), NOW, 'ok', true);
-  assert.match(r.headline, /can uninstall/i);
+  assert.doesNotMatch(r.headline + r.detail, /can uninstall/i);
+  assert.equal(r.headline, 'The waiting period finished');
+  assert.equal(r.detail, "The helper is applying it. If you can't uninstall in a minute, request the waiting period again.");
+  assert.equal(r.tone, 'warn');
+});
+
+test('status text: pending past with a live permit says the permit text', () => {
+  const r = uninstallStatusText(st({ pendingAt: NOW - 1000, permitUntil: Date.UTC(2026, 0, 5, 14, 20) }), NOW, 'ok', true, 0);
+  assert.match(r.headline, /until 14:20/);
+});
+
+test('formatCountdown edges', () => {
+  assert.equal(formatCountdown(NaN), '0s');
+  assert.equal(formatCountdown(59000), '59s');
+  assert.equal(formatCountdown(60000), '1m 00s');
+  assert.equal(formatCountdown(3599000), '59m 59s');
+  assert.equal(formatCountdown(24 * H), '24h 00m');
 });
 
 test('status text: permit active with clock', () => {
   const until = Date.UTC(2026, 0, 5, 14, 20);
   const r = uninstallStatusText(st({ permitUntil: until }), NOW, 'ok', true, 0);
   assert.match(r.headline, /You can uninstall until 14:20/);
+  assert.equal(r.detail, 'Uninstalling is allowed until 14:20. After that the protection is back on.');
   assert.equal(r.tone, 'open');
 });
 
@@ -94,6 +111,7 @@ test('status text: helper down or unknown never says protected', () => {
   const r = uninstallStatusText(st({ known: false }), NOW, 'ok', true);
   assert.equal(r.headline, 'Enforcement is not running');
   assert.doesNotMatch(r.headline + r.detail, /protected/i);
+  assert.equal(uninstallStatusText(st({ known: false }), NOW, 'ok', true).detail, "Protection status isn't available right now.");
   assert.equal(uninstallStatusText(undefined, NOW, 'ok', true).headline, 'Enforcement is not running');
 });
 

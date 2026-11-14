@@ -908,7 +908,9 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
       try {
         res = await call();
       } catch (err) {
-        return { ...requestFailure(err), code: err && err.code };
+        const failure = { ...requestFailure(err), code: err && err.code };
+        try { await pollAndReconcile(); } catch { /* best effort: keep the stale view rather than hide the error */ }
+        return failure;
       }
       if (!res || res.type !== expectType) {
         return { ok: false, message: 'The helper sent an unexpected reply. Refresh and try again.', code: 'bad-response' };

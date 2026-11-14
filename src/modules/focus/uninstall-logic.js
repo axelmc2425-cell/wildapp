@@ -61,16 +61,16 @@ function clock(t, tzOffsetMin) {
  */
 export function uninstallStatusText(state, nowMs, helperKind, partnerSet, tzOffsetMin) {
   if (helperKind !== 'ok' || !state || state.known !== true) {
-    return { headline: NOT_RUNNING, detail: "The helper isn't answering, so uninstall protection can't be checked or changed right now.", tone: 'down' };
+    return { headline: NOT_RUNNING, detail: "Protection status isn't available right now.", tone: 'down' };
   }
   if (typeof state.permitUntil === 'number' && state.permitUntil > nowMs) {
-    return { headline: `You can uninstall until ${clock(state.permitUntil, tzOffsetMin)}`, detail: 'Your partner approved it. After that the protection is back on.', tone: 'open' };
+    return { headline: `You can uninstall until ${clock(state.permitUntil, tzOffsetMin)}`, detail: `Uninstalling is allowed until ${clock(state.permitUntil, tzOffsetMin)}. After that the protection is back on.`, tone: 'open' };
   }
   if (typeof state.pendingAt === 'number') {
     if (state.pendingAt > nowMs) {
       return { headline: 'Waiting period running', detail: `You can uninstall in ${formatCountdown(state.pendingAt - nowMs)}. Cancel it any time to stay protected.`, tone: 'warn' };
     }
-    return { headline: 'You can uninstall now', detail: 'The waiting period is over.', tone: 'open' };
+    return { headline: 'The waiting period finished', detail: "The helper is applying it. If you can't uninstall in a minute, request the waiting period again.", tone: 'warn' };
   }
   const wait = typeof state.waitMs === 'number' ? waitText(state.waitMs) : 'the waiting period';
   const detail = partnerSet
