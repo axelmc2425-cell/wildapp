@@ -205,6 +205,11 @@ impl UsageStore {
             .collect())
     }
 
+    /// The latest day that has recorded usage.
+    pub fn latest_day(&self) -> Option<String> {
+        self.days.keys().next_back().cloned()
+    }
+
     /// Replaces the day (test seeding).
     pub fn add_day(&mut self, d: DayUsage) {
         self.days.insert(d.day.clone(), d);

@@ -270,9 +270,87 @@ fn limits_survive_restart() {
     t.d.flush_usage();
     let mut d2 = Daemon::load_with_usage(&s, &u);
     let mut p = Fake::default();
-    let mut call = |l: &str| -> Value { serde_json::from_str(&d2.handle_line(l, wall(0), 0, [0; 16], &mut p)).unwrap() };
-    assert_eq!(call(r#"{"type":"GetLimits"}"#)["limits"][0]["id"], "limit-a");
-    let line = json!({"type":"ReportForeground","exe":"a.exe","title":null,"idle_secs":0,"day":day(0)}).to_string();
-    call(&line);
-    assert_eq!(block_apps(&call(r#"{"type":"GetStatus"}"#)), vec!["game.exe"]);
+    {
+        let mut call = |l: &str| -> Value { serde_json::from_str(&d2.handle_line(l, wall(0), 0, [0; 16], &mut p)).unwrap() };
+        // Before any report the persisted usage keeps the block.
+        let g = call(r#"{"type":"GetLimits"}"#);
+        assert_eq!(g["limits"][0]["id"], "limit-a");
+        assert_eq!(g["status"][0]["blocked"], true);
+        assert_eq!(block_apps(&call(r#"{"type":"GetStatus"}"#)), vec!["game.exe"]);
+        let line = json!({"type":"ReportForeground","exe":"a.exe","title":null,"idle_secs":0,"day":day(0)}).to_string();
+        call(&line);
+        assert_eq!(block_apps(&call(r#"{"type":"GetStatus"}"#)), vec!["game.exe"]);
+        // A report on a later day lifts it.
+        let line = json!({"type":"ReportForeground","exe":"a.exe","title":null,"idle_secs":0,"day":day(1)}).to_string();
+        call(&line);
+        assert!(block_apps(&call(r#"{"type":"GetStatus"}"#)).is_empty());
+    }
+}
+
+#[test]
+fn restart_enforces_sites_before_first_report() {
+    let (mut t, s, u) = T::new("restart-sites");
+    t.push(json!([lim("limit-y", &[], &["youtube.com"], "daily", 60)]));
+    t.feed(0, "chrome.exe", Some("Cats - YouTube"), 60);
+    t.d.flush_usage();
+    let mut d2 = Daemon::load_with_usage(&s, &u);
+    let mut p = Fake::default();
+    d2.tick(wall(0), 0, &mut p);
+    assert_eq!(p.hosts.last().unwrap(), &vec!["youtube.com".to_string()]);
+}
+
+#[test]
+fn forward_day_report_does_not_lift_or_move_the_day() {
+    let (mut t, _, _) = T::new("ratchet");
+    t.push(json!([lim("limit-a", &["game.exe"], &[], "daily", 100)]));
+    t.feed(0, "game.exe", None, 100);
+    assert_eq!(block_apps(&t.status()), vec!["game.exe"]);
+    // today + 2 is recorded but ignored as the current day.
+    t.k = 0;
+    let line = json!({"type":"ReportForeground","exe":"a.exe","title":null,"idle_secs":0,"day":day(2)}).to_string();
+    t.mono += 1000;
+    assert_eq!(t.call(&line)["type"], "Ok");
+    assert_eq!(block_apps(&t.status()), vec!["game.exe"]);
+    assert_eq!(t.get_limits()["status"][0]["period_ends_day"], day(1));
+    // today + 1 (a zone ahead of UTC) is accepted and lifts the daily block.
+    let line = json!({"type":"ReportForeground","exe":"a.exe","title":null,"idle_secs":0,"day":day(1)}).to_string();
+    t.mono += 1000;
+    t.call(&line);
+    assert!(block_apps(&t.status()).is_empty());
+    assert_eq!(t.get_limits()["status"][0]["period_ends_day"], day(2));
+}
+
+#[test]
+fn weekly_limit_sums_several_days() {
+    let (mut t, _, _) = T::new("sum");
+    t.push(json!([lim("limit-w", &["game.exe"], &[], "weekly", 90)]));
+    t.feed(-1, "game.exe", None, 30); // Monday 2023-11-13
+    t.feed(0, "game.exe", None, 30);
+    assert!(block_apps(&t.status()).is_empty());
+    t.feed(0, "game.exe", None, 30);
+    assert_eq!(block_apps(&t.status()), vec!["game.exe"]);
+    assert_eq!(t.get_limits()["status"][0]["used_secs"], 90);
+}
+
+#[test]
+fn until_day_rolls_over_month_and_year() {
+    // Seed persisted usage so the restarted daemon's current day is the boundary day.
+    for (seed_day, period, want) in [
+        ("2023-11-30", "daily", "2023-12-01"),
+        ("2023-12-31", "daily", "2024-01-01"),
+        ("2023-12-31", "weekly", "2024-01-01"), // Sunday
+        ("2023-11-30", "weekly", "2023-12-04"), // Thursday
+    ] {
+        let (s, u) = paths(&format!("until-{seed_day}-{period}"));
+        let mut d = Daemon::load_with_usage(&s, &u);
+        let mut p = Fake::default();
+        let mut du = DayUsage { day: seed_day.into(), total: 60, ..Default::default() };
+        du.apps.insert("game.exe".into(), 60);
+        d.add_usage(du);
+        let mut d = Daemon::load_with_usage(&s, &u);
+        let l = json!({"type":"PushLimits","limits":[lim("limit-a", &["game.exe"], &[], period, 60)]}).to_string();
+        d.handle_line(&l, wall(0), 0, [0; 16], &mut p);
+        let st: Value = serde_json::from_str(&d.handle_line(r#"{"type":"GetStatus"}"#, wall(0), 0, [0; 16], &mut p)).unwrap();
+        assert_eq!(st["decision"]["limitBlocks"][0]["until_day"], want, "{seed_day} {period}");
+    }
 }

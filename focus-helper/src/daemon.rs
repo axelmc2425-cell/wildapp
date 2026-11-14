@@ -142,6 +142,9 @@ impl Daemon {
             _ => None,
         };
         let clock = EffectiveClock::new(store.high_water_ms);
+        // Limits keep blocking across a restart: until a sampler reports, the latest day with
+        // recorded usage stands in for today (at worst yesterday's period, which fails safe).
+        let current_day = usage.latest_day();
         Daemon {
             store,
             clock,
@@ -161,7 +164,7 @@ impl Daemon {
             usage_error: None,
             sessions_error: None,
             sessions_warning: None,
-            current_day: None,
+            current_day,
             report_anchor_mono: None,
             last_report_mono: None,
             last_usage_flush_mono: None,
@@ -341,13 +344,20 @@ impl Daemon {
                 return;
             }
         }
+        // At most two distinct periods (daily, weekly): read each range once and share it.
+        let mut ranges: Vec<((String, String), Vec<crate::usage::DayUsage>)> = Vec::new();
         let evals = self
             .store
             .limits
             .iter()
             .map(|l| {
-                let (from, to) = period_days(l.period, &day).unwrap_or((day.clone(), day.clone()));
-                let used = self.usage.range(&from, &to).map(|d| used_secs(l, &d, &day)).unwrap_or(0);
+                let key = period_days(l.period, &day).unwrap_or((day.clone(), day.clone()));
+                if !ranges.iter().any(|(k, _)| *k == key) {
+                    let days = self.usage.range(&key.0, &key.1).unwrap_or_default();
+                    ranges.push((key.clone(), days));
+                }
+                let days = &ranges.iter().find(|(k, _)| *k == key).unwrap().1;
+                let used = used_secs(l, days, &day);
                 LimitEval {
                     used,
                     blocked: used >= l.cap_secs,
@@ -409,8 +419,14 @@ impl Daemon {
     fn report_foreground(&mut self, sample: Sample, now: i64, wall_ms: i64, mono_ms: i64) {
         self.last_report_mono = Some(mono_ms);
         // The latest day reported; a report with an earlier day never moves it back, so used time
-        // is never lowered and a block is never lifted by a clock that went backwards.
-        if self.current_day.as_deref().is_none_or(|c| sample.day.as_str() > c) {
+        // is never lowered and a block is never lifted by a clock that went backwards. A day more
+        // than one day past the UTC date (local dates differ from UTC by at most one day) is still
+        // recorded as usage but never becomes the current day, so a forward-day report cannot
+        // reset a limit. Residual, accepted: a local user who can write to the pipe can still
+        // spoof one day ahead, the same trust level as spoofing usage reports.
+        let utc_day = wall_ms.div_euclid(86_400_000);
+        let plausible = usage::day_number(&sample.day).is_some_and(|n| n <= utc_day + 1);
+        if plausible && self.current_day.as_deref().is_none_or(|c| sample.day.as_str() > c) {
             self.current_day = Some(sample.day.clone());
         }
         let Some(anchor) = self.report_anchor_mono else {
