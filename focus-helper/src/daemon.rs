@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 use crate::clock::EffectiveClock;
 use crate::decide::decide;
 use crate::enforce::{any_window_active, enforce_once, ProcessTable};
-use crate::ipc::{self, Request, Response};
+use crate::ipc::{self, LimitStatus, Request, Response};
+use crate::limits::{period_days, period_ends_day, used_secs, Limit};
 use crate::lockstore::LockStore;
-use crate::model::Mode;
+use crate::model::{Decision, LimitBlock, Mode};
 use crate::persist;
 use crate::sites::stems_from_domains;
 use crate::sessions::{self, DayStretches, SessionStore};
@@ -43,6 +44,20 @@ pub trait Platform {
     fn clear_doh_off(&mut self) -> io::Result<()>;
     fn flush_dns(&mut self) -> io::Result<()>;
     fn process_table(&self) -> &dyn ProcessTable;
+}
+
+/// Used time of one limit, kept until usage, the day or the limits change.
+struct LimitEval {
+    used: u64,
+    blocked: bool,
+    ends_day: String,
+}
+
+struct LimitCache {
+    usage_gen: u64,
+    day: String,
+    limits: Vec<Limit>,
+    evals: Vec<LimitEval>,
 }
 
 pub struct Daemon {
@@ -80,6 +95,9 @@ pub struct Daemon {
     /// Monotonic time of the latest accepted report (drives `usage_tracking`).
     last_report_mono: Option<i64>,
     last_usage_flush_mono: Option<i64>,
+    /// Bumped whenever recorded usage changes (invalidates the limit cache).
+    usage_gen: u64,
+    limit_cache: Option<LimitCache>,
     sessions: SessionStore,
     /// Directory of the `sessions-YYYY-MM-DD.json` files (the state directory).
     sessions_dir: PathBuf,
@@ -147,6 +165,8 @@ impl Daemon {
             report_anchor_mono: None,
             last_report_mono: None,
             last_usage_flush_mono: None,
+            usage_gen: 0,
+            limit_cache: None,
             sessions: SessionStore::new(),
             sessions_dir: match usage_path.parent() {
                 Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
@@ -290,6 +310,7 @@ impl Daemon {
     /// Test seeding: replaces the day and saves immediately.
     pub fn add_usage(&mut self, day: DayUsage) {
         self.usage.add_day(day);
+        self.usage_gen += 1;
         self.flush_usage();
     }
 
@@ -308,6 +329,77 @@ impl Daemon {
         }
     }
 
+    /// Recomputes the cached used time of every limit when usage, the day or the limits changed.
+    /// Reads in-memory usage only. With no reported day there is nothing to evaluate.
+    fn refresh_limit_cache(&mut self) {
+        let Some(day) = self.current_day.clone() else {
+            self.limit_cache = None;
+            return;
+        };
+        if let Some(c) = &self.limit_cache {
+            if c.usage_gen == self.usage_gen && c.day == day && c.limits == self.store.limits {
+                return;
+            }
+        }
+        let evals = self
+            .store
+            .limits
+            .iter()
+            .map(|l| {
+                let (from, to) = period_days(l.period, &day).unwrap_or((day.clone(), day.clone()));
+                let used = self.usage.range(&from, &to).map(|d| used_secs(l, &d, &day)).unwrap_or(0);
+                LimitEval {
+                    used,
+                    blocked: used >= l.cap_secs,
+                    ends_day: period_ends_day(l.period, &day).unwrap_or_default(),
+                }
+            })
+            .collect();
+        self.limit_cache = Some(LimitCache { usage_gen: self.usage_gen, day, limits: self.store.limits.clone(), evals });
+    }
+
+    fn limit_statuses(&mut self) -> Vec<LimitStatus> {
+        self.refresh_limit_cache();
+        let Some(c) = &self.limit_cache else { return Vec::new() };
+        c.limits
+            .iter()
+            .zip(&c.evals)
+            .map(|(l, e)| LimitStatus {
+                id: l.id.clone(),
+                used_secs: e.used,
+                cap_secs: l.cap_secs,
+                blocked: e.blocked,
+                period_ends_day: e.ends_day.clone(),
+            })
+            .collect()
+    }
+
+    /// The window decision plus the apps and sites of every exceeded limit. Allow-list windows
+    /// are left as they are.
+    fn full_decision(&mut self, now: i64) -> Decision {
+        let mut d = decide(&self.store.windows, now);
+        self.refresh_limit_cache();
+        let Some(c) = &self.limit_cache else { return d };
+        let mut blocks = Vec::new();
+        for (l, e) in c.limits.iter().zip(&c.evals) {
+            if !e.blocked {
+                continue;
+            }
+            d.block_apps.extend(l.apps.iter().map(|a| a.trim().to_lowercase()));
+            d.block_sites.extend(l.sites.iter().map(|s| s.trim().to_lowercase()));
+            blocks.push(LimitBlock { id: l.id.clone(), until_day: e.ends_day.clone() });
+        }
+        if !blocks.is_empty() {
+            blocks.sort_by(|a, b| a.id.cmp(&b.id));
+            d.block_apps.sort();
+            d.block_apps.dedup();
+            d.block_sites.sort();
+            d.block_sites.dedup();
+            d.limit_blocks = blocks;
+        }
+        d
+    }
+
     /// Whether a sampler has reported recently.
     fn usage_tracking(&self, mono_ms: i64) -> bool {
         self.last_report_mono.is_some_and(|t| mono_ms - t <= REPORT_FRESH_MS)
@@ -316,6 +408,11 @@ impl Daemon {
     /// Accounts one report from a sampler. The caller has validated the fields.
     fn report_foreground(&mut self, sample: Sample, now: i64, wall_ms: i64, mono_ms: i64) {
         self.last_report_mono = Some(mono_ms);
+        // The latest day reported; a report with an earlier day never moves it back, so used time
+        // is never lowered and a block is never lifted by a clock that went backwards.
+        if self.current_day.as_deref().is_none_or(|c| sample.day.as_str() > c) {
+            self.current_day = Some(sample.day.clone());
+        }
         let Some(anchor) = self.report_anchor_mono else {
             self.report_anchor_mono = Some(mono_ms);
             self.last_usage_flush_mono.get_or_insert(mono_ms);
@@ -327,12 +424,14 @@ impl Daemon {
         }
         // Keep the sub-second remainder for the next report so seconds are not truncated away.
         self.report_anchor_mono = Some(anchor + elapsed * 1000);
+        // Block windows' sites and every limit's sites label browser samples by their stem.
         let sites: Vec<String> = self
             .store
             .windows
             .iter()
             .filter(|w| w.mode == Mode::Block && w.starts <= now && now < w.ends)
             .flat_map(|w| w.sites.iter().cloned())
+            .chain(self.store.limits.iter().flat_map(|l| l.sites.iter().cloned()))
             .collect();
         let stems = stems_from_domains(&sites);
         if sample.idle_secs <= usage::IDLE_LIMIT_SECS {
@@ -342,11 +441,11 @@ impl Daemon {
             // so a lock or stall never lets a stretch be extended over time that was not counted.
             let nominal = if secs <= 5 { secs } else { 1 };
             let site = usage::site_label(&sample.exe, sample.title.as_deref(), &stems);
-            self.current_day = Some(sample.day.clone());
             self.ensure_day_loaded(&sample.day);
             self.sessions.record(&sample.day, &sample.exe.to_lowercase(), site.as_deref(), end - secs as i64, end, nominal);
         }
         self.usage.record(Some(&sample), elapsed as u64, &stems);
+        self.usage_gen += 1;
         self.maybe_flush_usage(mono_ms);
     }
 
@@ -371,6 +470,44 @@ impl Daemon {
                     .into(),
                 },
             },
+            Ok(Request::PushLimits { limits }) => {
+                let now = self.clock.now(wall_ms, mono_ms);
+                self.store.expire_pending(now);
+                match self.store.push_limits(limits, now) {
+                    Ok(r) => {
+                        let failed = self.save();
+                        self.apply(now, platform);
+                        match failed {
+                            Some(e) => Response::Error {
+                                code: "persist-failed".into(),
+                                message: format!("applied in memory but could not be saved: {e}; it will be lost on restart"),
+                            },
+                            None => Response::LimitsPushed {
+                                applied: r.applied,
+                                kept_locked: r.kept_locked,
+                                skipped_tombstoned: r.skipped_tombstoned,
+                            },
+                        }
+                    }
+                    Err(e) => ipc::limit_push_error(e),
+                }
+            }
+            Ok(Request::GetLimits) => {
+                let now = self.clock.now(wall_ms, mono_ms);
+                if self.store.expire_pending(now) {
+                    self.save();
+                    self.apply(now, platform);
+                }
+                let status = self.limit_statuses();
+                let pending_unlocks = self
+                    .store
+                    .pending_unlocks
+                    .iter()
+                    .filter(|p| p.window_id.starts_with(crate::limits::LIMIT_ID_PREFIX))
+                    .cloned()
+                    .collect();
+                Response::Limits { limits: self.store.limits.clone(), status, pending_unlocks }
+            }
             Ok(Request::GetSessions { day }) => {
                 if !usage::is_valid_day(&day) {
                     Response::Error { code: "bad-request".into(), message: "day must be YYYY-MM-DD".into() }
@@ -410,6 +547,10 @@ impl Daemon {
                         self.save();
                         let now = self.clock.now(wall_ms, mono_ms);
                         self.apply(now, platform);
+                    }
+                    if let Response::Status { decision, .. } = &mut resp {
+                        let now = self.clock.now(wall_ms, mono_ms);
+                        *decision = self.full_decision(now);
                     }
                     if let Response::Status { warnings, usage_tracking, .. } = &mut resp {
                         *warnings = self.warnings();
@@ -465,7 +606,7 @@ impl Daemon {
     }
 
     fn apply(&mut self, now: i64, platform: &mut dyn Platform) {
-        let decision = decide(&self.store.windows, now);
+        let decision = self.full_decision(now);
         enforce_once(&decision, platform.process_table(), std::process::id());
 
         let mut errors = Vec::new();

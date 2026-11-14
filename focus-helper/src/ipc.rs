@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::clock::EffectiveClock;
 use crate::decide::decide;
+use crate::limits::Limit;
 use crate::lockstore::{ChallengeError, DelayError, LockStore, PendingUnlock, PartnerError, PushError};
 use crate::model::{Decision, Window};
 use crate::usage::DayUsage;
@@ -13,6 +14,10 @@ use crate::usage::DayUsage;
 pub enum Request {
     PushWindows { windows: Vec<Window> },
     GetStatus,
+    /// Replaces the time limits (locked ones cannot be weakened); daemon only.
+    PushLimits { limits: Vec<Limit> },
+    /// The stored limits with their used time; daemon only.
+    GetLimits,
     /// Usage days in the inclusive local-day range `from_day..=to_day` (`YYYY-MM-DD`); daemon only.
     GetUsage { from_day: String, to_day: String },
     /// Foreground stretches of one local day (`YYYY-MM-DD`); daemon only.
@@ -28,6 +33,17 @@ pub enum Request {
     SetPartner { public_key: String },
     /// Recovery from a bogus far-future clock: refused while any lock is pending.
     ResetClock,
+}
+
+/// Used time of one limit in the period containing the latest reported day.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LimitStatus {
+    pub id: String,
+    pub used_secs: u64,
+    pub cap_secs: u64,
+    pub blocked: bool,
+    /// The first day on which the limit lifts.
+    pub period_ends_day: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +66,11 @@ pub enum Response {
     Usage { days: Vec<DayUsage> },
     /// Answer to `GetSessions`.
     Sessions { day: String, truncated: bool, stretches: Vec<crate::sessions::Stretch> },
+    /// Answer to `PushLimits`.
+    LimitsPushed { applied: usize, kept_locked: Vec<String>, skipped_tombstoned: Vec<String> },
+    /// Answer to `GetLimits`. `status` has an entry per limit once a sampler has reported a day,
+    /// and is empty before that (no day, no numbers).
+    Limits { limits: Vec<Limit>, status: Vec<LimitStatus>, pending_unlocks: Vec<PendingUnlock> },
     Challenge { code: String },
     /// The window ends early at `unlock_at` (effective ms) unless cancelled.
     UnlockPending { unlock_at: i64 },
@@ -59,6 +80,16 @@ pub enum Response {
     /// reasons, and `persist-failed` (daemon only: applied in memory but the state file could not
     /// be written, so the change is lost on restart; retried every tick).
     Error { code: String, message: String },
+}
+
+/// The error reply for a rejected `PushLimits`.
+pub fn limit_push_error(e: PushError) -> Response {
+    match e {
+        PushError::NoPartner => err("no-partner", "a partner key is required for locked limits"),
+        PushError::BadLimit(reason) => err("bad-limit", reason),
+        PushError::DuplicateId => err("bad-limit", "duplicate id"),
+        _ => err("bad-limit", "rejected"),
+    }
 }
 
 fn err(code: &str, message: impl Into<String>) -> Response {
@@ -114,6 +145,8 @@ pub fn handle_changed(
         },
         // The usage store belongs to the daemon, which answers this before calling here.
         Request::GetUsage { .. } => err("bad-request", "GetUsage is only available from the daemon"),
+        Request::PushLimits { .. } => err("bad-request", "PushLimits is only available from the daemon"),
+        Request::GetLimits => err("bad-request", "GetLimits is only available from the daemon"),
         Request::GetSessions { .. } => err("bad-request", "GetSessions is only available from the daemon"),
         Request::ReportForeground { .. } => err("bad-request", "ReportForeground is only available from the daemon"),
         Request::RequestChallenge { window_id } => match store.request_challenge(&window_id, now, nonce) {

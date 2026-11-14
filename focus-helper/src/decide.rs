@@ -52,6 +52,7 @@ pub fn decide(windows: &[Window], now_ms: i64) -> Decision {
         },
         frozen: active.iter().any(|w| w.lock == Lock::Frozen),
         locks,
+        limit_blocks: Vec::new(),
     }
 }
 
