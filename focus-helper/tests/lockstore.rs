@@ -1011,7 +1011,7 @@ fn old_state_loads_protected_with_default_wait() {
 
 #[test]
 fn uninstall_challenge_needs_no_window() {
-    let (mut s, _) = with_partner();
+    let (mut s, _) = grandfathered();
     assert!(s.request_challenge(UNINSTALL_ID, NOW, [1; 16]).is_ok());
     let mut s = LockStore::default();
     assert!(s.request_challenge(UNINSTALL_ID, NOW, [1; 16]).is_ok());
@@ -1020,7 +1020,7 @@ fn uninstall_challenge_needs_no_window() {
 
 #[test]
 fn uninstall_token_grants_a_30_minute_single_use_permit() {
-    let (mut s, sk) = with_partner();
+    let (mut s, sk) = grandfathered();
     s.request_uninstall_delay(NOW);
     let t = uninstall_token(&mut s, &sk, NOW, [3; 16]);
     assert_eq!(s.submit_token(&t, NOW), Ok(UNINSTALL_ID.to_string()));
@@ -1033,7 +1033,7 @@ fn uninstall_token_grants_a_30_minute_single_use_permit() {
 
 #[test]
 fn tokens_for_other_targets_do_not_cross() {
-    let (mut s, sk) = with_partner();
+    let (mut s, sk) = grandfathered();
     s.push(vec![win("l", Lock::Locked, NOW - H, NOW + H)], NOW).unwrap();
     // window challenge, token signed for uninstall
     let code = s.request_challenge("l", NOW, [4; 16]).unwrap();
@@ -1055,7 +1055,7 @@ fn tokens_for_other_targets_do_not_cross() {
 
 #[test]
 fn uninstall_token_does_not_unlock_a_limit() {
-    let (mut s, sk) = with_partner();
+    let (mut s, sk) = grandfathered();
     let t = uninstall_token(&mut s, &sk, NOW, [7; 16]);
     s.submit_token(&t, NOW).unwrap();
     assert!(s.limit_tombstones.is_empty());
@@ -1106,7 +1106,7 @@ fn clock_moved_back_neither_shortens_wait_nor_revives_permit() {
     assert!(s.uninstall_permit.is_none());
     assert!(!s.permit_valid(at - 10 * DAY), "no revival");
     // a live permit does not outlive its end because the caller clock goes back
-    let (mut s, sk) = with_partner();
+    let (mut s, sk) = grandfathered();
     let t = uninstall_token(&mut s, &sk, NOW, [8; 16]);
     s.submit_token(&t, NOW).unwrap();
     s.expire_pending(NOW + MIN30 + 1);
@@ -1115,7 +1115,7 @@ fn clock_moved_back_neither_shortens_wait_nor_revives_permit() {
 
 #[test]
 fn clear_permit_removes_it() {
-    let (mut s, sk) = with_partner();
+    let (mut s, sk) = grandfathered();
     let t = uninstall_token(&mut s, &sk, NOW, [9; 16]);
     s.submit_token(&t, NOW).unwrap();
     s.clear_permit();
@@ -1124,7 +1124,7 @@ fn clear_permit_removes_it() {
 
 #[test]
 fn set_uninstall_wait_rules() {
-    let (mut s, sk) = with_partner();
+    let (mut s, sk) = grandfathered();
     assert_eq!(s.set_uninstall_wait(2 * DAY, NOW), Ok(()));
     assert_eq!(s.uninstall_wait_ms, 2 * DAY);
     assert_eq!(s.set_uninstall_wait(DAY, NOW), Err(SetWaitError::NeedsPermit));
@@ -1159,4 +1159,91 @@ fn reserved_uninstall_id_rejected_for_windows_and_limits() {
         unlock_delay_ms: None,
     };
     assert!(matches!(s.push_limits(vec![l], NOW), Err(PushError::BadLimit(_))));
+}
+
+// ---- partner aging (C1) ----
+
+/// A store whose partner predates the aging rule (grandfathered: no `partner_since`).
+fn grandfathered() -> (LockStore, SigningKey) {
+    let (mut s, sk) = with_partner();
+    s.partner_since = None;
+    (s, sk)
+}
+
+#[test]
+fn first_time_partner_cannot_approve_uninstall_until_one_wait_has_passed() {
+    let (mut s, sk) = with_partner();
+    assert_eq!(s.partner_since, Some(NOW));
+    let t = uninstall_token(&mut s, &sk, NOW, [11; 16]);
+    assert_eq!(s.submit_token(&t, NOW), Err(UnlockError::PartnerTooNew));
+    assert_eq!(UnlockError::PartnerTooNew.reason(), "partner-too-new");
+    assert_eq!(s.uninstall_permit, None, "no permit");
+    assert!(s.challenges.iter().all(|c| !c.used), "token not consumed");
+    // just before the wait is over: still refused (fresh challenge); at the wait: accepted
+    let almost = NOW + DAY - 1;
+    let t1 = uninstall_token(&mut s, &sk, almost, [18; 16]);
+    assert_eq!(s.submit_token(&t1, almost), Err(UnlockError::PartnerTooNew));
+    let later = NOW + DAY;
+    let t2 = uninstall_token(&mut s, &sk, later, [12; 16]);
+    assert_eq!(s.submit_token(&t2, later), Ok(UNINSTALL_ID.to_string()));
+    assert_eq!(s.uninstall_permit, Some(UninstallPermit { granted_at: later, expires_at: later + MIN30 }));
+}
+
+#[test]
+fn swapping_the_partner_key_restarts_the_clock_but_resetting_the_same_key_does_not() {
+    let (mut s, sk) = grandfathered();
+    // grandfathered: works at once
+    let t = uninstall_token(&mut s, &sk, NOW, [13; 16]);
+    assert_eq!(s.submit_token(&t, NOW), Ok(UNINSTALL_ID.to_string()));
+    s.clear_permit();
+    // same key again: no-op, partner_since stays None
+    let pk = keys().1;
+    s.set_partner(&pk, NOW).unwrap();
+    assert_eq!(s.partner_since, None);
+    // a different key: clock starts
+    let sk2 = SigningKey::from_bytes(&[7u8; 32].into()).unwrap();
+    let pk2 = b64u_encode(sk2.verifying_key().to_encoded_point(false).as_bytes());
+    s.set_partner(&pk2, NOW + H).unwrap();
+    assert_eq!(s.partner_since, Some(NOW + H));
+    let t = uninstall_token(&mut s, &sk2, NOW + H, [14; 16]);
+    assert_eq!(s.submit_token(&t, NOW + H), Err(UnlockError::PartnerTooNew));
+    // re-setting the same (new) key later does not restart the clock
+    s.set_partner(&pk2, NOW + 2 * H).unwrap();
+    assert_eq!(s.partner_since, Some(NOW + H));
+    let later = NOW + H + DAY;
+    let t = uninstall_token(&mut s, &sk2, later, [15; 16]);
+    assert_eq!(s.submit_token(&t, later), Ok(UNINSTALL_ID.to_string()));
+}
+
+#[test]
+fn partner_ready_at_reports_only_a_future_time() {
+    let (mut s, _) = with_partner();
+    assert_eq!(s.partner_ready_at(NOW), Some(NOW + DAY));
+    assert_eq!(s.partner_ready_at(NOW + DAY - 1), Some(NOW + DAY));
+    assert_eq!(s.partner_ready_at(NOW + DAY), None);
+    s.partner_since = None;
+    assert_eq!(s.partner_ready_at(NOW), None);
+    assert_eq!(LockStore::default().partner_ready_at(NOW), None);
+}
+
+#[test]
+fn old_state_without_partner_since_is_grandfathered() {
+    let (s, sk) = grandfathered();
+    let json = serde_json::to_string(&s).unwrap();
+    let mut v: Value = serde_json::from_str(&json).unwrap();
+    v.as_object_mut().unwrap().remove("partner_since");
+    let mut s: LockStore = serde_json::from_value(v).unwrap();
+    assert_eq!(s.partner_since, None);
+    let t = uninstall_token(&mut s, &sk, NOW, [16; 16]);
+    assert_eq!(s.submit_token(&t, NOW), Ok(UNINSTALL_ID.to_string()));
+}
+
+#[test]
+fn window_and_limit_unlock_tokens_ignore_partner_age() {
+    let (mut s, sk) = with_partner();
+    // a brand-new partner key, then a lock pushed: its token still works at once
+    s.push(vec![win("l", Lock::Locked, NOW - H, NOW + H)], NOW).unwrap();
+    let code = s.request_challenge("l", NOW, [17; 16]).unwrap();
+    let t = token(&sk, &nonce_of(&code), "l", NOW + 600_000);
+    assert_eq!(s.submit_token(&t, NOW), Ok("l".to_string()));
 }

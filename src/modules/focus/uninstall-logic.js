@@ -54,7 +54,7 @@ function clock(t, tzOffsetMin) {
 }
 
 /**
- * @param {{waitMs?: number, pendingAt?: number|null, permitUntil?: number|null, known?: boolean}} state
+ * @param {{waitMs?: number, pendingAt?: number|null, permitUntil?: number|null, partnerReadyAt?: number|null, known?: boolean}} state
  * @param {number} nowMs @param {string} helperKind @param {boolean} partnerSet
  * @param {number} [tzOffsetMin] minutes east of UTC for the clock time; defaults to the device zone
  * @returns {{headline: string, detail: string, tone: 'ok'|'warn'|'open'|'down'}}
@@ -73,8 +73,11 @@ export function uninstallStatusText(state, nowMs, helperKind, partnerSet, tzOffs
     return { headline: 'The waiting period finished', detail: "The helper is applying it. If you can't uninstall in a minute, request the waiting period again.", tone: 'warn' };
   }
   const wait = typeof state.waitMs === 'number' ? waitText(state.waitMs) : 'the waiting period';
-  const detail = partnerSet
+  let detail = partnerSet
     ? `Uninstalling needs your partner's code, or a waiting period of ${wait}.`
     : `Uninstalling needs a waiting period of ${wait}. Add a partner so someone else can approve it sooner.`;
+  if (typeof state.partnerReadyAt === 'number' && state.partnerReadyAt > nowMs) {
+    detail += ` Your partner can approve uninstalling from ${clock(state.partnerReadyAt, tzOffsetMin)}.`;
+  }
   return { headline: 'Uninstall is protected', detail, tone: 'ok' };
 }

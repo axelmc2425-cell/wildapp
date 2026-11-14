@@ -203,6 +203,11 @@ pub struct LockStore {
     pub uninstall_pending: Option<UninstallPending>,
     #[serde(default)]
     pub uninstall_permit: Option<UninstallPermit>,
+    /// Effective ms when the current partner key was first stored. A partner can approve an
+    /// uninstall only once one waiting period has passed since. `None` (state from before this
+    /// rule) is grandfathered.
+    #[serde(default)]
+    pub partner_since: Option<i64>,
 }
 
 impl Default for LockStore {
@@ -220,6 +225,7 @@ impl Default for LockStore {
             uninstall_wait_ms: DEFAULT_UNINSTALL_WAIT_MS,
             uninstall_pending: None,
             uninstall_permit: None,
+            partner_since: None,
         }
     }
 }
@@ -501,8 +507,19 @@ impl LockStore {
         if self.windows.iter().any(|w| is_locking(w) && w.ends > now_ms) || self.has_locked_limit() {
             return Err(PartnerError::LockActive);
         }
-        self.partner_key = Some(public_key_b64.to_string());
+        if self.partner_key.as_deref() != Some(public_key_b64) {
+            self.partner_key = Some(public_key_b64.to_string());
+            self.partner_since = Some(now_ms);
+        }
         Ok(())
+    }
+
+    /// When a partner token may first approve an uninstall: `partner_since + uninstall_wait_ms`
+    /// while that is still in the future, else `None`.
+    pub fn partner_ready_at(&self, now_ms: i64) -> Option<i64> {
+        let now_ms = now_ms.max(self.high_water_ms);
+        let at = self.partner_since?.saturating_add(self.uninstall_wait_ms);
+        (at > now_ms).then_some(at)
     }
 
     pub fn request_challenge(
@@ -554,6 +571,9 @@ impl LockStore {
 
         let window_id = self.challenges[idx].window_id.clone();
         if window_id == UNINSTALL_ID {
+            if self.partner_ready_at(now_ms).is_some() {
+                return Err(UnlockError::PartnerTooNew);
+            }
             self.uninstall_pending = None;
             self.uninstall_permit =
                 Some(UninstallPermit { granted_at: now_ms, expires_at: now_ms.saturating_add(PARTNER_PERMIT_MS) });

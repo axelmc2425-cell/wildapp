@@ -43,7 +43,7 @@ const MESSAGES = {
   'no-pending-unlock': 'There is no waiting period running for this block, so there is nothing to cancel.',
   'needs-permit': "Shortening the wait needs your partner's code or a finished waiting period.",
   'no-pending-uninstall': 'There is no waiting period running.',
-  'bad-request': "The helper didn't accept that. The waiting period must be between 1 hour and 7 days.",
+  'partner-too-new': 'A newly added partner can approve uninstalling only after the waiting period has passed since the key was set.',
   'bad-window': "The helper didn't recognise that block. Refresh the list and try again.",
   'bad-folder': "One of the folders in this list isn't a valid folder path. Open the list, remove it and pick the folder again with Browse folder.",
   'forbidden-folder': "One of the folders in this list is part of Windows or this app and can't be blocked. Open the list and remove it.",

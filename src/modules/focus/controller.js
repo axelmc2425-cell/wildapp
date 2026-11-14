@@ -935,7 +935,10 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
   function uninstallSetWait(ms) {
     const v = validateWait(ms);
     if (!v.ok) return Promise.resolve({ ok: false, message: v.reason, code: 'bad-request' });
-    return uninstallRequest('Ok', () => client.setUninstallWait(ms), () => ({ ok: true }));
+    return uninstallRequest('Ok', () => client.setUninstallWait(ms), () => ({ ok: true })).then((r) => (
+      !r.ok && r.code === 'bad-request'
+        ? { ...r, message: "The helper didn't accept that. The waiting period must be between 1 hour and 7 days." }
+        : r));
   }
 
   function uninstallChallenge() {
@@ -955,12 +958,13 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
   function uninstallState() {
     const u = helper.kind === 'ok' && helper.status ? helper.status.uninstall : null;
     if (!u || typeof u !== 'object' || !Number.isFinite(u.wait_ms)) {
-      return { waitMs: DEFAULT_WAIT_MS, pendingAt: null, permitUntil: null, known: false };
+      return { waitMs: DEFAULT_WAIT_MS, pendingAt: null, permitUntil: null, partnerReadyAt: null, known: false };
     }
     return {
       waitMs: u.wait_ms,
       pendingAt: Number.isFinite(u.pending_at) ? u.pending_at : null,
       permitUntil: Number.isFinite(u.permit_until) ? u.permit_until : null,
+      partnerReadyAt: Number.isFinite(u.partner_ready_at) ? u.partner_ready_at : null,
       known: true,
     };
   }

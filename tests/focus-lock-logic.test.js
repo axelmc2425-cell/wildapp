@@ -31,7 +31,7 @@ test('lockedWarning', () => {
 
 test('describeUnlockError covers every code and never throws', () => {
   const codes = ['bad-format', 'bad-signature', 'wrong-challenge', 'wrong-lock', 'used', 'challenge-expired', 'expired',
-    'no-partner', 'no-such-lock', 'lock-active', 'bad-key', 'not-delayable', 'no-pending-unlock', 'bad-window', 'unreachable', 'persist-failed', 'forbidden-folder', 'bad-folder'];
+    'no-partner', 'no-such-lock', 'lock-active', 'bad-key', 'not-delayable', 'no-pending-unlock', 'bad-window', 'unreachable', 'persist-failed', 'forbidden-folder', 'bad-folder', 'partner-too-new'];
   const seen = new Set();
   for (const code of codes) {
     const s = describeUnlockError(Object.assign(new Error('raw helper text'), { code }));

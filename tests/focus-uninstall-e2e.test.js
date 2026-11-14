@@ -54,7 +54,7 @@ function setup(t) {
 test('default status: 24 h wait, nothing pending, no permit', T, async (t) => {
   const { status } = setup(t);
   const s = await status();
-  assert.deepEqual(s.uninstall, { wait_ms: DAY, pending_at: null, permit_until: null });
+  assert.deepEqual(s.uninstall, { wait_ms: DAY, pending_at: null, permit_until: null, partner_ready_at: null });
 });
 
 test('request is now + wait, a repeat returns the same, cancel clears, second cancel errors', T, async (t) => {
@@ -106,13 +106,25 @@ test('SetUninstallWait: raise ok, lower needs a permit, bounds are bad-request',
   assert.equal((await status()).uninstall.wait_ms, DAY);
 });
 
-test('partner route: no windows needed, 30 minute permit, token single use, other target grants nothing', T, async (t) => {
-  const { ok, status, send } = setup(t);
+test('partner route: a new key is refused until one wait has passed, then 30 minute permit, single use', T, async (t) => {
+  const { ok, status, send, advance, errCode } = setup(t);
   const keys = await generatePartnerKeys();
   await ok({ type: 'SetPartner', public_key: keys.publicKey });
   assert.equal((await status()).windows.length, 0);
   const sign = async (code) => signUnlock(keys.privateKeyJwk, code, (await status()).now_ms);
 
+  // refused before: partner-too-new, no permit, the token is not consumed
+  const early = await ok({ type: 'RequestChallenge', window_id: 'uninstall' });
+  const earlyToken = await sign(early.code);
+  const ready = (await status()).uninstall.partner_ready_at;
+  assert.ok(ready > (await status()).now_ms, 'partner_ready_at in the future');
+  assert.equal(await errCode({ type: 'SubmitToken', token: earlyToken }), 'partner-too-new');
+  assert.equal((await status()).uninstall.permit_until, null);
+  assert.equal(await errCode({ type: 'SubmitToken', token: earlyToken }), 'partner-too-new', 'still not "used"');
+
+  // after one waiting period the same flow grants exactly 30 minutes
+  await advance(ready - (await status()).now_ms + 1000);
+  assert.equal((await status()).uninstall.partner_ready_at, null);
   const c = await ok({ type: 'RequestChallenge', window_id: 'uninstall' });
   assert.equal(c.type, 'Challenge');
   const token = await sign(c.code);

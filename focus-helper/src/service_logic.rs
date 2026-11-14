@@ -453,10 +453,11 @@ pub fn lock_pending(windows: &[Window], now_ms: i64) -> bool {
     windows.iter().any(|w| w.lock != Lock::None && w.ends > now_ms)
 }
 
-/// Gates the service Stop control: while any locked/frozen window is pending (active or still to
-/// come, `ends > now`) the helper ignores Stop; Shutdown is always honored. This matches the
-/// install/uninstall refusal, so a lock scheduled ahead cannot be dodged by stopping the services.
-pub fn stop_allowed(windows: &[Window], now_ms: i64) -> bool {
+/// The lock half of the Stop gate only: it assumes a permit (hard-coded `true`), so it is NOT the
+/// service's Stop decision, which is `stop_allowed_with_permit` with the real permit state. Kept
+/// for the lock-only tests; while any locked/frozen window is pending (active or still to come,
+/// `ends > now`) the helper ignores Stop.
+pub fn stop_allowed_ignoring_permit(windows: &[Window], now_ms: i64) -> bool {
     stop_allowed_with_permit(windows, true, now_ms)
 }
 
@@ -571,13 +572,13 @@ mod tests {
 
     #[test]
     fn stop_allowed_follows_pending_locks() {
-        assert!(stop_allowed(&[], 50));
-        assert!(!stop_allowed(&[w(Lock::Locked, 0, 100)], 50));
-        assert!(!stop_allowed(&[w(Lock::Frozen, 0, 100)], 99));
-        assert!(stop_allowed(&[w(Lock::Locked, 0, 100)], 100));
-        assert!(!stop_allowed(&[w(Lock::Locked, 200, 300)], 50), "pending future lock also blocks Stop");
-        assert!(stop_allowed(&[w(Lock::Locked, 200, 300)], 300));
-        assert!(stop_allowed(&[w(Lock::None, 0, 100)], 50));
+        assert!(stop_allowed_ignoring_permit(&[], 50));
+        assert!(!stop_allowed_ignoring_permit(&[w(Lock::Locked, 0, 100)], 50));
+        assert!(!stop_allowed_ignoring_permit(&[w(Lock::Frozen, 0, 100)], 99));
+        assert!(stop_allowed_ignoring_permit(&[w(Lock::Locked, 0, 100)], 100));
+        assert!(!stop_allowed_ignoring_permit(&[w(Lock::Locked, 200, 300)], 50), "pending future lock also blocks Stop");
+        assert!(stop_allowed_ignoring_permit(&[w(Lock::Locked, 200, 300)], 300));
+        assert!(stop_allowed_ignoring_permit(&[w(Lock::None, 0, 100)], 50));
     }
 
     #[test]

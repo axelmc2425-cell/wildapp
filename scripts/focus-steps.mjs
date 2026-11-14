@@ -1112,6 +1112,8 @@ async function uninstallScenarios(page, shot, h) {
 
   // Permit active through the partner route.
   await h.helperCall({ type: 'CancelUninstallDelay' });
+  // A partner key set in this run is too new to approve an uninstall until one waiting period has passed.
+  await h.advanceHelperClock(25 * 3600000);
   const c = await h.helperCall({ type: 'RequestChallenge', window_id: 'uninstall' });
   ok(c.type === 'Challenge', 'uninstall challenge: ' + JSON.stringify(c));
   const st = await h.helperCall({ type: 'GetStatus' });

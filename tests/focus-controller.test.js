@@ -1664,7 +1664,7 @@ async function unSetup(status = {}) {
 test('state.uninstall maps Status.uninstall', async () => {
   const x = await unSetup();
   await x.ctl.load();
-  assert.deepEqual(x.ctl.state.uninstall, { waitMs: 24 * 3600000, pendingAt: null, permitUntil: null, known: true });
+  assert.deepEqual(x.ctl.state.uninstall, { waitMs: 24 * 3600000, pendingAt: null, permitUntil: null, partnerReadyAt: null, known: true });
 });
 
 test('state.uninstall unknown when the field is missing, before status, and when helper is down', async () => {
@@ -1725,6 +1725,32 @@ test('uninstall errors carry message and code', async () => {
   const u = await x.ctl.uninstallRequestDelay();
   assert.equal(u.ok, false);
   assert.equal(u.code, 'unreachable');
+});
+
+test('state.uninstall maps partner_ready_at', async () => {
+  const x = await unSetup({ uninstall: { ...UN, partner_ready_at: T0 + 99 } });
+  await x.ctl.load();
+  assert.equal(x.ctl.state.uninstall.partnerReadyAt, T0 + 99);
+});
+
+test('uninstall partner-too-new carries its message and code', async () => {
+  const x = await unSetup();
+  await x.ctl.load();
+  x.client.unErr = mkErr('partner-too-new', 'raw');
+  const r = await x.ctl.uninstallSubmitToken('tok');
+  assert.deepEqual(r, { ok: false, message: 'A newly added partner can approve uninstalling only after the waiting period has passed since the key was set.', code: 'partner-too-new' });
+});
+
+test('uninstallSetWait maps the helper bad-request to the waiting-period text; other callers keep theirs', async () => {
+  const x = await unSetup();
+  await x.ctl.load();
+  x.client.unErr = mkErr('bad-request', 'raw helper text');
+  const r = await x.ctl.uninstallSetWait(2 * 3600000);
+  assert.equal(r.code, 'bad-request');
+  assert.match(r.message, /waiting period must be between 1 hour and 7 days/);
+  x.client.unErr = mkErr('bad-request', 'raw helper text');
+  const c = await x.ctl.uninstallSubmitToken('tok');
+  assert.equal(c.message, 'raw helper text');
 });
 
 test('uninstall reply of the wrong type is refused', async () => {

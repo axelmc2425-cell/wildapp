@@ -339,7 +339,7 @@ fn uninstall_requests_round_trip_and_shapes() {
 fn status_carries_uninstall_and_keeps_other_fields() {
     let (mut s, mut c) = setup();
     let st = uninstall_status(&mut s, &mut c, NOW, 0);
-    assert_eq!(st["uninstall"], json!({"wait_ms": DAY, "pending_at": null, "permit_until": null}));
+    assert_eq!(st["uninstall"], json!({"wait_ms": DAY, "pending_at": null, "permit_until": null, "partner_ready_at": null}));
     for k in ["decision", "windows", "partner_set", "now_ms", "warnings", "pending_unlocks", "usage_tracking"] {
         assert!(st.get(k).is_some(), "{k}");
     }
@@ -417,9 +417,48 @@ fn uninstall_challenge_and_token_end_to_end() {
     let payload = format!(r#"{{"n":"{}","w":"uninstall","exp":{}}}"#, cv["n"].as_str().unwrap(), NOW + 600_000);
     let sig: Signature = sk.sign(payload.as_bytes());
     let token = format!("{}.{}", b64(payload.as_bytes()), b64(&sig.to_bytes()));
-    assert_eq!(run(&mut s, &mut c, Request::SubmitToken { token: token.clone() }), Response::Ok);
-    assert_eq!(uninstall_status(&mut s, &mut c, NOW, 0)["uninstall"]["permit_until"], NOW + 1_800_000);
+    // a partner key set just now cannot approve yet; nothing is consumed or granted
+    assert_eq!(code_of(run(&mut s, &mut c, Request::SubmitToken { token: token.clone() })), "partner-too-new");
+    assert_eq!(uninstall_status(&mut s, &mut c, NOW, 0)["uninstall"]["permit_until"], Value::Null);
+    assert_eq!(uninstall_status(&mut s, &mut c, NOW, 0)["uninstall"]["partner_ready_at"], NOW + DAY);
+    // after one waiting period the same flow works (fresh challenge: the first one is stale)
+    let later = NOW + DAY;
+    let code = match handle(&mut s, &mut c, Request::RequestChallenge { window_id: "uninstall".into() }, later, DAY, [1; 16]) {
+        Response::Challenge { code } => code,
+        o => panic!("{o:?}"),
+    };
+    let cv: Value = serde_json::from_slice(&focus_helper::unlock::b64u_decode(&code).unwrap()).unwrap();
+    let payload = format!(r#"{{"n":"{}","w":"uninstall","exp":{}}}"#, cv["n"].as_str().unwrap(), later + 600_000);
+    let sig: Signature = sk.sign(payload.as_bytes());
+    let token = format!("{}.{}", b64(payload.as_bytes()), b64(&sig.to_bytes()));
+    assert_eq!(handle(&mut s, &mut c, Request::SubmitToken { token: token.clone() }, later, DAY, [0; 16]), Response::Ok);
+    assert_eq!(uninstall_status(&mut s, &mut c, later, DAY)["uninstall"]["permit_until"], later + 1_800_000);
+    assert_eq!(uninstall_status(&mut s, &mut c, later, DAY)["uninstall"]["partner_ready_at"], Value::Null);
     assert_eq!(code_of(run(&mut s, &mut c, Request::SubmitToken { token })), "used");
     // permit lets the wait be lowered
     assert_eq!(run(&mut s, &mut c, Request::SetUninstallWait { wait_ms: 3_600_000 }), Response::Ok);
+}
+
+#[test]
+fn reset_clock_refused_while_uninstall_wait_or_permit_exists() {
+    let (mut s, mut c) = setup();
+    assert_eq!(run(&mut s, &mut c, Request::RequestUninstallDelay), Response::UninstallPending { unlock_at: NOW + DAY });
+    assert_eq!(code_of(run(&mut s, &mut c, Request::ResetClock)), "lock-active");
+    assert_eq!(run(&mut s, &mut c, Request::CancelUninstallDelay), Response::Ok);
+    s.uninstall_permit = Some(focus_helper::lockstore::UninstallPermit { granted_at: NOW, expires_at: NOW + 1_800_000 });
+    assert_eq!(code_of(run(&mut s, &mut c, Request::ResetClock)), "lock-active");
+    s.uninstall_permit = None;
+    assert_eq!(run(&mut s, &mut c, Request::ResetClock), Response::Ok);
+}
+
+#[test]
+fn status_partner_ready_at_follows_the_partner_key_age() {
+    let (mut s, mut c) = with_partner();
+    assert_eq!(uninstall_status(&mut s, &mut c, NOW, 0)["uninstall"]["partner_ready_at"], NOW + DAY);
+    assert_eq!(uninstall_status(&mut s, &mut c, NOW + DAY - 1, DAY - 1)["uninstall"]["partner_ready_at"], NOW + DAY);
+    assert_eq!(uninstall_status(&mut s, &mut c, NOW + DAY, DAY)["uninstall"]["partner_ready_at"], Value::Null);
+    // an old Status JSON without the field still parses
+    let old = json!({"wait_ms": 1, "pending_at": null, "permit_until": null});
+    let u: focus_helper::ipc::UninstallStatus = serde_json::from_value(old).unwrap();
+    assert_eq!(u.partner_ready_at, None);
 }

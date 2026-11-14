@@ -118,6 +118,26 @@ test('status text: helper down or unknown never says protected', () => {
 test('error messages', () => {
   assert.equal(describeUnlockError({ code: 'needs-permit' }), "Shortening the wait needs your partner's code or a finished waiting period.");
   assert.equal(describeUnlockError({ code: 'no-pending-uninstall' }), 'There is no waiting period running.');
-  assert.match(describeUnlockError({ code: 'bad-request' }), /1 hour|7 days/);
+  assert.doesNotMatch(describeUnlockError({ code: 'bad-request' }), /1 hour|7 days/, 'generic bad-request is neutral');
   assert.match(describeUnlockError({ code: 'bad-key' }), /partner key/);
+});
+
+test('status text: a new partner key adds the ready-from line, only while in the future', () => {
+  const at = Date.UTC(2026, 0, 6, 9, 30);
+  const r = uninstallStatusText(st({ partnerReadyAt: at }), NOW, 'ok', true, 0);
+  assert.equal(r.headline, 'Uninstall is protected');
+  assert.match(r.detail, /Your partner can approve uninstalling from 09:30\./);
+  assert.match(r.detail, /waiting period of 24 hours/);
+  for (const o of [{ partnerReadyAt: null }, { partnerReadyAt: NOW }, { partnerReadyAt: NOW - 1 }, {}]) {
+    assert.doesNotMatch(uninstallStatusText(st(o), NOW, 'ok', true, 0).detail, /can approve uninstalling from/);
+  }
+});
+
+test('partner-too-new message', () => {
+  assert.equal(describeUnlockError({ code: 'partner-too-new', message: 'raw' }),
+    'A newly added partner can approve uninstalling only after the waiting period has passed since the key was set.');
+});
+
+test('generic bad-request is not rewritten by the shared table', () => {
+  assert.equal(describeUnlockError({ code: 'bad-request', message: 'range too large' }), 'range too large');
 });
