@@ -6,7 +6,7 @@ import { bannerFor, formatCountdown } from '../model.js';
 import { STARTERS } from '../starters.js';
 import { windowIdForBlock, pendingUnlockFor, lockedBlockHolding } from '../lock-logic.js';
 import { renderSchedules } from './schedule-list.js';
-import { renderLimits, limitBlock } from './limit-list.js';
+import { renderLimits, limitBlock, LOCKED_MSG } from './limit-list.js';
 import { nextOccurrence, isLockedActive } from '../schedule-logic.js';
 import { makeTzOffsetAt } from '../tz.js';
 
@@ -184,7 +184,7 @@ export function mountHome(root, controller, ctx, deps = {}) {
   }
 
   function limitUnlock(limit) {
-    if (typeof deps.openUnlockDialog !== 'function') { limitMsg = 'This limit is locked. Unlock it first.'; afterAction(); return; }
+    if (typeof deps.openUnlockDialog !== 'function') { limitMsg = LOCKED_MSG; afterAction(); return; }
     let d = null;
     d = deps.openUnlockDialog({
       controller, block: limitBlock(limit), subscribe: deps.subscribe,
@@ -196,11 +196,17 @@ export function mountHome(root, controller, ctx, deps = {}) {
 
   function openLimit(limit) {
     if (typeof deps.openLimitEditor !== 'function') return;
-    const d = deps.openLimitEditor(controller, limit || null, {
-      subscribe: deps.subscribe, openUnlockDialog: deps.openUnlockDialog,
+    let d = null;
+    const track = (x) => { if (x && typeof x.close === 'function') dialogs.add(x); return x; };
+    d = deps.openLimitEditor(controller, limit || null, {
+      subscribe: deps.subscribe,
+      openUnlockDialog: typeof deps.openUnlockDialog === 'function'
+        ? (o) => { let u = null; u = track(deps.openUnlockDialog({ ...o, onClose: () => { if (u) dialogs.delete(u); o.onClose?.(); } })); return u; }
+        : undefined,
+      onClose: () => { if (d) dialogs.delete(d); },
       onDone: (res) => { limitMsg = res && typeof res.warning === 'string' && res.warning ? res.warning : null; afterAction(); },
     });
-    if (d && typeof d.close === 'function') dialogs.add(d);
+    track(d);
   }
 
   function cancelDialog(block) {

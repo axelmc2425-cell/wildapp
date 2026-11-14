@@ -133,6 +133,14 @@ async function addChip(b, kind, value) {
   i.value = value;
   await fire(i, 'keydown', { key: 'Enter' });
 }
+const confirmEl = (b) => findAll(b, (n) => n.tag === 'input' && n.attrs.type === 'checkbox')[0];
+async function tick(b) { const c = confirmEl(b); c.checked = true; await fire(c, 'change'); }
+const okState = { partner: { set: true }, helper: { kind: 'ok' } };
+async function fill(b, hours = '1') {
+  nameIn(b).value = 'Social';
+  await addChip(b, 'site', 'reddit.com');
+  field(b, 'hours').value = hours; field(b, 'minutes').value = '0';
+}
 async function pick(b, r) { r.checked = true; await fire(r, 'change'); }
 
 test('editor validation: no items, cap 0, daily over 24 h', async () => {
@@ -184,6 +192,7 @@ test('locked choice shows the waiting period (default 24 h) only when locked', a
   nameIn(body).value = 'Social';
   await addChip(body, 'site', 'reddit.com');
   field(body, 'hours').value = '2'; field(body, 'minutes').value = '';
+  await tick(body);
   await btn(body, 'Save').click();
   assert.equal(sent.lock, 'locked');
   assert.equal(sent.unlockDelayMs, 24 * 3600000);
@@ -325,4 +334,139 @@ test('home without limit state still renders', () => {
   const body = installDom();
   const stop = mountHome(body, homeController(undefined), {}, {});
   try { assert.match(text(body), /Schedules/); } finally { stop(); }
+});
+
+// ---- review round 1 ----
+test('locking needs the confirm box; changing the waiting period or the mode resets it', async () => {
+  const body = installDom();
+  let saves = 0;
+  openLimitEditor({ saveLimit: async () => { saves++; return { ok: true }; }, state: okState }, null, {});
+  await fill(body);
+  await pick(body, radio(body, 'locked'));
+  await btn(body, 'Save').click();
+  assert.ok(visibleErrs(body).includes('Tick the box to confirm the lock.'));
+  assert.equal(saves, 0);
+  await tick(body);
+  const chip6 = btn(body, '6 h');
+  await chip6.click();
+  assert.equal(confirmEl(body).checked, false);
+  await btn(body, 'Save').click();
+  assert.equal(saves, 0);
+  await tick(body);
+  field(body, 'delay').value = '12';
+  await fire(field(body, 'delay'), 'input');
+  assert.equal(confirmEl(body).checked, false);
+  await tick(body);
+  await pick(body, radio(body, 'none')); await pick(body, radio(body, 'locked'));
+  assert.equal(confirmEl(body).checked, false);
+  await tick(body);
+  await btn(body, 'Save').click();
+  assert.equal(saves, 1);
+});
+
+test('tightening an already locked limit needs no confirm box', async () => {
+  const body = installDom();
+  let sent;
+  const l = lim({ lock: 'locked', unlockDelayMs: 3600000 });
+  openLimitEditor({ saveLimit: async (x) => { sent = x; return { ok: true }; }, state: { ...okState, limitsState: { limits: [l] } } }, l, {});
+  assert.match(text(body), /Making this weaker needs your partner or the wait/);
+  field(body, 'hours').value = '1';
+  await btn(body, 'Save').click();
+  assert.equal(sent.capSecs, 3600);
+});
+
+test('Locked is disabled with a hint when the helper is down, and no helper kind counts as down', () => {
+  for (const helper of [{ kind: 'not-running' }, undefined]) {
+    const body = installDom();
+    openLimitEditor({ saveLimit: async () => ({ ok: true }), state: { partner: { set: true }, helper } }, null, {});
+    assert.equal(radio(body, 'locked').disabled, true);
+    assert.match(text(body), /The helper must be running to lock a limit\./);
+  }
+});
+
+test('unlock then retry: the editor stays open with the edits and Save succeeds', async () => {
+  const body = installDom();
+  const l = lim({ lock: 'locked', unlockDelayMs: 3600000 });
+  let unlockOpts; let attempts = 0; let sent;
+  const controller = {
+    saveLimit: async (x) => { attempts++; if (attempts === 1) return { ok: false, needsUnlock: true, limitId: 1 }; sent = x; return { ok: true }; },
+    state: { ...okState, limitsState: { limits: [l] } },
+  };
+  let done = 0;
+  openLimitEditor(controller, l, { onDone: () => done++, openUnlockDialog: (o) => { unlockOpts = o; } });
+  field(body, 'hours').value = '5';
+  await addChip(body, 'site', 'x.com');
+  await btn(body, 'Save').click();
+  controller.state.limitsState.limits = [lim()];
+  unlockOpts.onDone({ ok: true });
+  assert.match(text(body), /Unlocked\. Save again to apply your changes\./);
+  assert.equal(findAll(body, (n) => n.className === 'fr-overlay').length, 1);
+  assert.equal(field(body, 'hours').value, '5');
+  await btn(body, 'Save').click();
+  assert.equal(done, 1);
+  assert.deepEqual(sent.sites, ['reddit.com', 'x.com']);
+});
+
+test('cap parsing: decimals, negatives, text, huge numbers, zero', async () => {
+  for (const [h_, m_, msg] of [
+    ['1.5', '0', 'Enter whole numbers for hours and minutes.'],
+    ['-1', '0', 'Enter whole numbers for hours and minutes.'],
+    ['abc', '', 'Enter whole numbers for hours and minutes.'],
+    ['99999999999999999999', '0', 'Choose between 1 minute and 24 hours.'],
+    ['0', '0', 'Choose between 1 minute and 24 hours.'],
+  ]) {
+    const body = installDom();
+    let saved = 0;
+    openLimitEditor({ saveLimit: async () => { saved++; return { ok: true }; }, state: okState }, null, {});
+    await fill(body, h_); field(body, 'minutes').value = m_;
+    await btn(body, 'Save').click();
+    assert.deepEqual(visibleErrs(body), [msg], `${h_}:${m_}`);
+    assert.equal(saved, 0);
+  }
+});
+
+test('the delay error path: a bad custom wait is shown beside the delay field', async () => {
+  const body = installDom();
+  openLimitEditor({ saveLimit: async () => ({ ok: true }), state: okState }, null, {});
+  await fill(body);
+  await pick(body, radio(body, 'locked'));
+  field(body, 'delay').value = '500';
+  await fire(field(body, 'delay'), 'input');
+  await tick(body);
+  await btn(body, 'Save').click();
+  const e = findAll(body, (n) => n.className.includes('fr-err') && !n.hidden)[0];
+  assert.equal(e.getAttribute('data-err'), 'delay');
+  assert.match(e.textContent, /1 to 168/);
+});
+
+test('used above the cap clamps the bar value', () => {
+  const body = installDom();
+  body.append(renderLimits(state([lim({ status: st(9000, 7200) })]), opts()));
+  const bar = findAll(body, (n) => n.getAttribute('role') === 'progressbar')[0];
+  assert.equal(bar.getAttribute('aria-valuenow'), '7200');
+  assert.equal(bar.getAttribute('aria-valuemax'), '7200');
+});
+
+test('helper down is driven by helperKind even when enforcement is true; a missing kind counts as down', () => {
+  for (const helperKind of ['not-running', undefined]) {
+    const body = installDom();
+    body.append(renderLimits(state([lim({ status: st(2400, 7200) })], { enforcement: true, helperKind }), opts()));
+    assert.match(text(body), /Enforcement is not running/);
+    assert.doesNotMatch(text(body), /left/);
+    assert.equal(findAll(body, (n) => n.getAttribute('role') === 'progressbar').length, 0);
+  }
+});
+
+test('home tracks dialogs opened from the editor and closes them on unmount', () => {
+  const body = installDom();
+  let closed = 0; let editorOpts; let unlockClosed = 0;
+  const stop = mountHome(body, homeController({ limits: [lim()], pendingUnlocks: [], loaded: true, enforcement: true }), {}, {
+    openLimitEditor: (c, l, o) => { editorOpts = o; return { close: () => { closed++; } }; },
+    openUnlockDialog: () => ({ close: () => { unlockClosed++; } }),
+  });
+  byFk(body, 'limit-add').click();
+  editorOpts.openUnlockDialog({ block: {} });
+  stop();
+  assert.equal(closed, 1);
+  assert.equal(unlockClosed, 1);
 });

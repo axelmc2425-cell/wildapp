@@ -2,7 +2,7 @@
 import { h } from './dom.js';
 import { openDialog, confirmDialog } from './dialog.js';
 import { splitPaste, addEntries, removeLast } from './editor-logic.js';
-import { limitBlock } from './limit-list.js';
+import { limitBlock, LOCKED_MSG } from './limit-list.js';
 import { validateLimit, capParts, partsToCap } from '../limit-logic.js';
 import { UNLOCK_DELAY_PRESETS_H, resolveDelayHours, lockedWarning } from '../lock-logic.js';
 import { hasNative, pickExeFiles } from '../../../shell/native.js';
@@ -12,6 +12,7 @@ const DEFAULT_DELAY_H = 24;
 const FIELDS = ['name', 'items', 'cap', 'delay', 'form'];
 const NUMBERS = 'Enter whole numbers for hours and minutes.';
 const FILE_DIALOG_ERROR = 'Could not open the file dialog. You can still type the program name.';
+const HELPER_REQUIRED = 'The helper must be running to lock a limit.';
 const PARTNER_NOTE = "A locked limit needs a partner who can end it early if you really must. Add your partner's key first.";
 let seq = 0;
 
@@ -20,7 +21,7 @@ let seq = 0;
  * `deps.openUnlockDialog` is the existing unlock dialog; `deps.subscribe` is passed on to it.
  * @returns {{ close: () => void }}
  */
-export function openLimitEditor(controller, limit, { onDone, openUnlockDialog, subscribe } = {}) {
+export function openLimitEditor(controller, limit, { onDone, onClose, openUnlockDialog, subscribe } = {}) {
   const uid = ++seq;
   const editing = !!limit && limit.id !== undefined && limit.id !== null;
   const src = limit || {};
@@ -130,10 +131,16 @@ export function openLimitEditor(controller, limit, { onDone, openUnlockDialog, s
   delayInput.value = !isPreset && Number.isInteger(hours0) && hours0 >= 1 ? String(hours0) : '';
   const delayChips = UNLOCK_DELAY_PRESETS_H.map((hrs) => h('button', {
     type: 'button', class: 'fr-delaychip', 'aria-pressed': 'false',
-    onclick: () => { delayPreset = hrs; delayInput.value = ''; show(errEls.delay, ''); refresh(); },
+    onclick: () => { delayPreset = hrs; delayInput.value = ''; confirmed = false; show(errEls.delay, ''); refresh(); },
   }, `${hrs} h`));
-  delayInput.addEventListener('input', () => { show(errEls.delay, ''); refresh(); });
-  const warnText = h('p', { class: 'fr-lockwarn-text fr-muted fr-small' });
+  delayInput.addEventListener('input', () => { show(errEls.delay, ''); confirmed = false; refresh(); });
+  let confirmed = false;
+  const confirmBox = h('input', { type: 'checkbox', id: `fr-lm-confirm-${uid}` });
+  confirmBox.addEventListener('change', () => { confirmed = confirmBox.checked; show(errEls.form, ''); });
+  const warnText = h('span', { class: 'fr-lockwarn-text' });
+  const helperMsg = h('p', { class: 'fr-st-lockmsg fr-muted', hidden: true });
+  const lockedNote = h('p', { class: 'fr-st-lockmsg fr-muted', hidden: true }, LOCKED_MSG);
+  const unlockedNote = h('p', { class: 'fr-st-lockmsg', role: 'status', hidden: true });
   const partnerNote = h('p', { class: 'fr-st-lockmsg fr-muted', hidden: true }, PARTNER_NOTE);
   const lockedOpts = h('div', { class: 'fr-st-lockedopts', hidden: true },
     h('div', { class: 'fr-field' },
@@ -141,9 +148,18 @@ export function openLimitEditor(controller, limit, { onDone, openUnlockDialog, s
       h('div', { class: 'fr-durrow', role: 'group', 'aria-labelledby': `fr-lm-wait-${uid}` }, delayChips,
         h('span', { class: 'fr-customgroup' }, h('label', { class: 'fr-customlabel', for: delayInput.id }, 'Custom'), delayInput, h('span', { class: 'fr-muted' }, 'hours'))),
       err('delay')),
-    warnText, partnerNote);
-  for (const r of [normalRadio, lockedRadio]) r.addEventListener('change', () => { if (r.checked) refresh(); });
+    h('label', { class: 'fr-lockwarn', for: confirmBox.id }, confirmBox, warnText), partnerNote);
+  for (const r of [normalRadio, lockedRadio]) r.addEventListener('change', () => { if (r.checked) { confirmed = false; refresh(); } });
   const isLocked = () => lockedRadio.checked;
+  const helperOk = () => controller.state?.helper?.kind === 'ok';
+  // Whether the limit is locked right now (the row may have been unlocked since the editor opened).
+  let unlockedHere = false; // after an unlock in this dialog the lock was already acknowledged
+  const wasLocked = () => {
+    if (!editing) return false;
+    if (unlockedHere) return true;
+    const row = (controller.state?.limitsState?.limits || []).find((l) => l.id === limit.id) || limit;
+    return row.lock === 'locked';
+  };
   const delay = () => resolveDelayHours({ preset: delayPreset, custom: delayInput.value });
 
   const saveBtn = h('button', { type: 'button', class: 'primary' }, 'Save');
@@ -152,8 +168,16 @@ export function openLimitEditor(controller, limit, { onDone, openUnlockDialog, s
   cancelBtn.addEventListener('click', () => { if (!busy) dlg.close(); });
 
   function refresh() {
+    const ok = helperOk();
+    // The helper can drop out while the dialog is open: fall back to Normal, unless the limit is already locked.
+    if (!ok && lockedRadio.checked && !wasLocked()) { lockedRadio.checked = false; normalRadio.checked = true; confirmed = false; }
+    lockedRadio.disabled = busy || (!ok && !wasLocked());
+    normalRadio.disabled = busy;
+    show(helperMsg, ok ? '' : HELPER_REQUIRED);
     const lk = isLocked();
     lockedOpts.hidden = !lk;
+    lockedNote.hidden = !(lk && wasLocked() && !unlockedHere);
+    confirmBox.checked = confirmed;
     const hasCustom = delayInput.value.trim() !== '';
     delayChips.forEach((b, i) => b.setAttribute('aria-pressed', String(!hasCustom && delayPreset === UNLOCK_DELAY_PRESETS_H[i])));
     delayInput.setAttribute('aria-invalid', String(hasCustom && !delay().ok));
@@ -168,13 +192,20 @@ export function openLimitEditor(controller, limit, { onDone, openUnlockDialog, s
   const unlockFor = (res) => {
     const row = (controller.state?.limitsState?.limits || []).find((l) => l.id === res.limitId) || limit;
     if (typeof openUnlockDialog !== 'function' || !row) {
-      show(errEls.form, 'This limit is locked. Unlock it first, from the Time limits list.');
+      show(errEls.form, `${LOCKED_MSG} Nothing was changed.`);
       return;
     }
-    show(errEls.form, 'This limit is locked. Unlock it first to make it weaker or remove it. Nothing was changed.');
+    show(errEls.form, `${LOCKED_MSG} Nothing was changed.`);
     openUnlockDialog({
       controller, block: limitBlock(row), subscribe,
-      onDone: () => { dlg.close(); onDone?.({ ok: true, unlocked: true }); },
+      onDone: () => {
+        // Keep the editor and the user's edits open; the next Save applies them.
+        unlockedHere = true;
+        show(errEls.form, '');
+        unlockedNote.textContent = 'Unlocked. Save again to apply your changes.'; unlockedNote.hidden = false;
+        refresh();
+        saveBtn.focus();
+      },
     });
   };
 
@@ -197,6 +228,11 @@ export function openLimitEditor(controller, limit, { onDone, openUnlockDialog, s
     const v = validateLimit(input);
     if (!v.ok) Object.assign(errors, { ...v.errors }, errors.cap ? { cap: errors.cap } : {});
     if (lk && !d.ok) errors.delay = d.message;
+    if (lk && !wasLocked()) {
+      if (!helperOk()) errors.form = HELPER_REQUIRED;
+      else if (!Object.keys(errors).length && !confirmed) errors.form = 'Tick the box to confirm the lock.';
+    }
+    unlockedNote.hidden = true;
     showErrors(errors);
     if (Object.keys(errors).length) {
       const first = FIELDS.find((f) => errors[f]);
@@ -252,10 +288,10 @@ export function openLimitEditor(controller, limit, { onDone, openUnlockDialog, s
       h('div', { class: 'fr-modes', role: 'radiogroup', 'aria-labelledby': `fr-lm-strict-${uid}` },
         h('label', { class: 'fr-moderow' }, normalRadio, h('span', { class: 'fr-modetext' }, h('strong', {}, 'Normal'), h('small', { class: 'fr-muted' }, 'You can pause or delete it any time.'))),
         h('label', { class: 'fr-moderow' }, lockedRadio, h('span', { class: 'fr-modetext' }, h('strong', {}, 'Locked'), h('small', { class: 'fr-muted' }, 'You cannot make it weaker or remove it without a partner or a wait.')))),
-      lockedOpts),
-    err('form'),
+      helperMsg, lockedNote, lockedOpts),
+    unlockedNote, err('form'),
     h('div', { class: 'fr-dialog-actions' }, deleteBtn, cancelBtn, saveBtn));
   sites.renderChips(); apps.renderChips(); refresh();
-  dlg = openDialog({ title: editing ? 'Edit limit' : 'Add limit', body, canClose: () => !busy });
+  dlg = openDialog({ title: editing ? 'Edit limit' : 'Add limit', body, canClose: () => !busy, onClose });
   return { close: () => dlg.close() };
 }

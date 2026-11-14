@@ -5,6 +5,7 @@ import { statusText } from '../limit-logic.js';
 import { formatDuration } from '../stats.js';
 
 const SOON = 'Coming in the next step';
+export const LOCKED_MSG = 'This limit is locked. Making this weaker needs your partner or the wait.';
 const finite = (n) => typeof n === 'number' && Number.isFinite(n);
 
 /** The block object the unlock dialog takes for a limit (its key is the helper window id). */
@@ -28,7 +29,7 @@ const chip = (text, isApp) => h('span', { class: `fr-chip${isApp ? ' fr-app' : '
  */
 export function renderLimits(state, { controller, confirm, openEditor, openUnlock, onResult } = {}) {
   const canEdit = typeof openEditor === 'function';
-  const down = state.enforcement === false || (state.helperKind != null && state.helperKind !== 'ok');
+  const down = state.enforcement === false || state.helperKind !== 'ok';
   const helperKind = down ? (state.helperKind && state.helperKind !== 'ok' ? state.helperKind : 'unreachable') : 'ok';
   const report = (res, l) => {
     if (res && res.needsUnlock && typeof openUnlock === 'function') { openUnlock(l); return; }
