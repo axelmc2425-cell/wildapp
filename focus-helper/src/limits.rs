@@ -131,21 +131,59 @@ pub fn period_ends_day(period: Period, current_day: &str) -> Option<String> {
     Some(string_of(next))
 }
 
+/// Natural domains of `SITE_MAP` canonical names the stem rule cannot reach. Key: the label
+/// lowercased with spaces removed. A limit domain equal to, or a subdomain of, one of these
+/// counts the label. The unit test in tests/limits.rs walks every `SITE_MAP` entry so this
+/// table cannot drift.
+pub const SITE_DOMAINS: &[(&str, &[&str])] = &[
+    ("x", &["x.com", "twitter.com"]),
+    ("googledocs", &["docs.google.com"]),
+    ("googlesheets", &["sheets.google.com"]),
+    ("googleslides", &["slides.google.com"]),
+    ("googledrive", &["drive.google.com"]),
+    ("googlecalendar", &["calendar.google.com"]),
+    ("googlemaps", &["maps.google.com"]),
+    ("googlemeet", &["meet.google.com"]),
+    ("googlephotos", &["photos.google.com"]),
+    ("googletranslate", &["translate.google.com"]),
+    ("googlescholar", &["scholar.google.com"]),
+    ("googlenews", &["news.google.com"]),
+    ("gmail", &["mail.google.com", "gmail.com"]),
+    ("microsoftteams", &["teams.microsoft.com"]),
+    ("onedrive", &["onedrive.live.com"]),
+    ("hackernews", &["news.ycombinator.com", "ycombinator.com"]),
+    ("newyorktimes", &["nytimes.com"]),
+    ("disney+", &["disneyplus.com"]),
+    ("dockerhub", &["hub.docker.com"]),
+    ("mdnwebdocs", &["developer.mozilla.org"]),
+    ("npm", &["npmjs.com"]),
+    ("jira", &["atlassian.net"]),
+    ("confluence", &["atlassian.net"]),
+    ("primevideo", &["primevideo.com"]),
+    ("outlook", &["outlook.live.com", "outlook.com"]),
+];
+
 /// Whether the recorded site `label` belongs to the limit domain `domain`.
 ///
 /// Usage rows label a browser sample with a canonical name from `SITE_MAP` (`YouTube`,
 /// `Stack Overflow`) or, for the owner's own list, the lowercase domain stem (`bbc`). A label
 /// matches a limit domain when, lowercased with spaces removed, it equals the domain's stem
 /// (`stems_from_domains`, so `www.bbc.co.uk` -> `bbc`) or the whole lowercase domain
-/// (`Booking.com` <-> `booking.com`). Equality only: a label that merely contains the stem
-/// does not match. The overflow bucket `other` never matches. Stems under 3 characters are
-/// dropped by `stems_from_domains`, so such domains (`x.com`) cannot be limited by label.
+/// (`Booking.com`), or when `SITE_DOMAINS` lists the label and the limit domain equals or is a
+/// subdomain of a listed domain. Equality only otherwise: a label that merely contains the
+/// stem does not match. The overflow bucket `other` never matches.
 fn site_matches(label: &str, domain: &str, stem: Option<&str>) -> bool {
     let l: String = label.to_lowercase().chars().filter(|c| *c != ' ').collect();
     if l.is_empty() || l == "other" {
         return false;
     }
-    stem == Some(l.as_str()) || l == domain.trim().trim_matches('.').to_lowercase()
+    let dom = domain.trim().trim_matches('.').to_lowercase();
+    if stem == Some(l.as_str()) || l == dom {
+        return true;
+    }
+    SITE_DOMAINS.iter().any(|(k, ds)| {
+        *k == l && ds.iter().any(|d| dom == *d || dom.strip_suffix(*d).is_some_and(|p| p.ends_with('.')))
+    })
 }
 
 /// Seconds the limit's apps and sites used inside the period that contains `current_day`
@@ -155,12 +193,12 @@ fn site_matches(label: &str, domain: &str, stem: Option<&str>) -> bool {
 ///
 /// Site matching: see `site_matches`. A usage label (canonical `SITE_MAP` name or lowercase
 /// own-list stem) matches a limit domain when, lowercased with spaces removed, it equals the
-/// domain's stem or the whole lowercase domain; equality only, `other` never matches. Known
-/// limits: stems under 3 characters (`x.com`) cannot match, and multi-word labels such as
-/// `Google Docs` cannot match `docs.google.com` (its stem is `google`).
+/// domain's stem or the whole lowercase domain, or via the `SITE_DOMAINS` alias table; `other`
+/// never matches. Known limit: an own-list domain whose stem is under 3 characters cannot
+/// match by label. A year-0000 weekly period reaches before year 0 and counts nothing.
 pub fn used_secs(l: &Limit, days: &[DayUsage], current_day: &str) -> u64 {
     let Some((from, to)) = period_days(l.period, current_day) else { return 0 };
-    let apps: BTreeSet<String> = l.apps.iter().map(|a| a.to_lowercase()).collect();
+    let apps: BTreeSet<String> = l.apps.iter().map(|a| a.trim().to_lowercase()).collect();
     let domains: BTreeSet<String> = l.sites.iter().map(|s| s.trim().to_lowercase()).collect();
     let stems: Vec<(String, Option<String>)> = domains
         .iter()
@@ -172,7 +210,7 @@ pub fn used_secs(l: &Limit, days: &[DayUsage], current_day: &str) -> u64 {
             continue;
         }
         for (name, secs) in &d.apps {
-            if apps.contains(&name.to_lowercase()) {
+            if apps.contains(name.trim().to_lowercase().as_str()) {
                 total = total.saturating_add(*secs);
             }
         }
@@ -186,10 +224,14 @@ pub fn used_secs(l: &Limit, days: &[DayUsage], current_day: &str) -> u64 {
 }
 
 /// True when replacing `old` with `new` weakens it: a higher cap, any item removed, another
-/// period, or the lock dropped. (Deleting is the caller's case.) Items compare lowercase.
+/// period, the lock dropped, or a locked limit's unlock wait shortened. (Deleting is the caller's case.) Items compare lowercase.
 pub fn is_weaker(old: &Limit, new: &Limit) -> bool {
     let set = |v: &[String]| -> BTreeSet<String> { v.iter().map(|s| s.trim().to_lowercase()).collect() };
+    let shorter_wait = old.lock == Lock::Locked
+        && new.lock == Lock::Locked
+        && matches!((old.unlock_delay_ms, new.unlock_delay_ms), (Some(o), Some(n)) if n < o);
     new.cap_secs > old.cap_secs
+        || shorter_wait
         || new.period != old.period
         || (old.lock == Lock::Locked && new.lock != Lock::Locked)
         || !set(&old.apps).is_subset(&set(&new.apps))

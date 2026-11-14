@@ -267,3 +267,88 @@ fn current_day_selects_period() {
     assert_eq!(used_secs(&w, &days, "nope"), 0);
     assert_eq!(used_secs(&l, &days, "2026-02-30"), 0);
 }
+
+fn site_limit(domain: &str) -> Limit {
+    let mut l = lim();
+    l.apps.clear();
+    l.sites = vec![domain.into()];
+    l
+}
+fn site_used(domain: &str, label: &str) -> u64 {
+    used_secs(&site_limit(domain), &[day("2026-11-14", &[], &[(label, 40)], 0)], "2026-11-14")
+}
+
+#[test]
+fn alias_examples() {
+    assert_eq!(site_used("x.com", "X"), 40);
+    assert_eq!(site_used("twitter.com", "X"), 40);
+    assert_eq!(site_used("docs.google.com", "Google Docs"), 40);
+    assert_eq!(site_used("docs.google.com", "Google Sheets"), 0);
+    assert_eq!(site_used("sheets.google.com", "Google Docs"), 0);
+    assert_eq!(site_used("nytimes.com", "New York Times"), 40);
+    assert_eq!(site_used("www.nytimes.com", "New York Times"), 40);
+    assert_eq!(site_used("notnytimes.com", "New York Times"), 0);
+    assert_eq!(site_used("youtube.com", "YouTube"), 40);
+    assert_eq!(site_used("youtube.com", "X"), 0);
+}
+
+const KNOWN_UNMATCHABLE: &[&str] = &[];
+
+#[test]
+fn every_site_map_entry_is_matchable() {
+    let mut missing = vec![];
+    for (_, canonical) in focus_helper::sites::SITE_MAP {
+        let norm: String = canonical.to_lowercase().chars().filter(|c| *c != ' ').collect();
+        let mut cands = vec![format!("{norm}.com"), norm.clone()];
+        for (k, ds) in SITE_DOMAINS {
+            if *k == norm {
+                cands.extend(ds.iter().map(|d| d.to_string()));
+            }
+        }
+        if !cands.iter().any(|d| site_used(d, canonical) == 40) && !KNOWN_UNMATCHABLE.contains(canonical) {
+            missing.push(*canonical);
+        }
+    }
+    assert!(missing.is_empty(), "SITE_MAP names with no matching limit domain: {missing:?}");
+    // Every alias key is a real canonical name, and every alias domain counts its label.
+    for (k, ds) in SITE_DOMAINS {
+        let canon = focus_helper::sites::SITE_MAP
+            .iter()
+            .find(|(_, c)| c.to_lowercase().replace(' ', "") == *k)
+            .unwrap_or_else(|| panic!("alias key {k} is not a SITE_MAP name"))
+            .1;
+        for d in *ds {
+            assert_eq!(site_used(d, canon), 40, "{d} vs {canon}");
+        }
+    }
+}
+
+#[test]
+fn weaker_unlock_delay() {
+    let mut old = lim();
+    old.lock = Lock::Locked;
+    old.unlock_delay_ms = Some(86_400_000);
+    let mut n = old.clone();
+    n.unlock_delay_ms = Some(3_600_000);
+    assert!(is_weaker(&old, &n));
+    n.unlock_delay_ms = Some(172_800_000);
+    assert!(!is_weaker(&old, &n));
+    n.unlock_delay_ms = Some(86_400_000);
+    assert!(!is_weaker(&old, &n));
+    // None -> Locked tightens.
+    let unlocked = lim();
+    assert!(!is_weaker(&unlocked, &old));
+}
+
+#[test]
+fn malformed_and_year_zero_days() {
+    let l = lim();
+    let days = vec![day("garbage", &[("game.exe", 99)], &[], 0), day("2026-11-14", &[("game.exe", 5)], &[], 0)];
+    assert_eq!(used_secs(&l, &days, "2026-11-14"), 5);
+    let mut w = lim();
+    w.period = Period::Weekly;
+    w.apps = vec!["  Game.EXE ".into()];
+    // Year 0000: the week starts before year 0, so the range is empty (documented): 0, no panic.
+    assert_eq!(used_secs(&w, &[day("0000-01-01", &[("game.exe", 9)], &[], 0)], "0000-01-01"), 0);
+    assert_eq!(used_secs(&w, &days, "2026-11-14"), 5);
+}
