@@ -101,6 +101,7 @@ pub fn handle_changed(
             Err(PushError::AllowNeedsApps) => err("bad-window", "allow-needs-apps"),
             Err(PushError::TooMany) => err("bad-window", "too-many"),
             Err(PushError::DuplicateId) => err("bad-window", "duplicate id"),
+            Err(PushError::BadLimit(reason)) => err("bad-limit", reason),
         },
         Request::GetStatus => Response::Status {
             decision: decide(&store.windows, now),

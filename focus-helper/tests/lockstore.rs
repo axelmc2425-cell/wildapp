@@ -738,3 +738,178 @@ fn request_near_i64_max_saturates() {
     s.windows.push(w);
     assert_eq!(s.request_delayed_unlock("a", i64::MAX - 10), Ok(i64::MAX));
 }
+
+// ---- limits ----
+
+use focus_helper::limits::{Limit, Period, MAX_LIMITS};
+
+fn lim(id: &str, lock: Lock) -> Limit {
+    Limit {
+        id: id.into(),
+        name: "Games".into(),
+        apps: vec!["game.exe".into()],
+        sites: vec!["example.com".into()],
+        period: Period::Daily,
+        cap_secs: 3600,
+        lock,
+        unlock_delay_ms: if lock == Lock::Locked { Some(86_400_000) } else { None },
+    }
+}
+
+fn limit_store(id: &str) -> (LockStore, SigningKey) {
+    let (mut s, sk) = with_partner();
+    s.push_limits(vec![lim(id, Lock::Locked)], NOW).unwrap();
+    (s, sk)
+}
+
+#[test]
+fn limit_push_validation_leaves_store_unchanged() {
+    let (mut s, _) = limit_store("keep");
+    let before = s.clone();
+    let many: Vec<Limit> = (0..=MAX_LIMITS).map(|i| lim(&format!("l{i}"), Lock::None)).collect();
+    assert!(matches!(s.push_limits(many.clone(), NOW), Err(PushError::BadLimit(_))));
+    assert_eq!(s, before);
+    assert!(s.push_limits(many[..MAX_LIMITS - 1].to_vec(), NOW).is_ok());
+    let mut s = before.clone();
+    assert_eq!(s.push_limits(vec![lim("d", Lock::None), lim("d", Lock::None)], NOW), Err(PushError::DuplicateId));
+    let mut bad = lim("c", Lock::None);
+    bad.cap_secs = 5;
+    assert_eq!(s.push_limits(vec![bad], NOW), Err(PushError::BadLimit("bad-cap".into())));
+    assert_eq!(s.push_limits(vec![lim("uninstall", Lock::None)], NOW), Err(PushError::BadLimit("reserved-id".into())));
+    assert_eq!(s, before);
+    // locked limit without a partner
+    let mut s = LockStore::default();
+    assert_eq!(s.push_limits(vec![lim("a", Lock::Locked)], NOW), Err(PushError::NoPartner));
+    // locked kept limits count toward the cap
+    let (mut s, _) = limit_store("keep");
+    let batch: Vec<Limit> = (0..MAX_LIMITS).map(|i| lim(&format!("l{i}"), Lock::None)).collect();
+    assert!(matches!(s.push_limits(batch, NOW), Err(PushError::BadLimit(_))));
+    assert_eq!(s.limits.len(), 1);
+}
+
+#[test]
+fn unlocked_limits_replace_and_delete_freely() {
+    let mut s = LockStore::default();
+    s.push_limits(vec![lim("a", Lock::None), lim("b", Lock::None)], NOW).unwrap();
+    let mut a = lim("a", Lock::None);
+    a.cap_secs = 7200;
+    let r = s.push_limits(vec![a], NOW).unwrap();
+    assert_eq!((r.applied, r.kept_locked.len()), (1, 0));
+    assert_eq!(s.limits.len(), 1);
+    assert_eq!(s.limits[0].cap_secs, 7200);
+    s.push_limits(vec![], NOW).unwrap();
+    assert!(s.limits.is_empty());
+}
+
+#[test]
+fn locked_limit_weakening_is_ignored() {
+    let weaken: Vec<(&str, Box<dyn Fn(&mut Limit)>)> = vec![
+        ("cap", Box::new(|l| l.cap_secs = 7200)),
+        ("item", Box::new(|l| l.apps.clear())),
+        ("period", Box::new(|l| l.period = Period::Weekly)),
+        ("lock", Box::new(|l| {
+            l.lock = Lock::None;
+            l.unlock_delay_ms = None;
+        })),
+    ];
+    for (name, f) in weaken {
+        let (mut s, _) = limit_store("L");
+        let orig = s.limits.clone();
+        let mut l = lim("L", Lock::Locked);
+        f(&mut l);
+        let r = s.push_limits(vec![l], NOW).unwrap();
+        assert_eq!(r.kept_locked, vec!["L".to_string()], "{name}");
+        assert_eq!(s.limits, orig, "{name}");
+    }
+    let (mut s, _) = limit_store("L");
+    let r = s.push_limits(vec![], NOW).unwrap();
+    assert_eq!(r.kept_locked, vec!["L".to_string()]);
+    assert_eq!(s.limits.len(), 1);
+}
+
+#[test]
+fn locked_limit_tightening_applies_and_new_locked_is_stored() {
+    let (mut s, _) = limit_store("L");
+    let mut l = lim("L", Lock::Locked);
+    l.cap_secs = 1800;
+    l.apps.push("other.exe".into());
+    let r = s.push_limits(vec![l.clone(), lim("N", Lock::Locked)], NOW).unwrap();
+    assert!(r.kept_locked.is_empty());
+    assert_eq!(r.applied, 2);
+    assert_eq!(s.limits.iter().find(|x| x.id == "L"), Some(&l));
+    assert_eq!(s.limits.iter().find(|x| x.id == "N").unwrap().lock, Lock::Locked);
+}
+
+#[test]
+fn token_unlock_of_a_limit_then_tombstone() {
+    let (mut s, sk) = limit_store("L");
+    assert!(s.has_locked_limit());
+    let n = nonce_of(&s.request_challenge("L", NOW, [7; 16]).unwrap());
+    assert_eq!(s.submit_token(&token(&sk, &n, "L", NOW + 600_000), NOW + 1000), Ok("L".to_string()));
+    assert_eq!(s.limits[0].lock, Lock::None);
+    assert_eq!(s.limits[0].unlock_delay_ms, None);
+    assert!(!s.has_locked_limit());
+    assert_eq!(s.limit_tombstones.len(), 1);
+    // stale locked copy is skipped
+    let r = s.push_limits(vec![lim("L", Lock::Locked)], NOW + 2000).unwrap();
+    assert_eq!(r.applied, 0);
+    assert_eq!(s.limits[0].lock, Lock::None);
+    // an unlocked edit is accepted
+    let mut e = lim("L", Lock::None);
+    e.cap_secs = 9000;
+    assert_eq!(s.push_limits(vec![e], NOW + 3000).unwrap().applied, 1);
+    assert_eq!(s.limits[0].cap_secs, 9000);
+    // a second use of the same token fails
+    assert!(s.submit_token(&token(&sk, &n, "L", NOW + 600_000), NOW + 4000).is_err());
+}
+
+#[test]
+fn challenge_for_unknown_or_unlocked_limit_refused() {
+    let (mut s, _) = with_partner();
+    s.push_limits(vec![lim("U", Lock::None)], NOW).unwrap();
+    assert_eq!(s.request_challenge("U", NOW, [1; 16]), Err(ChallengeError::NoSuchLock));
+    assert_eq!(s.request_challenge("zzz", NOW, [1; 16]), Err(ChallengeError::NoSuchLock));
+    assert_eq!(s.request_delayed_unlock("U", NOW), Err(DelayError::NoSuchLock));
+}
+
+#[test]
+fn delayed_unlock_of_a_limit() {
+    let (mut s, _) = limit_store("L");
+    let at = s.request_delayed_unlock("L", NOW).unwrap();
+    assert_eq!(at, NOW + 86_400_000);
+    // a repeat does not restart or shorten
+    assert_eq!(s.request_delayed_unlock("L", NOW + H).unwrap(), at);
+    assert!(!s.expire_pending(at - 1));
+    assert_eq!(s.limits[0].lock, Lock::Locked);
+    assert!(s.expire_pending(at));
+    assert_eq!(s.limits[0].lock, Lock::None);
+    assert_eq!(s.limits[0].unlock_delay_ms, None);
+    assert!(s.pending_unlocks.is_empty());
+    assert_eq!(s.limit_tombstones.len(), 1);
+    assert!(s.push_limits(vec![lim("L", Lock::Locked)], at + 1).unwrap().applied == 0);
+    // cancel before due
+    let (mut s, _) = limit_store("L");
+    s.request_delayed_unlock("L", NOW).unwrap();
+    assert!(s.cancel_delayed_unlock("L"));
+    assert!(!s.expire_pending(NOW + 2 * 86_400_000));
+    assert_eq!(s.limits[0].lock, Lock::Locked);
+}
+
+#[test]
+fn old_state_without_limits_loads_and_round_trips() {
+    let s: LockStore = serde_json::from_str(r#"{"version":3,"windows":[]}"#).unwrap();
+    assert!(s.limits.is_empty() && s.limit_tombstones.is_empty());
+    let (mut s, _) = limit_store("L");
+    s.request_delayed_unlock("L", NOW).unwrap();
+    let back: LockStore = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+    assert_eq!(back, s);
+}
+
+#[test]
+fn partner_cannot_change_while_locked_limit_exists() {
+    let (mut s, sk) = limit_store("L");
+    let other = b64u_encode(SigningKey::from_bytes(&[5u8; 32].into()).unwrap().verifying_key().to_encoded_point(false).as_bytes());
+    assert_eq!(s.set_partner(&other, NOW), Err(PartnerError::LockActive));
+    unlock(&mut s, &sk, "L", NOW);
+    assert!(s.set_partner(&other, NOW + 5000).is_ok());
+}
