@@ -292,33 +292,148 @@ fn alias_examples() {
     assert_eq!(site_used("youtube.com", "X"), 0);
 }
 
-const KNOWN_UNMATCHABLE: &[&str] = &[];
+/// Every `SITE_MAP` canonical name with the real domain(s) a user would put in a limit.
+/// Adding a SITE_MAP entry fails the test below until a row is added here.
+const NATURAL_DOMAINS: &[(&str, &[&str])] = &[
+    ("YouTube", &["youtube.com"]),
+    ("Reddit", &["reddit.com"]),
+    ("Twitter", &["twitter.com"]),
+    ("X", &["x.com"]),
+    ("Facebook", &["facebook.com"]),
+    ("Instagram", &["instagram.com"]),
+    ("TikTok", &["tiktok.com"]),
+    ("Netflix", &["netflix.com"]),
+    ("Twitch", &["twitch.tv"]),
+    ("GitHub", &["github.com"]),
+    ("GitLab", &["gitlab.com"]),
+    ("Bitbucket", &["bitbucket.org"]),
+    ("Wikipedia", &["wikipedia.org"]),
+    ("Amazon", &["amazon.com"]),
+    ("Gmail", &["mail.google.com", "gmail.com"]),
+    ("LinkedIn", &["linkedin.com"]),
+    ("Discord", &["discord.com"]),
+    ("WhatsApp", &["web.whatsapp.com", "whatsapp.com"]),
+    ("Spotify", &["spotify.com"]),
+    ("ChatGPT", &["chatgpt.com"]),
+    ("Claude", &["claude.ai"]),
+    ("Gemini", &["gemini.google.com"]),
+    ("Perplexity", &["perplexity.ai"]),
+    ("Copilot", &["copilot.microsoft.com"]),
+    ("Google Docs", &["docs.google.com"]),
+    ("Google Sheets", &["sheets.google.com"]),
+    ("Google Slides", &["slides.google.com"]),
+    ("Google Drive", &["drive.google.com"]),
+    ("Google Calendar", &["calendar.google.com"]),
+    ("Google Maps", &["maps.google.com"]),
+    ("Google Meet", &["meet.google.com"]),
+    ("Google Photos", &["photos.google.com"]),
+    ("Google Translate", &["translate.google.com"]),
+    ("Google Scholar", &["scholar.google.com"]),
+    ("Google News", &["news.google.com"]),
+    ("Outlook", &["outlook.live.com", "outlook.office.com", "outlook.com"]),
+    ("Microsoft Teams", &["teams.microsoft.com"]),
+    ("OneDrive", &["onedrive.live.com"]),
+    ("SharePoint", &["sharepoint.com"]),
+    ("Bing", &["bing.com"]),
+    ("DuckDuckGo", &["duckduckgo.com"]),
+    ("Yahoo", &["yahoo.com"]),
+    ("Pinterest", &["pinterest.com"]),
+    ("Tumblr", &["tumblr.com"]),
+    ("Snapchat", &["snapchat.com"]),
+    ("Telegram", &["web.telegram.org", "telegram.org"]),
+    ("Messenger", &["messenger.com"]),
+    ("Slack", &["slack.com"]),
+    ("Zoom", &["zoom.us"]),
+    ("Skype", &["skype.com"]),
+    ("Notion", &["notion.so"]),
+    ("Trello", &["trello.com"]),
+    ("Asana", &["asana.com"]),
+    ("Jira", &["atlassian.net"]),
+    ("Confluence", &["atlassian.net"]),
+    ("Figma", &["figma.com"]),
+    ("Canva", &["canva.com"]),
+    ("Dropbox", &["dropbox.com"]),
+    ("Evernote", &["evernote.com"]),
+    ("Stack Overflow", &["stackoverflow.com"]),
+    ("Hacker News", &["news.ycombinator.com", "ycombinator.com"]),
+    ("Quora", &["quora.com"]),
+    ("Substack", &["substack.com"]),
+    ("WordPress", &["wordpress.com"]),
+    ("Wix", &["wix.com"]),
+    ("Shopify", &["shopify.com"]),
+    ("eBay", &["ebay.com"]),
+    ("Etsy", &["etsy.com"]),
+    ("AliExpress", &["aliexpress.com"]),
+    ("Walmart", &["walmart.com"]),
+    ("PayPal", &["paypal.com"]),
+    ("Stripe", &["stripe.com"]),
+    ("Booking.com", &["booking.com"]),
+    ("Airbnb", &["airbnb.com"]),
+    ("TripAdvisor", &["tripadvisor.com"]),
+    ("Uber", &["uber.com"]),
+    ("Yelp", &["yelp.com"]),
+    ("IMDb", &["imdb.com"]),
+    ("Hulu", &["hulu.com"]),
+    ("Disney+", &["disneyplus.com"]),
+    ("Prime Video", &["primevideo.com"]),
+    ("HBO Max", &["hbomax.com", "max.com"]),
+    ("Crunchyroll", &["crunchyroll.com"]),
+    ("Vimeo", &["vimeo.com"]),
+    ("SoundCloud", &["soundcloud.com"]),
+    ("Pandora", &["pandora.com"]),
+    ("Steam", &["steampowered.com", "store.steampowered.com"]),
+    ("Epic Games", &["epicgames.com"]),
+    ("Roblox", &["roblox.com"]),
+    ("Coursera", &["coursera.org"]),
+    ("Udemy", &["udemy.com"]),
+    ("Khan Academy", &["khanacademy.org"]),
+    ("Duolingo", &["duolingo.com"]),
+    ("Quizlet", &["quizlet.com"]),
+    ("BBC", &["bbc.com", "bbc.co.uk"]),
+    ("CNN", &["cnn.com"]),
+    ("The Guardian", &["theguardian.com"]),
+    ("New York Times", &["nytimes.com"]),
+    ("Washington Post", &["washingtonpost.com"]),
+    ("Fox News", &["foxnews.com"]),
+    ("Reuters", &["reuters.com"]),
+    ("Bloomberg", &["bloomberg.com"]),
+    ("Forbes", &["forbes.com"]),
+    ("TechCrunch", &["techcrunch.com"]),
+    ("The Verge", &["theverge.com"]),
+    ("Product Hunt", &["producthunt.com"]),
+    ("Vercel", &["vercel.com"]),
+    ("Supabase", &["supabase.com"]),
+    ("npm", &["npmjs.com"]),
+    ("Docker Hub", &["hub.docker.com"]),
+    ("MDN Web Docs", &["developer.mozilla.org"]),
+    ("CodePen", &["codepen.io"]),
+    ("LeetCode", &["leetcode.com"]),
+];
 
 #[test]
-fn every_site_map_entry_is_matchable() {
-    let mut missing = vec![];
-    for (_, canonical) in focus_helper::sites::SITE_MAP {
-        let norm: String = canonical.to_lowercase().chars().filter(|c| *c != ' ').collect();
-        let mut cands = vec![format!("{norm}.com"), norm.clone()];
-        for (k, ds) in SITE_DOMAINS {
-            if *k == norm {
-                cands.extend(ds.iter().map(|d| d.to_string()));
-            }
-        }
-        if !cands.iter().any(|d| site_used(d, canonical) == 40) && !KNOWN_UNMATCHABLE.contains(canonical) {
-            missing.push(*canonical);
+fn every_site_map_entry_counts_for_a_natural_domain() {
+    let canon: Vec<&str> = focus_helper::sites::SITE_MAP.iter().map(|(_, c)| *c).collect();
+    let no_row: Vec<&str> =
+        canon.iter().copied().filter(|c| !NATURAL_DOMAINS.iter().any(|(n, _)| n == c)).collect();
+    assert!(no_row.is_empty(), "SITE_MAP names with no NATURAL_DOMAINS row: {no_row:?}");
+    let stale: Vec<&str> =
+        NATURAL_DOMAINS.iter().map(|(n, _)| *n).filter(|n| !canon.contains(n)).collect();
+    assert!(stale.is_empty(), "NATURAL_DOMAINS rows not in SITE_MAP: {stale:?}");
+    let mut failing = vec![];
+    for (name, domains) in NATURAL_DOMAINS {
+        if !domains.iter().any(|d| site_used(d, name) == 40) {
+            failing.push(*name);
         }
     }
-    assert!(missing.is_empty(), "SITE_MAP names with no matching limit domain: {missing:?}");
-    // Every alias key is a real canonical name, and every alias domain counts its label.
+    assert!(failing.is_empty(), "labels not counted for any natural domain: {failing:?}");
+    // Alias table sanity: each key is a real canonical name and each alias domain counts it.
     for (k, ds) in SITE_DOMAINS {
-        let canon = focus_helper::sites::SITE_MAP
+        let c = canon
             .iter()
-            .find(|(_, c)| c.to_lowercase().replace(' ', "") == *k)
-            .unwrap_or_else(|| panic!("alias key {k} is not a SITE_MAP name"))
-            .1;
+            .find(|c| c.to_lowercase().replace(' ', "") == *k)
+            .unwrap_or_else(|| panic!("alias key {k} is not a SITE_MAP name"));
         for d in *ds {
-            assert_eq!(site_used(d, canon), 40, "{d} vs {canon}");
+            assert_eq!(site_used(d, c), 40, "{d} vs {c}");
         }
     }
 }

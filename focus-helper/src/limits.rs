@@ -160,7 +160,11 @@ pub const SITE_DOMAINS: &[(&str, &[&str])] = &[
     ("jira", &["atlassian.net"]),
     ("confluence", &["atlassian.net"]),
     ("primevideo", &["primevideo.com"]),
-    ("outlook", &["outlook.live.com", "outlook.com"]),
+    ("outlook", &["outlook.live.com", "outlook.com", "outlook.office.com"]),
+    ("steam", &["steampowered.com", "steamcommunity.com"]),
+    ("hbomax", &["hbomax.com", "max.com"]),
+    ("gemini", &["gemini.google.com"]),
+    ("copilot", &["copilot.microsoft.com"]),
 ];
 
 /// Whether the recorded site `label` belongs to the limit domain `domain`.
