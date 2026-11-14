@@ -22,6 +22,19 @@ pub const MAX_CHALLENGES: usize = 32;
 /// Current persisted-state format version.
 pub const STORE_VERSION: u32 = 3;
 
+/// Reserved target id for the uninstall permit (never a window or limit id).
+pub const UNINSTALL_ID: &str = "uninstall";
+/// A permit granted by a partner token lasts 30 minutes.
+pub const PARTNER_PERMIT_MS: i64 = 1_800_000;
+/// A permit from a finished waiting period lasts 60 minutes (from the wait's end).
+pub const WAIT_PERMIT_MS: i64 = 3_600_000;
+/// Bounds of the uninstall waiting period.
+pub const MIN_UNINSTALL_WAIT_MS: i64 = 3_600_000;
+pub const MAX_UNINSTALL_WAIT_MS: i64 = 604_800_000;
+pub const DEFAULT_UNINSTALL_WAIT_MS: i64 = 86_400_000;
+/// Shown when an uninstall is refused for lack of a permit.
+pub const UNINSTALL_HOWTO: &str = "Uninstall is protected. Open MyBrain, then Focus Room, then Uninstall protection, ask your partner for a code or start the waiting period, then run the uninstaller again.";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Invalid {
     BadTimes,
@@ -137,6 +150,31 @@ pub enum DelayError {
     NotDelayable,
 }
 
+/// A started uninstall waiting period: it becomes a permit once `unlock_at` (effective ms) passes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UninstallPending {
+    pub unlock_at: i64,
+}
+
+/// Permission to uninstall (or stop the service) until `expires_at` (effective ms).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UninstallPermit {
+    pub granted_at: i64,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetWaitError {
+    /// Outside the allowed bounds.
+    BadValue,
+    /// Shortening the wait needs a valid permit.
+    NeedsPermit,
+}
+
+fn default_uninstall_wait() -> i64 {
+    DEFAULT_UNINSTALL_WAIT_MS
+}
+
 fn current_version() -> u32 {
     STORE_VERSION
 }
@@ -158,6 +196,13 @@ pub struct LockStore {
     /// Locked limits unlocked by a partner (`ends` is `i64::MAX`). A stale locked copy stays
     /// skipped until the app pushes the id unlocked or deleted. At most `MAX_LIMIT_TOMBSTONES`.
     pub limit_tombstones: Vec<Tombstone>,
+    /// Length of the uninstall waiting period.
+    #[serde(default = "default_uninstall_wait")]
+    pub uninstall_wait_ms: i64,
+    #[serde(default)]
+    pub uninstall_pending: Option<UninstallPending>,
+    #[serde(default)]
+    pub uninstall_permit: Option<UninstallPermit>,
 }
 
 impl Default for LockStore {
@@ -172,6 +217,9 @@ impl Default for LockStore {
             pending_unlocks: Vec::new(),
             limits: Vec::new(),
             limit_tombstones: Vec::new(),
+            uninstall_wait_ms: DEFAULT_UNINSTALL_WAIT_MS,
+            uninstall_pending: None,
+            uninstall_permit: None,
         }
     }
 }
@@ -465,7 +513,7 @@ impl LockStore {
     ) -> Result<String, ChallengeError> {
         let now_ms = now_ms.max(self.high_water_ms);
         self.high_water_ms = now_ms;
-        if !self.has_lock_target(window_id, now_ms) {
+        if window_id != UNINSTALL_ID && !self.has_lock_target(window_id, now_ms) {
             return Err(ChallengeError::NoSuchLock);
         }
         self.challenges.retain(|c| now_ms - c.issued <= CHALLENGE_TTL_MS);
@@ -505,7 +553,11 @@ impl LockStore {
         unlock::verify(key, token, &self.challenges[idx], now_ms)?;
 
         let window_id = self.challenges[idx].window_id.clone();
-        if !self.end_early(&window_id, now_ms) {
+        if window_id == UNINSTALL_ID {
+            self.uninstall_pending = None;
+            self.uninstall_permit =
+                Some(UninstallPermit { granted_at: now_ms, expires_at: now_ms.saturating_add(PARTNER_PERMIT_MS) });
+        } else if !self.end_early(&window_id, now_ms) {
             return Err(UnlockError::WrongLock);
         }
         self.challenges[idx].used = true;
@@ -576,12 +628,70 @@ impl LockStore {
         self.pending_unlocks.len() != before
     }
 
+    /// True while an uninstall permit is in force (effective clock).
+    pub fn permit_valid(&self, now_ms: i64) -> bool {
+        let now_ms = now_ms.max(self.high_water_ms);
+        self.uninstall_permit.is_some_and(|p| now_ms < p.expires_at)
+    }
+
+    /// Drops the permit (after a completed uninstall).
+    pub fn clear_permit(&mut self) {
+        self.uninstall_permit = None;
+    }
+
+    /// Starts the uninstall waiting period; returns when it ends. A repeat request returns the
+    /// existing time rather than restarting the wait.
+    pub fn request_uninstall_delay(&mut self, now_ms: i64) -> i64 {
+        let now_ms = now_ms.max(self.high_water_ms);
+        self.high_water_ms = now_ms;
+        if let Some(p) = self.uninstall_pending {
+            return p.unlock_at;
+        }
+        let unlock_at = now_ms.saturating_add(self.uninstall_wait_ms);
+        self.uninstall_pending = Some(UninstallPending { unlock_at });
+        unlock_at
+    }
+
+    /// Abandons a pending uninstall wait; false when there was none.
+    pub fn cancel_uninstall_delay(&mut self) -> bool {
+        self.uninstall_pending.take().is_some()
+    }
+
+    /// Changes the waiting period. Raising it applies at once; lowering it needs a valid permit.
+    pub fn set_uninstall_wait(&mut self, wait_ms: i64, now_ms: i64) -> Result<(), SetWaitError> {
+        if !(MIN_UNINSTALL_WAIT_MS..=MAX_UNINSTALL_WAIT_MS).contains(&wait_ms) {
+            return Err(SetWaitError::BadValue);
+        }
+        let now_ms = now_ms.max(self.high_water_ms);
+        if wait_ms < self.uninstall_wait_ms && !self.permit_valid(now_ms) {
+            return Err(SetWaitError::NeedsPermit);
+        }
+        self.high_water_ms = now_ms;
+        self.uninstall_wait_ms = wait_ms;
+        Ok(())
+    }
+
     /// Applies pending unlocks that are due: the window ends now. A pending entry whose window
-    /// is gone or already over is just dropped. Returns true when anything changed.
+    /// is gone or already over is just dropped. A due uninstall wait becomes a permit and an
+    /// expired permit is dropped. Returns true when anything changed.
     pub fn expire_pending(&mut self, now_ms: i64) -> bool {
         let now_ms = now_ms.max(self.high_water_ms);
-        let pending = std::mem::take(&mut self.pending_unlocks);
         let mut changed = false;
+        if let Some(p) = self.uninstall_pending {
+            if p.unlock_at <= now_ms {
+                self.uninstall_pending = None;
+                self.uninstall_permit = Some(UninstallPermit {
+                    granted_at: p.unlock_at,
+                    expires_at: p.unlock_at.saturating_add(WAIT_PERMIT_MS),
+                });
+                changed = true;
+            }
+        }
+        if self.uninstall_permit.is_some_and(|p| now_ms >= p.expires_at) {
+            self.uninstall_permit = None;
+            changed = true;
+        }
+        let pending = std::mem::take(&mut self.pending_unlocks);
         for p in pending {
             let live = self.windows.iter().any(|w| w.id == p.window_id && is_locking(w) && w.ends > now_ms)
                 || self.locked_limit(&p.window_id).is_some();

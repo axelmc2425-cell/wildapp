@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 
+use crate::lockstore::{LockStore, UNINSTALL_HOWTO};
 use crate::model::{Lock, Window};
 
 pub const MAIN_SERVICE: &str = "MyBrainFocus";
@@ -456,7 +457,21 @@ pub fn lock_pending(windows: &[Window], now_ms: i64) -> bool {
 /// come, `ends > now`) the helper ignores Stop; Shutdown is always honored. This matches the
 /// install/uninstall refusal, so a lock scheduled ahead cannot be dodged by stopping the services.
 pub fn stop_allowed(windows: &[Window], now_ms: i64) -> bool {
-    !lock_pending(windows, now_ms)
+    stop_allowed_with_permit(windows, true, now_ms)
+}
+
+/// Stop is honored only when no lock is pending and an uninstall permit is valid.
+pub fn stop_allowed_with_permit(windows: &[Window], permit_valid: bool, now_ms: i64) -> bool {
+    permit_valid && !lock_pending(windows, now_ms)
+}
+
+/// Gate for the uninstall itself: a pending locked/frozen window refuses first (existing text),
+/// then a missing or expired permit refuses with the how-to message. Locked limits are covered by
+/// the permit requirement and do not block here. Judged on the effective clock.
+pub fn uninstall_gate(store: &LockStore, now_ms: i64) -> Result<(), String> {
+    let now_ms = now_ms.max(store.high_water_ms);
+    uninstall_decision(&store.windows, now_ms)?;
+    if store.permit_valid(now_ms) { Ok(()) } else { Err(UNINSTALL_HOWTO.to_string()) }
 }
 
 /// Gate for `uninstall` and for an upgrade that would stop the services: refused while any
@@ -556,6 +571,32 @@ mod tests {
         assert!(!stop_allowed(&[w(Lock::Locked, 200, 300)], 50), "pending future lock also blocks Stop");
         assert!(stop_allowed(&[w(Lock::Locked, 200, 300)], 300));
         assert!(stop_allowed(&[w(Lock::None, 0, 100)], 50));
+    }
+
+    #[test]
+    fn stop_allowed_with_permit_needs_both() {
+        assert!(!stop_allowed_with_permit(&[w(Lock::Locked, 0, 100)], true, 50), "lock pending beats permit");
+        assert!(!stop_allowed_with_permit(&[], false, 50), "no permit");
+        assert!(stop_allowed_with_permit(&[], true, 50));
+        assert!(stop_allowed_with_permit(&[w(Lock::Locked, 0, 100)], true, 100));
+    }
+
+    #[test]
+    fn uninstall_gate_cases() {
+        use crate::lockstore::{LockStore, UninstallPermit, UNINSTALL_HOWTO};
+        let permit = Some(UninstallPermit { granted_at: 0, expires_at: 100 });
+        let mut s = LockStore::default();
+        assert_eq!(uninstall_gate(&s, 50), Err(UNINSTALL_HOWTO.to_string()));
+        assert!(UNINSTALL_HOWTO.starts_with("Uninstall is protected. Open MyBrain, then Focus Room, then Uninstall protection, ask your partner for a code or start the waiting period, then run the uninstaller again."));
+        s.uninstall_permit = permit;
+        assert_eq!(uninstall_gate(&s, 50), Ok(()));
+        assert_eq!(uninstall_gate(&s, 100), Err(UNINSTALL_HOWTO.to_string()), "expired permit");
+        s.windows = vec![w(Lock::Locked, 0, 1_700_000_000_000)];
+        let e = uninstall_gate(&s, 50).unwrap_err();
+        assert!(e.contains("locked or frozen focus window"), "{e}");
+        s.windows.clear();
+        s.high_water_ms = 200;
+        assert_eq!(uninstall_gate(&s, 50), Err(UNINSTALL_HOWTO.to_string()), "effective clock");
     }
 
     #[test]

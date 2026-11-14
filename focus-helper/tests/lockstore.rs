@@ -989,3 +989,174 @@ fn limit_tombstones_are_capped() {
     assert_eq!(s.limit_tombstones.last().unwrap().id, "limit-new");
     assert!(s.limit_tombstones.iter().all(|t| t.id != "limit-old0"));
 }
+
+// ---- uninstall protection ----
+
+const MIN30: i64 = 1_800_000;
+
+fn uninstall_token(s: &mut LockStore, sk: &SigningKey, now: i64, nonce: [u8; 16]) -> String {
+    let code = s.request_challenge(UNINSTALL_ID, now, nonce).unwrap();
+    token(sk, &nonce_of(&code), UNINSTALL_ID, now + 600_000)
+}
+
+#[test]
+fn old_state_loads_protected_with_default_wait() {
+    let s: LockStore = serde_json::from_str(r#"{"version":3,"windows":[]}"#).unwrap();
+    assert_eq!(s.uninstall_wait_ms, DAY);
+    assert_eq!(s.uninstall_pending, None);
+    assert_eq!(s.uninstall_permit, None);
+    assert!(!s.permit_valid(NOW));
+    assert_eq!(LockStore::default().uninstall_wait_ms, DAY);
+}
+
+#[test]
+fn uninstall_challenge_needs_no_window() {
+    let (mut s, _) = with_partner();
+    assert!(s.request_challenge(UNINSTALL_ID, NOW, [1; 16]).is_ok());
+    let mut s = LockStore::default();
+    assert!(s.request_challenge(UNINSTALL_ID, NOW, [1; 16]).is_ok());
+    assert_eq!(s.request_challenge("other", NOW, [2; 16]), Err(ChallengeError::NoSuchLock));
+}
+
+#[test]
+fn uninstall_token_grants_a_30_minute_single_use_permit() {
+    let (mut s, sk) = with_partner();
+    s.request_uninstall_delay(NOW);
+    let t = uninstall_token(&mut s, &sk, NOW, [3; 16]);
+    assert_eq!(s.submit_token(&t, NOW), Ok(UNINSTALL_ID.to_string()));
+    assert_eq!(s.uninstall_permit, Some(UninstallPermit { granted_at: NOW, expires_at: NOW + MIN30 }));
+    assert_eq!(s.uninstall_pending, None, "pending cleared");
+    assert!(s.permit_valid(NOW + MIN30 - 1));
+    assert!(!s.permit_valid(NOW + MIN30));
+    assert_eq!(s.submit_token(&t, NOW), Err(UnlockError::Used));
+}
+
+#[test]
+fn tokens_for_other_targets_do_not_cross() {
+    let (mut s, sk) = with_partner();
+    s.push(vec![win("l", Lock::Locked, NOW - H, NOW + H)], NOW).unwrap();
+    // window challenge, token signed for uninstall
+    let code = s.request_challenge("l", NOW, [4; 16]).unwrap();
+    let bad = token(&sk, &nonce_of(&code), UNINSTALL_ID, NOW + 600_000);
+    assert_eq!(s.submit_token(&bad, NOW), Err(UnlockError::WrongLock));
+    assert!(!s.permit_valid(NOW));
+    // uninstall challenge, token signed for the window
+    let code = s.request_challenge(UNINSTALL_ID, NOW, [5; 16]).unwrap();
+    let bad = token(&sk, &nonce_of(&code), "l", NOW + 600_000);
+    assert_eq!(s.submit_token(&bad, NOW), Err(UnlockError::WrongLock));
+    assert_eq!(s.windows[0].ends, NOW + H, "window not ended");
+    // a good uninstall token ends no window
+    let t = uninstall_token(&mut s, &sk, NOW, [6; 16]);
+    s.submit_token(&t, NOW).unwrap();
+    assert_eq!(s.windows[0].ends, NOW + H);
+    assert!(s.ended_early.is_empty());
+    assert!(s.permit_valid(NOW));
+}
+
+#[test]
+fn uninstall_token_does_not_unlock_a_limit() {
+    let (mut s, sk) = with_partner();
+    let t = uninstall_token(&mut s, &sk, NOW, [7; 16]);
+    s.submit_token(&t, NOW).unwrap();
+    assert!(s.limit_tombstones.is_empty());
+}
+
+#[test]
+fn wait_route_becomes_a_permit() {
+    let mut s = LockStore::default();
+    assert_eq!(s.request_uninstall_delay(NOW), NOW + DAY);
+    assert_eq!(s.request_uninstall_delay(NOW + H), NOW + DAY, "repeat keeps the first time");
+    assert!(s.cancel_uninstall_delay());
+    assert!(!s.cancel_uninstall_delay());
+    assert_eq!(s.uninstall_pending, None);
+    let at = s.request_uninstall_delay(NOW);
+    assert!(!s.expire_pending(at - 1));
+    assert!(!s.permit_valid(at - 1));
+    assert!(s.expire_pending(at));
+    assert_eq!(s.uninstall_pending, None);
+    assert_eq!(s.uninstall_permit, Some(UninstallPermit { granted_at: at, expires_at: at + H }));
+    assert!(s.permit_valid(at + H - 1));
+    assert!(!s.permit_valid(at + H));
+    assert!(s.expire_pending(at + H));
+    assert_eq!(s.uninstall_permit, None, "expired permit dropped");
+    assert!(!s.expire_pending(at + H));
+}
+
+#[test]
+fn late_wait_expiry_dates_permit_from_unlock_time() {
+    let mut s = LockStore::default();
+    let at = s.request_uninstall_delay(NOW);
+    // the check only happens long after the wait ended and the permit window is gone
+    s.expire_pending(at + 2 * H);
+    assert_eq!(s.uninstall_permit, None);
+    assert_eq!(s.uninstall_pending, None);
+}
+
+#[test]
+fn clock_moved_back_neither_shortens_wait_nor_revives_permit() {
+    let mut s = LockStore::default();
+    s.high_water_ms = NOW;
+    let at = s.request_uninstall_delay(NOW - 5 * DAY); // effective clock is NOW
+    assert_eq!(at, NOW + DAY);
+    assert!(!s.expire_pending(NOW - 5 * DAY + 2 * DAY));
+    assert!(s.uninstall_pending.is_some());
+    s.expire_pending(at);
+    assert!(s.permit_valid(at));
+    s.expire_pending(at + H);
+    assert!(s.uninstall_permit.is_none());
+    assert!(!s.permit_valid(at - 10 * DAY), "no revival");
+    // a live permit does not outlive its end because the caller clock goes back
+    let (mut s, sk) = with_partner();
+    let t = uninstall_token(&mut s, &sk, NOW, [8; 16]);
+    s.submit_token(&t, NOW).unwrap();
+    s.expire_pending(NOW + MIN30 + 1);
+    assert!(!s.permit_valid(NOW));
+}
+
+#[test]
+fn clear_permit_removes_it() {
+    let (mut s, sk) = with_partner();
+    let t = uninstall_token(&mut s, &sk, NOW, [9; 16]);
+    s.submit_token(&t, NOW).unwrap();
+    s.clear_permit();
+    assert!(!s.permit_valid(NOW));
+}
+
+#[test]
+fn set_uninstall_wait_rules() {
+    let (mut s, sk) = with_partner();
+    assert_eq!(s.set_uninstall_wait(2 * DAY, NOW), Ok(()));
+    assert_eq!(s.uninstall_wait_ms, 2 * DAY);
+    assert_eq!(s.set_uninstall_wait(DAY, NOW), Err(SetWaitError::NeedsPermit));
+    assert_eq!(s.uninstall_wait_ms, 2 * DAY);
+    assert_eq!(s.set_uninstall_wait(2 * DAY, NOW), Ok(()), "equal is not lowering");
+    assert_eq!(s.set_uninstall_wait(3_599_999, NOW), Err(SetWaitError::BadValue));
+    assert_eq!(s.set_uninstall_wait(604_800_001, NOW), Err(SetWaitError::BadValue));
+    assert_eq!(s.set_uninstall_wait(604_800_000, NOW), Ok(()));
+    let t = uninstall_token(&mut s, &sk, NOW, [10; 16]);
+    s.submit_token(&t, NOW).unwrap();
+    assert_eq!(s.set_uninstall_wait(3_599_999, NOW), Err(SetWaitError::BadValue), "bounds apply with permit");
+    assert_eq!(s.set_uninstall_wait(3_600_000, NOW), Ok(()));
+    assert_eq!(s.uninstall_wait_ms, 3_600_000);
+    assert_eq!(s.request_uninstall_delay(NOW), NOW + 3_600_000);
+}
+
+#[test]
+fn reserved_uninstall_id_rejected_for_windows_and_limits() {
+    let mut s = LockStore::default();
+    assert_eq!(
+        s.push(vec![win(UNINSTALL_ID, Lock::None, NOW - H, NOW + H)], NOW),
+        Err(PushError::Invalid(Invalid::BadId))
+    );
+    let l = focus_helper::limits::Limit {
+        id: UNINSTALL_ID.into(),
+        name: "x".into(),
+        apps: vec!["a.exe".into()],
+        sites: vec![],
+        period: focus_helper::limits::Period::Daily,
+        cap_secs: 60,
+        lock: Lock::None,
+        unlock_delay_ms: None,
+    };
+    assert!(matches!(s.push_limits(vec![l], NOW), Err(PushError::BadLimit(_))));
+}
