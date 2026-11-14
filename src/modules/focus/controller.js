@@ -67,6 +67,7 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
   let limitEnforcement = false;
   let limitsEverPushed = false;
   let reconciling = false;
+  let limitsUnsent = false; // a limits push failed; window pushes track syncPending
 
   const changed = () => { try { onChange?.(); } catch { /* UI callback must not break the controller */ } };
 
@@ -119,7 +120,7 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
     let applied = null;
     try {
       const status = await client.status();
-      if (mine === seq && !syncPending) { helper = { kind: 'ok', status }; applied = status; }
+      if (mine === seq && !syncPending && !limitsUnsent) { helper = { kind: 'ok', status }; applied = status; }
       if (status && typeof status.partner_set === 'boolean') partnerSet = status.partner_set;
     } catch (err) {
       if (mine === seq) {
@@ -176,11 +177,14 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
 
   // Runs inside the queue. Returns true when the helper accepted the push.
   async function doResync() {
+    let stage = 'windows';
     try {
       lastSync = await syncWindows(db, client, now(), tzOffsetAt);
+      stage = 'limits';
       const lim = await syncLimits(db, client, { force: limitsEverPushed });
       if (lim && lim.pushed > 0) limitsEverPushed = true;
       syncPending = false;
+      limitsUnsent = false;
       notice = null;
       await afterLimitPush(lim);
       if (limits.length > 0) await applyLimitsRes(await fetchLimits());
@@ -188,13 +192,13 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
       changed();
       return true;
     } catch (err) {
-      syncPending = true;
+      if (stage === 'windows') syncPending = true; else limitsUnsent = true;
       seq++;
       try { helper = classifyHelperFailure(err); } catch { helper = { kind: 'unknown', message: 'Unknown error' }; }
       try {
         notice = err && PUSH_REJECTION_CODES.has(err.code)
           ? describePushProblem(err, lastSync?.skipped ?? 0, lists.map((l) => l.name))
-          : err && LIMIT_REJECTION_CODES.has(err.code) ? limitRejectNotice(err) : null;
+          : stage === 'limits' && err && LIMIT_REJECTION_CODES.has(err.code) ? limitRejectNotice(err) : null;
       } catch { notice = null; }
       changed();
       return false;
@@ -376,7 +380,7 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
 
   // Marks the helper state from a failed push, like a failed window push does.
   function markDown(err) {
-    syncPending = true;
+    limitsUnsent = true;
     seq++;
     try { helper = classifyHelperFailure(err); } catch { helper = { kind: 'unknown', message: 'Unknown error' }; }
     changed();
@@ -387,6 +391,7 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
     try {
       const r = await syncLimits(db, client, { force: limitsEverPushed });
       if (r && r.pushed > 0) limitsEverPushed = true;
+      limitsUnsent = false;
       return { kind: 'ok', r };
     } catch (err) {
       return { kind: LIMIT_REJECTION_CODES.has(err && err.code) ? 'rejected' : 'failed', err };
@@ -414,7 +419,7 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
     limitEnforcement = true;
     limitStatus = new Map((Array.isArray(res.status) ? res.status : []).filter((s) => s && typeof s.id === 'string').map((s) => [s.id, s]));
     limitPending = Array.isArray(res.pending_unlocks) ? res.pending_unlocks : [];
-    if (!syncPending && !reconciling) {
+    if (!limitsUnsent && !reconciling) {
       reconciling = true;
       try {
         let adopted = false;
@@ -429,11 +434,23 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
             } catch { /* retried on the next refresh */ }
           }
         }
-        if (adopted) {
-          await reloadSafe();
-          // An unlocked copy pushed back clears the helper's tombstone for it.
+        // A locked limit the helper holds but the app has no row for: bring it back so it can be shown and unlocked.
+        for (const h of res.limits) {
+          const m = h && typeof h.id === 'string' ? /^limit-(\d+)$/.exec(h.id) : null;
+          if (!m || h.lock !== 'locked' || limits.some((r) => r.id === Number(m[1]))) continue;
+          try {
+            await store.saveLimit(db, { ...fromWire(h), id: Number(m[1]), enabled: true }, { adopt: true });
+            adopted = true;
+          } catch { /* retried on the next refresh */ }
+        }
+        // An empty app list with limits still on the helper (restart after a wipe): a push clears stale unlocked ones.
+        const staleHelper = limits.length === 0 && res.limits.length > 0;
+        if (adopted) await reloadSafe();
+        if (adopted || staleHelper) {
+          if (staleHelper) limitsEverPushed = true;
           const out = await pushLimitsOutcome();
-          if (out.kind !== 'ok') markDown(out.err);
+          if (out.kind === 'ok') await afterLimitPush(out.r);
+          else markDown(out.err);
         }
       } finally { reconciling = false; }
     }
@@ -449,7 +466,7 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
       await reloadSafe();
       await applyLimitsRes(await fetchLimits());
     }
-    if (!syncPending) notice = null;
+    if (!syncPending && !limitsUnsent) notice = null;
     const parts = [];
     for (const id of kept) parts.push(`${limitName(id)} is locked and was kept.`);
     for (const id of tomb) parts.push(`The lock on ${limitName(id)} was not re-applied because its unlock is still being synced. It will be retried on the next sync.`);
@@ -461,7 +478,7 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
   async function settleLimitPush(out) {
     if (out.kind === 'ok') { await afterLimitPush(out.r); return null; }
     if (out.kind === 'rejected') {
-      syncPending = true;
+      limitsUnsent = true;
       notice = limitRejectNotice(out.err);
       changed();
       return notice;
@@ -521,7 +538,7 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
         return true;
       };
       const undoFailed = () => {
-        syncPending = true;
+        limitsUnsent = true;
         return { ok: false, errors: { form: 'The helper did not take the change, and the save could not be undone here. Reopen the Focus Room to check.' } };
       };
       const success = async (r, extra = {}) => {
@@ -601,20 +618,23 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
         await reload();
         const row = limits.find((l) => l.id === id);
         if (!row) return { ok: false, reason: 'error', message: 'That limit no longer exists.' };
-        if (row.lock === 'locked') {
-          // Only the helper can say a lock is over: ask it, and delete only if it is gone or unlocked.
-          const res = await fetchLimits();
-          if (!res) return { ok: false, reason: 'error', message: "Not deleted. Couldn't reach the helper to check the lock." };
-          const h = res.limits.find((x) => x && x.id === `limit-${id}`);
-          if (h && h.lock === 'locked') return { ok: false, needsUnlock: true, limitId: id };
-        }
+        // Only the helper can say a lock is over, and the app row may be stale: always ask it.
+        const res = await fetchLimits();
+        if (!res && row.lock === 'locked') return { ok: false, reason: 'error', message: "Not deleted. Couldn't reach the helper to check the lock." };
+        const h = res ? res.limits.find((x) => x && x.id === `limit-${id}`) : null;
+        if (h && h.lock === 'locked') return { ok: false, needsUnlock: true, limitId: id };
         await store.deleteLimit(db, id);
       } catch (e) {
         return { ok: false, reason: 'error', message: `Could not delete: ${errText(e)}` };
       }
       await reloadSafe();
       changed();
-      const warning = await settleLimitPush(await pushLimitsOutcome());
+      const out = await pushLimitsOutcome();
+      if (out.kind === 'ok' && out.r && out.r.keptLocked.includes(`limit-${id}`)) {
+        await afterLimitPush(out.r); // adopts the helper's copy back as a row
+        return { ok: false, needsUnlock: true, limitId: id };
+      }
+      const warning = await settleLimitPush(out);
       await applyLimitsRes(await fetchLimits());
       return warning ? { ok: true, helperStopped: false, message: warning, warning } : { ok: true, helperStopped: true };
     });
@@ -622,8 +642,8 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
 
   /** Fresh numbers from the helper. The call itself runs outside the write queue. */
   async function refreshLimits() {
-    const res = await fetchLimits();
-    await enqueue(() => applyLimitsRes(res), { quiet: true });
+    // Fetched inside the queue: a snapshot taken before a queued write must not be applied after it.
+    await enqueue(async () => applyLimitsRes(await fetchLimits()), { quiet: true });
   }
 
   function startBlock(input) {
@@ -964,7 +984,7 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
           loaded: limitsLoaded,
           enforcement: limitEnforcement,
         },
-        loaded, lists, schedules, blocks: allBlocks(now()), helper, syncPending, lastSync, notice,
+        loaded, lists, schedules, blocks: allBlocks(now()), helper, syncPending: syncPending || limitsUnsent, lastSync, notice,
         partner: { set: partnerSet, name: partnerSet ? partnerName : null },
       };
     },

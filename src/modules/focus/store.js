@@ -326,7 +326,7 @@ export async function listLimits(db) {
 }
 
 /** Inserts (no id) or replaces (id) a limit and its items. Throws on an invalid limit. @returns {Promise<number>} id */
-export async function saveLimit(db, limit) {
+export async function saveLimit(db, limit, { adopt = false } = {}) {
   const sites = [], apps = [];
   for (const [kind, raws, out] of [['site', limit.sites, sites], ['app', limit.apps, apps]]) {
     for (const raw of Array.isArray(raws) ? raws : []) {
@@ -347,7 +347,18 @@ export async function saveLimit(db, limit) {
   if (limit.id !== undefined && limit.id !== null) {
     const id = limit.id;
     const exists = await db.all('SELECT id FROM focus_limits WHERE id = ?', [id]);
-    if (!exists.length) throw new Error('no such limit');
+    if (!exists.length) {
+      if (!adopt) throw new Error('no such limit');
+      // Adoption of a limit the helper holds: keep its id (AUTOINCREMENT continues above it).
+      const [{ n }] = await db.all('SELECT COUNT(*) AS n FROM focus_limits');
+      if (n >= MAX_LIMITS) throw new Error('invalid limit: too many limits');
+      await db.batch([
+        { sql: 'INSERT INTO focus_limits(id, name, period, cap_secs, lock, unlock_delay_ms, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          params: [id, rec.name, rec.period, rec.capSecs, rec.lock, delay, enabled] },
+        ...itemStmts('?', [id]),
+      ]);
+      return id;
+    }
     await db.batch([
       { sql: 'UPDATE focus_limits SET name = ?, period = ?, cap_secs = ?, lock = ?, unlock_delay_ms = ?, enabled = ? WHERE id = ?',
         params: [rec.name, rec.period, rec.capSecs, rec.lock, delay, enabled, id] },
