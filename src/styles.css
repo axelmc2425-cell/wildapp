@@ -438,3 +438,8 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
   .fr-rangenav { justify-content: space-between; }
   .fr-statcards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+.fr-tabs { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--border); margin: 0 0 12px; }
+.fr-tab { font: inherit; font-size: 13px; padding: 8px 14px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted, var(--text)); cursor: pointer; white-space: nowrap; flex: 0 0 auto; }
+.fr-tab:hover { background: var(--hover); }
+.fr-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.fr-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }

@@ -7,6 +7,7 @@ const NOW = Date.UTC(2026, 10, 11, 12, 0); // Wed 2026-11-11
 const tick = () => new Promise((r) => setImmediate(r));
 const text = (root) => root.textContent;
 const btn = (root, t) => findAll(root, (n) => n.tag === 'button' && n.textContent === t)[0];
+const tab = async (body, id) => { await findAll(body, (n) => n.getAttribute('data-fk') === `sec-${id}`)[0].click(); };
 const row = (day, total, apps = { 'a.exe': total }, sites = {}, other = 0) => ({ day, total, apps, sites, other_browsing: other });
 
 // Every mounted page is stopped after its test, so a failed assertion cannot leave a refresh interval running.
@@ -149,6 +150,7 @@ test('fetch failure shows the message and Retry calls again', async () => {
 test('sites are labelled as estimates, shares are of identified sites, other browsing is separate', async () => {
   const { body, stop } = setup({ usage: (from) => ({ ok: true, days: from === '2026-11-09' ? [row('2026-11-09', 3600, { 'chrome.exe': 3600 }, { YouTube: 1800, Reddit: 600 }, 900)] : [] }) });
   await tick();
+  await tab(body, 'apps');
   const t = text(body);
   assert.match(t, /Estimated from browser tab titles/);
   assert.match(t, /of identified sites/);
@@ -464,6 +466,7 @@ test('hour bars and heatmap show with the day count caption', async () => {
   const { body, stop } = setup({ usage: (from) => ({ ok: true, days: from === '2026-11-09'
     ? [hrow('2026-11-09', 3600, hrs({ 9: 3600 })), hrow('2026-11-10', 1800, hrs({ 10: 1800 }))] : [] }) });
   await tick();
+  await tab(body, 'hours');
   assert.match(text(body), /Hours of the day/);
   assert.match(text(body), /Based on 2 days with hour data/);
   assert.match(text(body), /2 of 3 days/);
@@ -476,6 +479,7 @@ test('hour bars and heatmap show with the day count caption', async () => {
 test('singular caption for one day', async () => {
   const { body, stop } = setup({ usage: (from) => ({ ok: true, days: from === '2026-11-09' ? [hrow('2026-11-09', 3600, hrs({ 9: 3600 }))] : [] }) });
   await tick();
+  await tab(body, 'hours');
   assert.match(text(body), /Based on 1 day with hour data/);
   stop();
 });
@@ -483,6 +487,7 @@ test('singular caption for one day', async () => {
 test('days without hours show the placeholder and no hour chart', async () => {
   const { body, stop } = setup({ usage: (from) => ({ ok: true, days: from === '2026-11-09' ? [hrow('2026-11-09', 3600), hrow('2026-11-10', 600)] : [] }) });
   await tick();
+  await tab(body, 'hours');
   assert.match(text(body), /Hour detail is recorded from the update onwards/);
   assert.equal(hasChart(body, 'fr-chart-hours'), false);
   assert.equal(hasChart(body, 'fr-chart-weekhour'), false);
@@ -493,6 +498,7 @@ test('Day period shows only the hour bars', async () => {
   const { body, stop } = setup({ usage: () => ({ ok: true, days: [hrow('2026-11-11', 3600, hrs({ 9: 3600 }))] }) });
   await tick();
   await btn(body, 'Day').click();
+  await tab(body, 'hours');
   assert.match(text(body), /Based on 1 day with hour data/);
   assert.ok(hasChart(body, 'fr-chart-hours'));
   assert.equal(hasChart(body, 'fr-chart-weekhour'), false);
@@ -502,6 +508,7 @@ test('Day period shows only the hour bars', async () => {
 test('averages: exact per-day value, dash for week and month on short ranges, no NaN', async () => {
   const { body, stop } = setup({ usage: (from) => ({ ok: true, days: from === '2026-11-09' ? [row('2026-11-09', 7200, { 'code.exe': 7200 }), row('2026-11-10', 3600, { 'code.exe': 3600 })] : [] }) });
   await tick();
+  await tab(body, 'averages');
   const t = text(body);
   assert.match(t, /Averages/);
   const rowsOf = (k) => findAll(body, (n) => n.getAttribute('data-fk') === k)[0];
@@ -522,6 +529,7 @@ test('averages and hours render as tables when Show as table is on', async () =>
   const { body, stop } = setup({ usage: (from) => ({ ok: true, days: from === '2026-11-09' ? [hrow('2026-11-09', 3600, hrs({ 9: 3600 }))] : [] }) });
   await tick();
   await btn(body, 'Show as table').click();
+  await tab(body, 'hours');
   const tables = findAll(body, (n) => n.tag === 'table');
   const hourT = tables.find((tb) => /Hours of the day/.test(tb.textContent));
   assert.ok(hourT);
@@ -529,8 +537,9 @@ test('averages and hours render as tables when Show as table is on', async () =>
   const hourRows = findAll(hourT, (n) => n.tag === 'tr');
   assert.equal(hourRows[10].textContent, '09:00' + '1h 0m'); // row 0 is the header, so 09:00 is row 10
   assert.equal(hourRows[11].textContent, '10:00' + '0m');
-  assert.ok(tables.some((tb) => /Averages/.test(tb.textContent)));
   assert.equal(hasChart(body, 'fr-chart-hours'), false);
+  await tab(body, 'averages');
+  assert.ok(findAll(body, (n) => n.tag === 'table').some((tb) => /Averages/.test(tb.textContent)));
   assert.doesNotMatch(text(body), /NaN/);
   stop();
 });
@@ -560,7 +569,7 @@ function setupDrill({ usage = weekUsage, sessions, helper, deps } = {}) {
   r.sessionCalls = sessionCalls;
   return r;
 }
-async function openApp(opts, name = 'code.exe', kind = 'app') { const r = setupDrill(opts); await tick(); await fk(r.body, `${kind}-${name}`).click(); await tick(); return r; }
+async function openApp(opts, name = 'code.exe', kind = 'app') { const r = setupDrill(opts); await tick(); await tab(r.body, 'apps'); await fk(r.body, `${kind}-${name}`).click(); await tick(); return r; }
 const stripLabel = (body) => findAll(body, (n) => n.tag === 'svg' && (n.getAttribute('class') || '').includes('fr-chart-timeline'))[0].getAttribute('aria-label');
 
 test('clicking a ranked app opens the drill-down with exact total, active days, average and share', async () => {
@@ -580,6 +589,7 @@ test('clicking a ranked app opens the drill-down with exact total, active days, 
 
 test('the same rows open from the average-per-active-day list', async () => {
   const r = setupDrill(); await tick();
+  await tab(r.body, 'averages');
   const inAvg = findAll(r.body, (n) => n.getAttribute('data-fk') === 'avg-app-code.exe')[0];
   const b = findAll(inAvg, (n) => n.tag === 'button')[0];
   assert.equal(b.getAttribute('data-fk'), 'avgapp-code.exe');
@@ -592,6 +602,7 @@ test('the same rows open from the average-per-active-day list', async () => {
 test('Back returns to the main view with period and table state intact', async () => {
   const r = setupDrill(); await tick();
   await btn(r.body, 'Show as table').click();
+  await tab(r.body, 'apps');
   await fk(r.body, 'app-code.exe').click(); await tick();
   assert.equal(fk(r.body, 'p-week'), undefined);
   await fk(r.body, 'drill-back').click();
@@ -630,6 +641,7 @@ test('a day older than 90 days shows the not-kept message and never calls getSes
   const r = setupDrill({ usage: () => ({ ok: true, days: [row('2026-01-05', 1200, { 'code.exe': 1200 })] }) });
   await tick();
   await btn(r.body, 'Year').click(); await tick();
+  await tab(r.body, 'apps');
   await fk(r.body, 'app-code.exe').click(); await tick();
   assert.match(text(r.body), /Detailed timeline is kept for 90 days\./);
   assert.equal(r.sessionCalls.length, 0);
@@ -679,6 +691,7 @@ test('a stale session response is ignored', async () => {
   const pending = [];
   const r = setupDrill({ sessions: (day) => new Promise((res) => pending.push({ day, res })) });
   await tick();
+  await tab(r.body, 'apps');
   await fk(r.body, 'app-code.exe').click();
   await fk(r.body, 'drill-prev').click();
   const a = pending.find((p) => p.day === '2026-11-10');
@@ -695,6 +708,7 @@ test('cleanup while a day is loading leaves the DOM alone', async () => {
   let release;
   const r = setupDrill({ sessions: (day) => new Promise((res) => { release = () => res({ ok: true, day, truncated: false, stretches: [dst(day, 1, 60)] }); }) });
   await tick();
+  await tab(r.body, 'apps');
   await fk(r.body, 'app-code.exe').click();
   r.stop();
   release(); await tick();
@@ -732,6 +746,7 @@ test('the 90-day boundary: today-89 is kept, today-90 is not', async () => {
   const usage = () => ({ ok: true, days: [row('2026-08-14', 600, { 'code.exe': 600 })] });
   const r = setupDrill({ usage }); await tick();
   await btn(r.body, 'Year').click(); await tick();
+  await tab(r.body, 'apps');
   await fk(r.body, 'app-code.exe').click(); await tick();
   assert.deepEqual(r.sessionCalls, ['2026-08-14']);
   assert.doesNotMatch(text(r.body), /kept for 90 days/);
@@ -766,4 +781,104 @@ test('drill-down: a day with stretches but none for this item says no time was r
   const { body } = await openApp({ sessions: (day) => ({ ok: true, day, truncated: false, stretches: [dst(day, 100, 500, 'a.exe')] }) });
   assert.match(text(body), /No time recorded for code\.exe on this day\./);
   assert.doesNotMatch(text(body), /Detailed timeline not available/);
+});
+
+// ---- tabs ----
+const HEADINGS = (body) => findAll(body, (n) => n.tag === 'h3').map((n) => n.textContent);
+const tabsOf = (body) => findAll(body, (n) => n.getAttribute('role') === 'tab');
+const key = (el, k) => { let prevented = false; for (const f of el.listeners.keydown || []) f({ key: k, target: el, preventDefault() { prevented = true; } }); return prevented; };
+const tabUsage = () => ({ ok: true, days: [hrow('2026-11-09', 7200, hrs({ 9: 7200 })), hrow('2026-11-10', 3600, hrs({ 10: 3600 }))] });
+
+test('tabs: default is Overview with only its sections', async () => {
+  const { body } = setup({ usage: tabUsage }); await tick();
+  const hs = HEADINGS(body);
+  assert.ok(hs.includes('Daily totals')); assert.ok(hs.includes('Average by weekday'));
+  for (const gone of ['Top apps', 'Top sites', 'Hours of the day', 'Averages']) assert.ok(!hs.includes(gone), gone);
+  const tabs = tabsOf(body);
+  assert.equal(tabs.length, 4);
+  assert.deepEqual(tabs.map((t) => t.getAttribute('data-fk')), ['sec-overview', 'sec-apps', 'sec-hours', 'sec-averages']);
+  assert.equal(findAll(body, (n) => n.getAttribute('role') === 'tablist').length, 1);
+  const panel = findAll(body, (n) => n.getAttribute('role') === 'tabpanel')[0];
+  assert.equal(panel.getAttribute('id'), 'fr-panel-overview');
+  assert.equal(panel.getAttribute('aria-labelledby'), 'fr-tab-overview');
+  assert.equal(tabs[0].getAttribute('id'), 'fr-tab-overview');
+  assert.equal(tabs[0].getAttribute('aria-controls'), 'fr-panel-overview');
+});
+
+test('tabs: each tab shows exactly its sections', async () => {
+  const { body } = setup({ usage: tabUsage }); await tick();
+  await tab(body, 'apps');
+  assert.deepEqual(HEADINGS(body), ['Top apps', 'Top sites']);
+  await tab(body, 'hours');
+  assert.deepEqual(HEADINGS(body), ['Hours of the day']);
+  await tab(body, 'averages');
+  assert.deepEqual(HEADINGS(body), ['Averages']);
+  assert.ok(findAll(body, (n) => n.tag === 'h4').some((n) => n.textContent === 'Apps by average per active day'));
+  assert.ok(fk(body, 'avg-day'));
+  await tab(body, 'overview');
+  assert.deepEqual(HEADINGS(body), ['Daily totals', 'Average by weekday']);
+});
+
+test('tabs: the union of the four tabs is the original section set (Year adds Year at a glance)', async () => {
+  const r = setup({ usage: tabUsage }); await tick();
+  const union = [];
+  for (const id of ['overview', 'apps', 'hours', 'averages']) { await tab(r.body, id); union.push(...HEADINGS(r.body)); }
+  assert.deepEqual(union, ['Daily totals', 'Average by weekday', 'Top apps', 'Top sites', 'Hours of the day', 'Averages']);
+  await btn(r.body, 'Year').click(); await tick();
+  const y = [];
+  for (const id of ['overview', 'apps', 'hours', 'averages']) { await tab(r.body, id); y.push(...HEADINGS(r.body)); }
+  assert.deepEqual(y, ['Daily totals', 'Year at a glance', 'Average by weekday', 'Top apps', 'Top sites', 'Hours of the day', 'Averages']);
+});
+
+test('tabs: the selected tab survives period changes and table mode', async () => {
+  const { body } = setup({ usage: tabUsage }); await tick();
+  await tab(body, 'hours');
+  await btn(body, 'Month').click(); await tick();
+  assert.equal(fk(body, 'sec-hours').getAttribute('aria-selected'), 'true');
+  assert.deepEqual(HEADINGS(body), ['Hours of the day']);
+  await btn(body, 'Show as table').click();
+  assert.equal(fk(body, 'sec-hours').getAttribute('aria-selected'), 'true');
+  assert.deepEqual(HEADINGS(body), ['Hours of the day']);
+});
+
+test('tabs: the tab resets to Overview when the page is mounted again', async () => {
+  const a = setup({ usage: tabUsage }); await tick();
+  await tab(a.body, 'averages'); a.stop();
+  const b = setup({ usage: tabUsage }); await tick();
+  assert.equal(fk(b.body, 'sec-overview').getAttribute('aria-selected'), 'true');
+});
+
+test('tabs: Back from a drill-down opened on Apps & sites returns to that tab', async () => {
+  const { body } = await openApp();
+  await fk(body, 'drill-back').click();
+  assert.equal(fk(body, 'sec-apps').getAttribute('aria-selected'), 'true');
+  assert.ok(HEADINGS(body).includes('Top apps'));
+  assert.equal(globalThis.document.activeElement.getAttribute('data-fk'), 'app-code.exe');
+});
+
+test('tabs: arrow keys, Home and End move selection and focus with roving tabindex', async () => {
+  const { body } = setup({ usage: tabUsage }); await tick();
+  const sel = () => tabsOf(body).filter((t) => t.getAttribute('aria-selected') === 'true').map((t) => t.getAttribute('data-fk'));
+  assert.deepEqual(sel(), ['sec-overview']);
+  assert.deepEqual(tabsOf(body).map((t) => t.getAttribute('tabindex')), ['0', '-1', '-1', '-1']);
+  assert.equal(key(fk(body, 'sec-overview'), 'ArrowRight'), true);
+  assert.deepEqual(sel(), ['sec-apps']);
+  assert.equal(globalThis.document.activeElement.getAttribute('data-fk'), 'sec-apps');
+  assert.deepEqual(tabsOf(body).map((t) => t.getAttribute('tabindex')), ['-1', '0', '-1', '-1']);
+  key(fk(body, 'sec-apps'), 'End');
+  assert.deepEqual(sel(), ['sec-averages']);
+  key(fk(body, 'sec-averages'), 'ArrowRight'); // wraps
+  assert.deepEqual(sel(), ['sec-overview']);
+  key(fk(body, 'sec-overview'), 'ArrowLeft'); // wraps
+  assert.deepEqual(sel(), ['sec-averages']);
+  key(fk(body, 'sec-averages'), 'Home');
+  assert.deepEqual(sel(), ['sec-overview']);
+  assert.equal(globalThis.document.activeElement.getAttribute('data-fk'), 'sec-overview');
+  assert.equal(key(fk(body, 'sec-overview'), 'a'), false);
+});
+
+test('tabs: an empty period shows the empty note and no tablist', async () => {
+  const { body } = setup({ usage: () => ({ ok: true, days: [] }) }); await tick();
+  assert.match(text(body), /No usage recorded yet for this period/);
+  assert.equal(findAll(body, (n) => n.getAttribute('role') === 'tablist').length, 0);
 });
