@@ -187,7 +187,7 @@ export function openLimitEditor(controller, limit, { onDone, onClose, openUnlock
     if (deleteBtn) deleteBtn.disabled = busy;
   }
 
-  const unlockFor = (res) => {
+  const unlockFor = (res, forDelete = false) => {
     const row = (controller.state?.limitsState?.limits || []).find((l) => l.id === res.limitId) || limit;
     if (typeof openUnlockDialog !== 'function' || !row) {
       show(errEls.form, `${LOCKED_MSG} Nothing was changed.`);
@@ -200,7 +200,8 @@ export function openLimitEditor(controller, limit, { onDone, onClose, openUnlock
         // Keep the editor and the user's edits open; the next Save applies them.
         confirmed = false; // the retry creates a new lock: confirm it again
         show(errEls.form, '');
-        unlockedNote.textContent = 'Unlocked. Save again to apply your changes.'; unlockedNote.hidden = false;
+        unlockedNote.textContent = forDelete ? 'Unlocked. You can delete it now.' : 'Unlocked. Save again to apply your changes.';
+        unlockedNote.hidden = false;
         refresh();
         saveBtn.focus();
       },
@@ -261,7 +262,7 @@ export function openLimitEditor(controller, limit, { onDone, onClose, openUnlock
         catch (e) { res = { ok: false, message: `Could not delete: ${e?.message || e}` }; }
         busy = false; refresh();
         if (res && res.ok) { dlg.close(); onDone?.(res); return; }
-        if (res && res.needsUnlock) { unlockFor(res); return; }
+        if (res && res.needsUnlock) { unlockFor(res, true); return; }
         show(errEls.form, (res && res.message) || 'Could not delete the limit.');
       },
     });

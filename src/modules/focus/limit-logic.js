@@ -86,15 +86,18 @@ export function formatLeft(usedSecs, capSecs) {
  * @param {LimitRec} limit
  * @param {{ used_secs: number, cap_secs: number, blocked: boolean, period_ends_day?: string }|undefined} status
  * @param {string} helperKind HelperState.kind
+ * @param {boolean} [trackingOff] the helper is up but no sampler is reporting (usage_tracking === false)
  * @returns {{ text: string, tone: 'ok'|'warn'|'blocked'|'muted' }}
  */
-export function statusText(limit, status, helperKind) {
+export function statusText(limit, status, helperKind, trackingOff = false) {
   if (helperKind !== 'ok') return { text: 'Enforcement is not running', tone: 'warn' };
   if (limit.enabled === false) return { text: 'Paused', tone: 'muted' };
   if (!status) return { text: 'Waiting for the helper', tone: 'muted' };
   if (status.blocked || status.used_secs >= status.cap_secs) {
     return { text: status.period_ends_day ? `Used up, back on ${status.period_ends_day}` : 'Used up', tone: 'blocked' };
   }
+  // Nothing is being counted, so a remaining time would be shown as fact when it is not.
+  if (trackingOff) return { text: 'Not counting right now', tone: 'warn' };
   return { text: formatLeft(status.used_secs, status.cap_secs), tone: 'ok' };
 }
 

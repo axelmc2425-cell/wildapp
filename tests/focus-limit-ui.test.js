@@ -50,6 +50,14 @@ test('a row shows name, items, period, cap and the exact time left with a progre
   assert.ok(byFk(body, 'limit-row-1') && byFk(body, 'limit-edit-1') && byFk(body, 'limit-toggle-1') && byFk(body, 'limit-delete-1'));
 });
 
+test('with usage tracking off the row says not counting and draws no bar or time left', () => {
+  const body = installDom();
+  body.append(renderLimits(state([lim({ status: st(2400, 7200) })], { trackingOff: true }), opts()));
+  assert.match(text(body), /Not counting right now/);
+  assert.doesNotMatch(text(body), /left/);
+  assert.equal(findAll(body, (n) => n.getAttribute('role') === 'progressbar').length, 0);
+});
+
 test('a used up limit shows the blocked badge and when it is back', () => {
   const body = installDom();
   body.append(renderLimits(state([lim({ status: st(7200, 7200, { period_ends_day: '2026-11-15' }) })]), opts()));
@@ -253,6 +261,19 @@ test('editor delete asks for confirmation, then deletes', async () => {
   const yes = findAll(body, (n) => n.tag === 'button' && n.textContent === 'Delete' && n.className.includes('primary'))[0];
   await yes.click();
   assert.deepEqual(deleted, [1]);
+});
+
+test('editor delete that needs an unlock says you can delete it now, not save again', async () => {
+  const body = installDom();
+  let unlockOpts;
+  const controller = { deleteLimit: async (id) => ({ ok: false, needsUnlock: true, limitId: id }), state: { partner: { set: true }, helper: { kind: 'ok' }, limitsState: { limits: [lim({ lock: 'locked', unlockDelayMs: 3600000 })] } } };
+  openLimitEditor(controller, lim({ lock: 'locked', unlockDelayMs: 3600000 }), { openUnlockDialog: (o) => { unlockOpts = o; } });
+  await btn(body, 'Delete').click();
+  const yes = findAll(body, (n) => n.tag === 'button' && n.textContent === 'Delete' && n.className.includes('primary'))[0];
+  await yes.click();
+  unlockOpts.onDone({ ok: true });
+  assert.match(text(body), /Unlocked\. You can delete it now\./);
+  assert.doesNotMatch(text(body), /Save again/);
 });
 
 test('editor for an existing limit fills the fields and keeps the id', async () => {

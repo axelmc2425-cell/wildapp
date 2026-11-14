@@ -480,7 +480,7 @@ export function mountHome(root, controller, ctx, deps = {}) {
       }, 'Add limit') : null));
     if (!ls) return;
     if (limitMsg) limitsEl.append(h('p', { class: 'fr-note', role: 'alert' }, limitMsg));
-    limitsEl.append(renderLimits({ ...ls, helperKind: state.helper?.kind }, {
+    limitsEl.append(renderLimits({ ...ls, helperKind: state.helper?.kind, trackingOff: state.helper?.kind === 'ok' && state.helper.status?.usage_tracking === false }, {
       controller, confirm: confirmD, openEditor: canEdit ? openLimit : undefined, openUnlock: limitUnlock,
       onResult: (res) => {
         limitMsg = res && res.ok === false ? (res.message || 'That did not work.') : (res && res.warning) || null;

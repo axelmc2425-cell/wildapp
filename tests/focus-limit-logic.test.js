@@ -114,6 +114,16 @@ test('statusText with a live helper', () => {
   assert.equal(statusText(base(), undefined, 'ok').tone, 'muted');
 });
 
+test('statusText says nothing is being counted when usage tracking is off', () => {
+  const r = statusText(base(), { used_secs: 600, cap_secs: 3600, blocked: false }, 'ok', true);
+  assert.deepEqual(r, { text: 'Not counting right now', tone: 'warn' });
+  assert.ok(!/left/.test(r.text));
+  // A block that already holds is still reported; a paused limit stays paused.
+  assert.equal(statusText(base(), { used_secs: 3600, cap_secs: 3600, blocked: true }, 'ok', true).tone, 'blocked');
+  assert.equal(statusText({ ...base(), enabled: false }, undefined, 'ok', true).text, 'Paused');
+  assert.equal(statusText(base(), { used_secs: 600, cap_secs: 3600, blocked: false }, 'ok', false).tone, 'ok');
+});
+
 test('capParts and partsToCap', () => {
   assert.deepEqual(capParts(5400), { hours: 1, minutes: 30 });
   assert.deepEqual(capParts(60), { hours: 0, minutes: 1 });

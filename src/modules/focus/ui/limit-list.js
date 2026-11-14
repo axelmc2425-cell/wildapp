@@ -23,7 +23,7 @@ const chip = (text, isApp) => h('span', { class: `fr-chip${isApp ? ' fr-app' : '
   h('span', { class: 'fr-chip-text' }, text), isApp ? h('small', { class: 'fr-chip-mark' }, 'app') : null);
 
 /**
- * @param {{limits: object[], loaded: boolean, enforcement?: boolean, helperKind?: string}} state
+ * @param {{limits: object[], loaded: boolean, enforcement?: boolean, helperKind?: string, trackingOff?: boolean}} state
  * @param {{controller: object, confirm: (opts: object) => void, openEditor?: (limit?: object) => void,
  *   openUnlock?: (limit: object) => void, onResult?: (res: object, limit: object) => void}} o
  */
@@ -38,10 +38,10 @@ export function renderLimits(state, { controller, confirm, openEditor, openUnloc
 
   const row = (l) => {
     const status = cleanStatus(l.status);
-    const s = statusText(l, status, helperKind);
+    const s = statusText(l, status, helperKind, state.trackingOff === true);
     const items = [...(l.sites || []).map((v) => ({ v, app: false })), ...(l.apps || []).map((v) => ({ v, app: true }))];
     const { shown, more } = chipSummary(items, 6);
-    const showBar = status && helperKind === 'ok' && l.enabled !== false;
+    const showBar = status && helperKind === 'ok' && l.enabled !== false && s.tone !== 'warn';
     const used = showBar ? Math.min(status.used_secs, status.cap_secs) : 0;
     const fill = h('i', {});
     if (showBar) fill.style.width = `${Math.round((used / status.cap_secs) * 100)}%`;

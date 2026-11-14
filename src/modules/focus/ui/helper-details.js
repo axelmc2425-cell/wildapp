@@ -4,10 +4,13 @@ import { formatClock } from './util.js';
 import { windowIdForBlock } from '../lock-logic.js';
 
 /** Partner name, local-time formatting and list names for the details rows. */
-function rowOpts(state) {
+export function rowOpts(state) {
   const labels = new Map();
   for (const b of Array.isArray(state.blocks) ? state.blocks : []) {
     if (b.lock === 'locked') labels.set(windowIdForBlock(b), b.listNames.join(' + '));
+  }
+  for (const l of Array.isArray(state.limitsState?.limits) ? state.limitsState.limits : []) {
+    if (l && typeof l.name === 'string' && l.name.trim()) labels.set(`limit-${l.id}`, l.name.trim());
   }
   return { partnerName: state.partner?.name ?? null, formatTime: formatClock, labelFor: (id) => labels.get(id) || '' };
 }

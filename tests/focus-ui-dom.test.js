@@ -468,3 +468,12 @@ test('home header shows a Stats button only when deps.openStats is a function', 
     assert.equal(opened, 1);
   } finally { stop(); }
 });
+
+test('helper details name a pending limit unlock, with the raw id as fallback', async () => {
+  const { detailRows } = await import('../src/modules/focus/model.js');
+  const { rowOpts } = await import('../src/modules/focus/ui/helper-details.js');
+  const status = { decision: {}, windows: [], partner_set: true, now_ms: 0, warnings: [], pending_unlocks: [{ window_id: 'limit-3', unlock_at: 5000 }, { window_id: 'limit-9', unlock_at: 6000 }] };
+  const opts = rowOpts({ limitsState: { limits: [{ id: 3, name: 'Games' }] }, blocks: [] });
+  const rows = detailRows(status, { ...opts, formatTime: (ms) => `t${ms}` });
+  assert.deepEqual(rows.find((r) => r.label === 'Pending unlocks').lines, ['Games unlocks at t5000', 'limit-9 unlocks at t6000']);
+});
