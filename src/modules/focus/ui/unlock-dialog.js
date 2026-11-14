@@ -13,7 +13,8 @@ let seq = 0;
  */
 export function openUnlockDialog({ controller, block, onDone, subscribe, onClose } = {}) {
   const uid = ++seq;
-  const windowId = windowIdForBlock(block);
+  const uninstall = block.uninstall === true; // the uninstall target has no block or limit: it uses the controller's uninstall methods
+  const windowId = uninstall ? null : windowIdForBlock(block);
   let busy = false;
   let dlg = null;
   let unsub = () => {};
@@ -21,10 +22,12 @@ export function openUnlockDialog({ controller, block, onDone, subscribe, onClose
   let pendingAt = pendingFromState();
 
   function pendingFromState() {
+    if (uninstall) { const u = controller.state.uninstall; return u && u.known && Number.isFinite(u.pendingAt) ? u.pendingAt : null; }
     if (block.limit) return pendingUnlockFor({ pending_unlocks: controller.state.limitsState?.pendingUnlocks }, windowId);
     const helper = controller.state.helper;
     return helper && helper.kind === 'ok' ? pendingUnlockFor(helper.status, windowId) : null;
   }
+  const delayMs = () => (uninstall ? controller.state.uninstall?.waitMs : block.unlockDelayMs);
   const partnerName = controller.state.partner?.name || null;
 
   // ---- ask my partner ----
@@ -66,7 +69,7 @@ export function openUnlockDialog({ controller, block, onDone, subscribe, onClose
     startWaitBtn.disabled = busy;
     cancelWaitBtn.disabled = busy;
     waitStatus.hidden = !waiting;
-    waitStatus.textContent = waiting ? `Unlocks at ${formatClock(pendingAt)}` : '';
+    waitStatus.textContent = waiting ? `${uninstall ? 'You can uninstall at' : 'Unlocks at'} ${formatClock(pendingAt)}` : '';
     closeBtn.disabled = busy;
   }
 
@@ -85,7 +88,7 @@ export function openUnlockDialog({ controller, block, onDone, subscribe, onClose
   }
 
   getBtn.addEventListener('click', async () => {
-    const res = await run(() => controller.requestPartnerChallenge(block.key), askErr);
+    const res = await run(() => uninstall ? controller.uninstallChallenge() : controller.requestPartnerChallenge(block.key), askErr);
     if (res && res.ok) {
       code = res.code;
       codeBox.value = code;
@@ -109,7 +112,7 @@ export function openUnlockDialog({ controller, block, onDone, subscribe, onClose
   tokenInput.addEventListener('input', () => { show(askErr, ''); refresh(); });
   const submit = async () => {
     if (busy || submitBtn.disabled) return;
-    const res = await run(() => controller.submitPartnerToken(block.key, tokenInput.value), askErr);
+    const res = await run(() => uninstall ? controller.uninstallSubmitToken(tokenInput.value) : controller.submitPartnerToken(block.key, tokenInput.value), askErr);
     if (res && res.ok) {
       dlg.close();
       onDone?.(res);
@@ -121,11 +124,11 @@ export function openUnlockDialog({ controller, block, onDone, subscribe, onClose
   tokenInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
 
   startWaitBtn.addEventListener('click', async () => {
-    const res = await run(() => controller.startDelayedUnlock(block.key), waitErr);
+    const res = await run(() => uninstall ? controller.uninstallRequestDelay() : controller.startDelayedUnlock(block.key), waitErr);
     if (res && res.ok) { pendingAt = res.unlockAt; refresh(); cancelWaitBtn.focus(); }
   });
   cancelWaitBtn.addEventListener('click', async () => {
-    const res = await run(() => controller.cancelDelayedUnlock(block.key), waitErr);
+    const res = await run(() => uninstall ? controller.uninstallCancelDelay() : controller.cancelDelayedUnlock(block.key), waitErr);
     if (res && res.ok) { pendingAt = null; refresh(); startWaitBtn.focus(); }
   });
   closeBtn.addEventListener('click', () => { if (!busy) dlg.close(); });
@@ -144,7 +147,9 @@ export function openUnlockDialog({ controller, block, onDone, subscribe, onClose
       askErr),
     h('section', { class: 'fr-un-opt', 'aria-labelledby': `fr-un-h2-${uid}` },
       h('h4', { class: 'fr-un-title', id: `fr-un-h2-${uid}` }, 'Wait it out'),
-      h('p', { class: 'fr-un-text' }, `The lock ends by itself ${waitLengthText(block.unlockDelayMs)} after you start waiting, unless you cancel the request.`),
+      h('p', { class: 'fr-un-text' }, uninstall
+        ? `You can uninstall ${waitLengthText(delayMs())} after you start waiting, unless you cancel the request.`
+        : `The lock ends by itself ${waitLengthText(delayMs())} after you start waiting, unless you cancel the request.`),
       waitStatus,
       h('div', { class: 'fr-actions' }, startWaitBtn, cancelWaitBtn),
       waitErr),
@@ -152,7 +157,7 @@ export function openUnlockDialog({ controller, block, onDone, subscribe, onClose
   refresh();
 
   dlg = openDialog({
-    title: 'Unlock early',
+    title: uninstall ? 'Allow uninstalling' : 'Unlock early',
     body,
     canClose: () => !busy,
     onClose: () => { unsub(); try { onClose?.(); } catch { /* ignore */ } },
@@ -163,6 +168,7 @@ export function openUnlockDialog({ controller, block, onDone, subscribe, onClose
       unsub = subscribe(() => {
         if (busy) return;
         const st = controller.state;
+        if (uninstall) { pendingAt = pendingFromState(); refresh(); return; }
         if (block.limit) {
           // A limit lives in limitsState, not in the blocks; the dialog is pointless once its lock is gone.
           if (!(st.limitsState?.limits || []).some((l) => `limit-${l.id}` === block.key && l.lock === 'locked')) { dlg.close(); return; }

@@ -100,3 +100,19 @@ test('limit methods send exact JSON', async () => {
   assert.equal((await f.client.getLimits()).type, 'Limits');
   assert.equal(f.sent[0], '{"type":"GetLimits"}');
 });
+
+test('uninstall methods send exact JSON', async () => {
+  let f = fake('{"type":"UninstallPending","unlock_at":9}');
+  assert.deepEqual(await f.client.requestUninstallDelay(), { type: 'UninstallPending', unlock_at: 9 });
+  assert.equal(f.sent[0], '{"type":"RequestUninstallDelay"}');
+  f = fake('{"type":"Ok"}');
+  await f.client.cancelUninstallDelay();
+  assert.equal(f.sent[0], '{"type":"CancelUninstallDelay"}');
+  await f.client.setUninstallWait(3600000);
+  assert.equal(f.sent[1], '{"type":"SetUninstallWait","wait_ms":3600000}');
+  await f.client.submitUninstallToken('tok');
+  assert.equal(f.sent[2], '{"type":"SubmitToken","token":"tok"}');
+  f = fake('{"type":"Challenge","code":"c"}');
+  await f.client.requestUninstallChallenge();
+  assert.equal(f.sent[0], '{"type":"RequestChallenge","window_id":"uninstall"}');
+});

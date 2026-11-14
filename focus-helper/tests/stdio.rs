@@ -164,3 +164,25 @@ fn add_usage_then_get_usage_persists_across_restart() {
     let st = run(&[r#"{"type":"GetStatus"}"#.to_string()]);
     assert_eq!(st[0]["usage_tracking"], false);
 }
+
+#[cfg(feature = "test-clock")]
+#[test]
+fn uninstall_wait_becomes_permit_after_advance_clock() {
+    let (mut child, mut stdin, mut out) = spawn_stdio("uninstall");
+    let r = roundtrip(&mut stdin, &mut out, r#"{"type":"RequestUninstallDelay"}"#);
+    assert_eq!(r["type"], "UninstallPending");
+    let unlock_at = r["unlock_at"].as_i64().unwrap();
+    let st = roundtrip(&mut stdin, &mut out, r#"{"type":"GetStatus"}"#);
+    assert_eq!(st["uninstall"]["pending_at"], unlock_at);
+    assert_eq!(st["uninstall"]["wait_ms"], 86_400_000);
+    assert_eq!(roundtrip(&mut stdin, &mut out, r#"{"type":"AdvanceClock","ms":86400100}"#)["type"], "Ok");
+    let st = roundtrip(&mut stdin, &mut out, r#"{"type":"GetStatus"}"#);
+    assert_eq!(st["uninstall"]["pending_at"], Value::Null);
+    assert_eq!(st["uninstall"]["permit_until"], unlock_at + 3_600_000);
+    assert_eq!(roundtrip(&mut stdin, &mut out, r#"{"type":"AdvanceClock","ms":3600000}"#)["type"], "Ok");
+    let st = roundtrip(&mut stdin, &mut out, r#"{"type":"GetStatus"}"#);
+    assert_eq!(st["uninstall"]["permit_until"], Value::Null);
+    assert_eq!(roundtrip(&mut stdin, &mut out, r#"{"type":"CancelUninstallDelay"}"#)["code"], "no-pending-uninstall");
+    drop(stdin);
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+}

@@ -269,6 +269,10 @@ fn no_startup_clear_when_a_window_is_active_at_start() {
 fn stop_allowed_uses_the_effective_clock() {
     let path = tmp("stop-allowed");
     seed(&path, vec![window("w", Lock::Locked, NOW - 1000, NOW + 5000)], NOW);
+    // a valid permit so only the lock decides here
+    let mut s = persist::load(&path);
+    s.uninstall_permit = Some(focus_helper::lockstore::UninstallPermit { granted_at: NOW, expires_at: NOW + 3_600_000 });
+    persist::save(&path, &s).unwrap();
     let mut d = Daemon::load(&path);
     assert!(!d.stop_allowed(NOW, 0));
     // Wall clock set back an hour: still inside the lock.
@@ -452,4 +456,213 @@ fn tick_expires_pending_and_saves() {
     assert_eq!(loaded.ended_early.len(), 1);
     // enforcement is lifted
     assert_eq!(p.hosts.last(), Some(&Vec::<String>::new()));
+}
+
+// ---- uninstall protection ----
+
+const DAY: i64 = 86_400_000;
+
+#[test]
+fn uninstall_requests_persist_at_once() {
+    let path = tmp("un-persist");
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    let out = send(&mut d, &mut p, json!({"type":"RequestUninstallDelay"}), NOW, 0, [0; 16]);
+    assert_eq!(out, json!({"type":"UninstallPending","unlock_at":NOW + DAY}));
+    assert_eq!(persist::load(&path).uninstall_pending.unwrap().unlock_at, NOW + DAY);
+    assert_eq!(send(&mut d, &mut p, json!({"type":"CancelUninstallDelay"}), NOW, 0, [0; 16])["type"], "Ok");
+    assert!(persist::load(&path).uninstall_pending.is_none());
+    let e = send(&mut d, &mut p, json!({"type":"CancelUninstallDelay"}), NOW, 0, [0; 16]);
+    assert_eq!(e["code"], "no-pending-uninstall");
+    assert_eq!(send(&mut d, &mut p, json!({"type":"SetUninstallWait","wait_ms":2 * DAY}), NOW, 0, [0; 16])["type"], "Ok");
+    assert_eq!(persist::load(&path).uninstall_wait_ms, 2 * DAY);
+    assert_eq!(send(&mut d, &mut p, json!({"type":"SetUninstallWait","wait_ms":DAY}), NOW, 0, [0; 16])["code"], "needs-permit");
+    assert_eq!(send(&mut d, &mut p, json!({"type":"SetUninstallWait","wait_ms":1}), NOW, 0, [0; 16])["code"], "bad-request");
+}
+
+#[test]
+fn status_reports_uninstall_and_wait_becomes_permit_without_a_tick() {
+    let path = tmp("un-status");
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    let st = status(&mut d, &mut p, NOW, 0);
+    assert_eq!(st["uninstall"], json!({"wait_ms":DAY,"pending_at":null,"permit_until":null,"partner_ready_at":null}));
+    send(&mut d, &mut p, json!({"type":"RequestUninstallDelay"}), NOW, 0, [0; 16]);
+    let st = status(&mut d, &mut p, NOW + 1000, 1000);
+    assert_eq!(st["uninstall"], json!({"wait_ms":DAY,"pending_at":NOW + DAY,"permit_until":null,"partner_ready_at":null}));
+    assert!(!d.stop_allowed(NOW + 1000, 1000));
+    // due: no tick in between, GetStatus converts it and saves the state file
+    let st = status(&mut d, &mut p, NOW + DAY + 10, DAY + 10);
+    assert_eq!(st["uninstall"], json!({"wait_ms":DAY,"pending_at":null,"permit_until":NOW + DAY + 3_600_000,"partner_ready_at":null}));
+    let saved = persist::load(&path);
+    assert!(saved.uninstall_pending.is_none());
+    assert_eq!(saved.uninstall_permit.unwrap().expires_at, NOW + DAY + 3_600_000);
+    // permit window passes: dropped again
+    let st = status(&mut d, &mut p, NOW + DAY + 3_600_001, DAY + 3_600_001);
+    assert_eq!(st["uninstall"]["permit_until"], Value::Null);
+    assert!(persist::load(&path).uninstall_permit.is_none());
+}
+
+#[test]
+fn stop_allowed_flips_with_the_permit_and_converts_due_wait() {
+    let path = tmp("un-stop");
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    assert!(!d.stop_allowed(NOW, 0), "no permit, no lock: still refused");
+    send(&mut d, &mut p, json!({"type":"RequestUninstallDelay"}), NOW, 0, [0; 16]);
+    assert!(!d.stop_allowed(NOW + DAY - 1, DAY - 1));
+    // due wait is converted by stop_allowed itself and saved
+    assert!(d.stop_allowed(NOW + DAY + 1, DAY + 1));
+    assert!(persist::load(&path).uninstall_permit.is_some());
+    assert!(d.stop_allowed(NOW + DAY + 3_599_000, DAY + 3_599_000));
+    assert!(!d.stop_allowed(NOW + DAY + 3_600_001, DAY + 3_600_001));
+    assert!(persist::load(&path).uninstall_permit.is_none());
+}
+
+#[test]
+fn permit_does_not_override_a_pending_lock() {
+    let path = tmp("un-stop-lock");
+    let store = LockStore {
+        windows: vec![window("w", Lock::Locked, NOW - 1000, NOW + 5000)],
+        high_water_ms: NOW,
+        uninstall_permit: Some(focus_helper::lockstore::UninstallPermit { granted_at: NOW, expires_at: NOW + 1_800_000 }),
+        ..LockStore::default()
+    };
+    persist::save(&path, &store).unwrap();
+    let mut d = Daemon::load(&path);
+    assert!(!d.stop_allowed(NOW, 0));
+    assert!(d.stop_allowed(NOW + 6000, 6000));
+}
+
+#[test]
+fn tick_turns_due_wait_into_permit_and_saves() {
+    let path = tmp("un-tick");
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    send(&mut d, &mut p, json!({"type":"RequestUninstallDelay"}), NOW, 0, [0; 16]);
+    d.tick(NOW + DAY + 1, DAY + 1, &mut p);
+    assert_eq!(d.store().uninstall_permit.unwrap().expires_at, NOW + DAY + 3_600_000);
+    assert_eq!(persist::load(&path).uninstall_permit.unwrap().expires_at, NOW + DAY + 3_600_000);
+}
+
+#[test]
+fn restart_keeps_pending_and_permit() {
+    let path = tmp("un-restart");
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    send(&mut d, &mut p, json!({"type":"RequestUninstallDelay"}), NOW, 0, [0; 16]);
+    let mut d2 = Daemon::load(&path);
+    let st = status(&mut d2, &mut p, NOW + 5, 5);
+    assert_eq!(st["uninstall"]["pending_at"], NOW + DAY);
+    // wall clock set back after restart does not shorten the wait
+    let st = status(&mut d2, &mut p, NOW - 3 * DAY, 10);
+    assert_eq!(st["uninstall"]["pending_at"], NOW + DAY);
+    status(&mut d2, &mut p, NOW + DAY + 1, 20);
+    let mut d3 = Daemon::load(&path);
+    let st = status(&mut d3, &mut p, NOW + DAY + 2, 0);
+    assert_eq!(st["uninstall"]["permit_until"], NOW + DAY + 3_600_000);
+}
+
+fn uninstall_token(d: &mut Daemon, p: &mut Fake, wall: i64, nonce: [u8; 16], sk: &p256::ecdsa::SigningKey, exp: i64) -> (Value, String) {
+    use p256::ecdsa::signature::Signer;
+    use p256::ecdsa::Signature;
+    let b64 = |b: &[u8]| focus_helper::unlock::b64u_encode(b);
+    let ch = send(d, p, json!({"type":"RequestChallenge","window_id":"uninstall"}), wall, wall - NOW, nonce);
+    assert_eq!(ch["type"], "Challenge", "{ch}");
+    let cv: Value = serde_json::from_slice(&focus_helper::unlock::b64u_decode(ch["code"].as_str().unwrap()).unwrap()).unwrap();
+    let payload = format!(r#"{{"n":"{}","w":"uninstall","exp":{}}}"#, cv["n"].as_str().unwrap(), exp);
+    let sig: Signature = sk.sign(payload.as_bytes());
+    (ch, format!("{}.{}", b64(payload.as_bytes()), b64(&sig.to_bytes())))
+}
+
+fn partner_daemon(name: &str) -> (Daemon, Fake, p256::ecdsa::SigningKey, PathBuf) {
+    let path = tmp(name);
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    let sk = p256::ecdsa::SigningKey::from_bytes(&[9u8; 32].into()).unwrap();
+    let pk = focus_helper::unlock::b64u_encode(sk.verifying_key().to_encoded_point(false).as_bytes());
+    assert_eq!(send(&mut d, &mut p, json!({"type":"SetPartner","public_key":pk}), NOW, 0, [0; 16])["type"], "Ok");
+    (d, p, sk, path)
+}
+
+#[test]
+fn partner_token_grants_permit_through_the_daemon() {
+    let (mut d, mut p, sk, path) = partner_daemon("un-token");
+    // the partner key is new: one waiting period must pass first
+    let at = NOW + DAY;
+    send(&mut d, &mut p, json!({"type":"RequestUninstallDelay"}), at, DAY, [0; 16]);
+    let (_, token) = uninstall_token(&mut d, &mut p, at, [5; 16], &sk, at + 600_000);
+    assert!(!d.stop_allowed(at, DAY));
+    let out = send(&mut d, &mut p, json!({"type":"SubmitToken","token":token.clone()}), at, DAY, [0; 16]);
+    assert_eq!(out["type"], "Ok", "{out}");
+    let saved = persist::load(&path);
+    assert_eq!(saved.uninstall_permit.unwrap().expires_at, at + 1_800_000);
+    assert!(saved.uninstall_pending.is_none());
+    assert!(d.stop_allowed(at + 1000, DAY + 1000));
+    let st = status(&mut d, &mut p, at + 1000, DAY + 1000);
+    assert_eq!(st["uninstall"]["permit_until"], at + 1_800_000);
+    assert_eq!(send(&mut d, &mut p, json!({"type":"SubmitToken","token":token}), at, DAY, [0; 16])["code"], "used");
+    assert!(!d.stop_allowed(at + 1_800_000, DAY + 1_800_000));
+}
+
+#[test]
+fn new_partner_key_cannot_approve_uninstall_until_one_wait_passed() {
+    let (mut d, mut p, sk, path) = partner_daemon("un-new-partner");
+    let st = status(&mut d, &mut p, NOW, 0);
+    assert_eq!(st["uninstall"]["partner_ready_at"], NOW + DAY);
+    let (_, token) = uninstall_token(&mut d, &mut p, NOW, [5; 16], &sk, NOW + 600_000);
+    let out = send(&mut d, &mut p, json!({"type":"SubmitToken","token":token.clone()}), NOW, 0, [0; 16]);
+    assert_eq!((out["type"].as_str(), out["code"].as_str()), (Some("Error"), Some("partner-too-new")), "{out}");
+    let saved = persist::load(&path);
+    assert!(saved.uninstall_permit.is_none(), "no permit");
+    assert!(saved.challenges.iter().all(|c| !c.used), "token not consumed");
+    assert!(!d.stop_allowed(NOW, 0));
+    // swapping to another key restarts the clock
+    let sk2 = p256::ecdsa::SigningKey::from_bytes(&[7u8; 32].into()).unwrap();
+    let pk2 = focus_helper::unlock::b64u_encode(sk2.verifying_key().to_encoded_point(false).as_bytes());
+    let at = NOW + DAY;
+    send(&mut d, &mut p, json!({"type":"SetPartner","public_key":pk2}), at, DAY, [0; 16]);
+    assert_eq!(status(&mut d, &mut p, at, DAY)["uninstall"]["partner_ready_at"], at + DAY);
+    let (_, t2) = uninstall_token(&mut d, &mut p, at, [6; 16], &sk2, at + 600_000);
+    let out = send(&mut d, &mut p, json!({"type":"SubmitToken","token":t2}), at, DAY, [0; 16]);
+    assert_eq!(out["code"], "partner-too-new", "{out}");
+    // one more wait on: works and grants exactly 30 minutes
+    let later = at + DAY;
+    let (_, t3) = uninstall_token(&mut d, &mut p, later, [7; 16], &sk2, later + 600_000);
+    let out = send(&mut d, &mut p, json!({"type":"SubmitToken","token":t3}), later, 2 * DAY, [0; 16]);
+    assert_eq!(out["type"], "Ok", "{out}");
+    assert_eq!(persist::load(&path).uninstall_permit.unwrap().expires_at, later + 1_800_000);
+    assert_eq!(status(&mut d, &mut p, later, 2 * DAY)["uninstall"]["partner_ready_at"], Value::Null);
+}
+
+#[test]
+fn uninstall_challenge_obeys_the_same_ttl() {
+    let path = tmp("un-ttl");
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    let sk = p256::ecdsa::SigningKey::from_bytes(&[9u8; 32].into()).unwrap();
+    let pk = focus_helper::unlock::b64u_encode(sk.verifying_key().to_encoded_point(false).as_bytes());
+    send(&mut d, &mut p, json!({"type":"SetPartner","public_key":pk}), NOW, 0, [0; 16]);
+    let later = NOW + 3_700_000;
+    let (_, token) = uninstall_token(&mut d, &mut p, NOW, [6; 16], &sk, later + 600_000);
+    let out = send(&mut d, &mut p, json!({"type":"SubmitToken","token":token}), later, 3_700_000, [0; 16]);
+    assert_eq!(out["code"], "challenge-expired", "{out}");
+    assert!(persist::load(&path).uninstall_permit.is_none());
+}
+
+#[test]
+fn reset_clock_refused_while_an_uninstall_wait_or_permit_exists() {
+    let path = tmp("un-interplay");
+    let mut d = Daemon::load(&path);
+    let mut p = Fake::default();
+    send(&mut d, &mut p, json!({"type":"RequestUninstallDelay"}), NOW, 0, [0; 16]);
+    assert_eq!(send(&mut d, &mut p, json!({"type":"ResetClock"}), NOW, 0, [0; 16])["code"], "lock-active");
+    assert_eq!(status(&mut d, &mut p, NOW, 2)["uninstall"]["pending_at"], NOW + DAY);
+    // the wait is over: a permit exists, still refused
+    assert_eq!(send(&mut d, &mut p, json!({"type":"ResetClock"}), NOW + DAY + 5, 5, [0; 16])["code"], "lock-active");
+    // cancelled wait and no permit: allowed
+    let mut d2 = Daemon::load(&tmp("un-interplay2"));
+    send(&mut d2, &mut p, json!({"type":"RequestUninstallDelay"}), NOW, 0, [0; 16]);
+    send(&mut d2, &mut p, json!({"type":"CancelUninstallDelay"}), NOW, 1, [0; 16]);
+    assert_eq!(send(&mut d2, &mut p, json!({"type":"ResetClock"}), NOW, 2, [0; 16])["type"], "Ok");
 }

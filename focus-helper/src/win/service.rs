@@ -127,9 +127,14 @@ fn run_watchdog(flags: &Arc<Flags>) -> std::io::Result<()> {
     while !flags.stop_requested.load(Ordering::SeqCst) {
         // The watchdog has no clock of its own: it reads the persisted store and takes the later
         // of the wall clock and the persisted high-water mark.
-        let store = persist::load(&state_path);
+        let mut store = persist::load(&state_path);
         let now = paths::wall_ms().max(store.high_water_ms);
-        flags.stop_allowed.store(service_logic::stop_allowed(&store.windows, now), Ordering::SeqCst);
+        // Read-only: a due waiting period counts as a permit here, but the watchdog never saves.
+        store.expire_pending(now);
+        let permit = store.permit_valid(now);
+        flags
+            .stop_allowed
+            .store(service_logic::stop_allowed_with_permit(&store.windows, permit, now), Ordering::SeqCst);
         if let Err(e) = scm::start_if_stopped(Role::Watchdog.other()) {
             log(&format!("watchdog: cannot check {}: {e}", Role::Main.service_name()));
         }

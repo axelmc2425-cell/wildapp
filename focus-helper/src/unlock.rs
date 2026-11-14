@@ -32,6 +32,8 @@ pub enum UnlockError {
     Used,
     ChallengeExpired,
     Expired,
+    /// The partner key was set less than one uninstall waiting period ago (uninstall target only).
+    PartnerTooNew,
 }
 
 impl UnlockError {
@@ -45,6 +47,7 @@ impl UnlockError {
             UnlockError::Used => "used",
             UnlockError::ChallengeExpired => "challenge-expired",
             UnlockError::Expired => "expired",
+            UnlockError::PartnerTooNew => "partner-too-new",
         }
     }
 }

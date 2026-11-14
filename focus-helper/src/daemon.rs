@@ -602,11 +602,15 @@ impl Daemon {
         })
     }
 
-    /// Whether the service Stop control may be honored now (no locked/frozen window is active),
-    /// judged on the effective clock.
+    /// Whether the service Stop control may be honored now: no locked/frozen window is pending
+    /// and an uninstall permit is valid, judged on the effective clock. A due waiting period is
+    /// turned into a permit (and saved) first, so it counts without waiting for a tick.
     pub fn stop_allowed(&mut self, wall_ms: i64, mono_ms: i64) -> bool {
         let now = self.clock.now(wall_ms, mono_ms);
-        crate::service_logic::stop_allowed(&self.store.windows, now)
+        if self.store.expire_pending(now) {
+            self.save();
+        }
+        crate::service_logic::stop_allowed_with_permit(&self.store.windows, self.store.permit_valid(now), now)
     }
 
     pub fn tick(&mut self, wall_ms: i64, mono_ms: i64, platform: &mut dyn Platform) {

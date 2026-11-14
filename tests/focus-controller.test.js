@@ -1645,3 +1645,149 @@ test('an edit rejection restores the items too', async () => {
   await ctl.saveLimit({ ...lim({ apps: ['other.exe'], sites: [] }), id: a.id });
   assert.deepEqual((await limItems(db)).map((i) => `${i.kind}:${i.value}`).sort(), ['app:game.exe', 'site:a.com']);
 });
+
+// ---- uninstall protection ----
+const UN = { wait_ms: 24 * 3600000, pending_at: null, permit_until: null };
+async function unSetup(status = {}) {
+  const x = await setup();
+  x.client.statusValue = { ...STATUS, uninstall: UN, ...status };
+  x.client.unCalls = [];
+  x.client.unErr = null;
+  x.client.requestUninstallDelay = async () => { x.client.unCalls.push(['delay']); if (x.client.unErr) throw x.client.unErr; x.client.statusValue = { ...x.client.statusValue, uninstall: { ...UN, pending_at: T0 + 5 } }; return { type: 'UninstallPending', unlock_at: T0 + 5 }; };
+  x.client.cancelUninstallDelay = async () => { x.client.unCalls.push(['cancel']); if (x.client.unErr) throw x.client.unErr; x.client.statusValue = { ...x.client.statusValue, uninstall: UN }; return { type: 'Ok' }; };
+  x.client.setUninstallWait = async (ms) => { x.client.unCalls.push(['wait', ms]); if (x.client.unErr) throw x.client.unErr; x.client.statusValue = { ...x.client.statusValue, uninstall: { ...UN, wait_ms: ms } }; return { type: 'Ok' }; };
+  x.client.requestUninstallChallenge = async () => { x.client.unCalls.push(['challenge']); if (x.client.unErr) throw x.client.unErr; return { type: 'Challenge', code: 'UC' }; };
+  x.client.submitUninstallToken = async (t) => { x.client.unCalls.push(['token', t]); if (x.client.unErr) throw x.client.unErr; x.client.statusValue = { ...x.client.statusValue, uninstall: { ...UN, permit_until: T0 + 1800000 } }; return { type: 'Ok' }; };
+  return x;
+}
+
+test('state.uninstall maps Status.uninstall', async () => {
+  const x = await unSetup();
+  await x.ctl.load();
+  assert.deepEqual(x.ctl.state.uninstall, { waitMs: 24 * 3600000, pendingAt: null, permitUntil: null, partnerReadyAt: null, known: true });
+});
+
+test('state.uninstall unknown when the field is missing, before status, and when helper is down', async () => {
+  const x = await setup();
+  assert.equal(x.ctl.state.uninstall.known, false);
+  await x.ctl.load();
+  assert.equal(x.ctl.state.uninstall.known, false);
+  const y = await unSetup();
+  await y.ctl.load();
+  assert.equal(y.ctl.state.uninstall.known, true);
+  y.client.statusFail = mkErr('unreachable', 'down');
+  await y.ctl.refreshStatus();
+  assert.equal(y.ctl.state.uninstall.known, false);
+});
+
+test('uninstallRequestDelay returns unlockAt and refreshes status', async () => {
+  const x = await unSetup();
+  await x.ctl.load();
+  assert.deepEqual(await x.ctl.uninstallRequestDelay(), { ok: true, unlockAt: T0 + 5 });
+  assert.equal(x.ctl.state.uninstall.pendingAt, T0 + 5);
+  assert.deepEqual(await x.ctl.uninstallCancelDelay(), { ok: true });
+  assert.equal(x.ctl.state.uninstall.pendingAt, null);
+});
+
+test('uninstallSetWait validates, sends and refreshes', async () => {
+  const x = await unSetup();
+  await x.ctl.load();
+  const bad = await x.ctl.uninstallSetWait(10);
+  assert.equal(bad.ok, false);
+  assert.equal(x.client.unCalls.length, 0);
+  assert.deepEqual(await x.ctl.uninstallSetWait(48 * 3600000), { ok: true });
+  assert.equal(x.ctl.state.uninstall.waitMs, 48 * 3600000);
+});
+
+test('uninstall challenge and token', async () => {
+  const x = await unSetup();
+  await x.ctl.load();
+  assert.deepEqual(await x.ctl.uninstallChallenge(), { ok: true, code: 'UC' });
+  assert.deepEqual(await x.ctl.uninstallSubmitToken('  tok '), { ok: true });
+  assert.deepEqual(x.client.unCalls.at(-1), ['token', 'tok']);
+  assert.equal(x.ctl.state.uninstall.permitUntil, T0 + 1800000);
+  const e = await x.ctl.uninstallSubmitToken('   ');
+  assert.equal(e.ok, false);
+  assert.equal(e.code, 'bad-format');
+});
+
+test('uninstall errors carry message and code', async () => {
+  const x = await unSetup();
+  await x.ctl.load();
+  x.client.unErr = mkErr('needs-permit', 'x');
+  const r = await x.ctl.uninstallSetWait(2 * 3600000);
+  assert.deepEqual(r, { ok: false, message: "Shortening the wait needs your partner's code or a finished waiting period.", code: 'needs-permit' });
+  x.client.unErr = mkErr('no-pending-uninstall', 'x');
+  const c = await x.ctl.uninstallCancelDelay();
+  assert.equal(c.code, 'no-pending-uninstall');
+  assert.equal(c.message, 'There is no waiting period running.');
+  x.client.unErr = mkErr('unreachable', 'down');
+  const u = await x.ctl.uninstallRequestDelay();
+  assert.equal(u.ok, false);
+  assert.equal(u.code, 'unreachable');
+});
+
+test('state.uninstall maps partner_ready_at', async () => {
+  const x = await unSetup({ uninstall: { ...UN, partner_ready_at: T0 + 99 } });
+  await x.ctl.load();
+  assert.equal(x.ctl.state.uninstall.partnerReadyAt, T0 + 99);
+});
+
+test('uninstall partner-too-new carries its message and code', async () => {
+  const x = await unSetup();
+  await x.ctl.load();
+  x.client.unErr = mkErr('partner-too-new', 'raw');
+  const r = await x.ctl.uninstallSubmitToken('tok');
+  assert.deepEqual(r, { ok: false, message: 'A newly added partner can approve uninstalling only after the waiting period has passed since the key was set.', code: 'partner-too-new' });
+});
+
+test('uninstallSetWait maps the helper bad-request to the waiting-period text; other callers keep theirs', async () => {
+  const x = await unSetup();
+  await x.ctl.load();
+  x.client.unErr = mkErr('bad-request', 'raw helper text');
+  const r = await x.ctl.uninstallSetWait(2 * 3600000);
+  assert.equal(r.code, 'bad-request');
+  assert.match(r.message, /waiting period must be between 1 hour and 7 days/);
+  x.client.unErr = mkErr('bad-request', 'raw helper text');
+  const c = await x.ctl.uninstallSubmitToken('tok');
+  assert.equal(c.message, 'raw helper text');
+});
+
+test('uninstall reply of the wrong type is refused', async () => {
+  const x = await unSetup();
+  await x.ctl.load();
+  x.client.requestUninstallDelay = async () => ({ type: 'Ok' });
+  assert.equal((await x.ctl.uninstallRequestDelay()).ok, false);
+});
+
+test('HELPER_UNAVAILABLE_CLIENT answers uninstall calls without throwing', async () => {
+  for (const m of ['requestUninstallDelay', 'cancelUninstallDelay', 'setUninstallWait', 'requestUninstallChallenge', 'submitUninstallToken']) {
+    await assert.rejects(() => HELPER_UNAVAILABLE_CLIENT[m]('x'), (e) => e.code === 'unreachable');
+  }
+});
+
+test('uninstallSetWait bounds are checked locally; edges reach the helper', async () => {
+  const x = await unSetup();
+  await x.ctl.load();
+  for (const bad of [1.5 * 3600000 + 0.5, NaN, '7200000', 3599999, 604800001]) {
+    const r = await x.ctl.uninstallSetWait(bad);
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'bad-request');
+  }
+  assert.equal(x.client.unCalls.length, 0);
+  assert.equal((await x.ctl.uninstallSetWait(3600000)).ok, true);
+  assert.equal((await x.ctl.uninstallSetWait(604800000)).ok, true);
+  assert.deepEqual(x.client.unCalls, [['wait', 3600000], ['wait', 604800000]]);
+});
+
+test('uninstall error path refreshes status', async () => {
+  const x = await unSetup();
+  await x.ctl.load();
+  x.client.statusValue = { ...x.client.statusValue, uninstall: { ...UN, pending_at: null, wait_ms: 5 * 3600000 } };
+  x.client.unErr = mkErr('no-pending-uninstall', 'x');
+  const before = x.calls.statuses;
+  const r = await x.ctl.uninstallCancelDelay();
+  assert.equal(r.code, 'no-pending-uninstall');
+  assert.ok(x.calls.statuses > before);
+  assert.equal(x.ctl.state.uninstall.waitMs, 5 * 3600000);
+});

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::clock::EffectiveClock;
 use crate::decide::decide;
 use crate::limits::Limit;
-use crate::lockstore::{ChallengeError, DelayError, LockStore, PendingUnlock, PartnerError, PushError};
+use crate::lockstore::{ChallengeError, DelayError, LockStore, PendingUnlock, PartnerError, PushError, SetWaitError};
 use crate::model::{Decision, Window};
 use crate::usage::DayUsage;
 
@@ -31,6 +31,11 @@ pub enum Request {
     RequestDelayedUnlock { window_id: String },
     CancelDelayedUnlock { window_id: String },
     SetPartner { public_key: String },
+    /// Starts the uninstall waiting period; answered with `UninstallPending`.
+    RequestUninstallDelay,
+    CancelUninstallDelay,
+    /// Changes the uninstall waiting period (3,600,000 to 604,800,000 ms); shortening needs a permit.
+    SetUninstallWait { wait_ms: i64 },
     /// Recovery from a bogus far-future clock: refused while any lock is pending.
     ResetClock,
 }
@@ -44,6 +49,30 @@ pub struct LimitStatus {
     pub blocked: bool,
     /// The first day on which the limit lifts.
     pub period_ends_day: String,
+}
+
+/// Uninstall protection state shown in `Status` (effective ms).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UninstallStatus {
+    pub wait_ms: i64,
+    /// When the running waiting period ends, if one is running.
+    pub pending_at: Option<i64>,
+    /// Until when an uninstall permit is valid, if one is.
+    pub permit_until: Option<i64>,
+    /// When a newly set partner key may first approve an uninstall, while that is in the future.
+    #[serde(default)]
+    pub partner_ready_at: Option<i64>,
+}
+
+impl Default for UninstallStatus {
+    fn default() -> Self {
+        UninstallStatus {
+            wait_ms: crate::lockstore::DEFAULT_UNINSTALL_WAIT_MS,
+            pending_at: None,
+            permit_until: None,
+            partner_ready_at: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,7 +90,12 @@ pub enum Response {
         /// Whether this platform records foreground usage (set by the daemon).
         #[serde(default)]
         usage_tracking: bool,
+        /// Uninstall protection: waiting period, running wait and permit.
+        #[serde(default)]
+        uninstall: UninstallStatus,
     },
+    /// The uninstall waiting period ends at `unlock_at` (effective ms) unless cancelled.
+    UninstallPending { unlock_at: i64 },
     /// Answer to `GetUsage`: days present in the range, ascending.
     Usage { days: Vec<DayUsage> },
     /// Answer to `GetSessions`.
@@ -76,7 +110,7 @@ pub enum Response {
     UnlockPending { unlock_at: i64 },
     /// Codes: bad-request, no-partner, bad-window (bad-times, bad-lock, too-long, bad-item, bad-folder,
     /// forbidden-folder, allow-needs-apps, too-many, duplicate id, bad-delay), frozen-unavailable, too-many, no-such-lock, not-delayable,
-    /// no-pending-unlock, bad-key, bad-request (also a bad GetUsage range or ReportForeground field), lock-active (also ResetClock), the unlock
+    /// no-pending-unlock, no-pending-uninstall, needs-permit, partner-too-new, bad-key, bad-request (also a bad GetUsage range or ReportForeground field), lock-active (also ResetClock), the unlock
     /// reasons, and `persist-failed` (daemon only: applied in memory but the state file could not
     /// be written, so the change is lost on restart; retried every tick).
     Error { code: String, message: String },
@@ -142,6 +176,12 @@ pub fn handle_changed(
             warnings: Vec::new(),
             pending_unlocks: store.pending_unlocks.clone(),
             usage_tracking: false,
+            uninstall: UninstallStatus {
+                wait_ms: store.uninstall_wait_ms,
+                pending_at: store.uninstall_pending.map(|p| p.unlock_at),
+                permit_until: store.uninstall_permit.filter(|_| store.permit_valid(now)).map(|p| p.expires_at),
+                partner_ready_at: store.partner_ready_at(now),
+            },
         },
         // The usage store belongs to the daemon, which answers this before calling here.
         Request::GetUsage { .. } => err("bad-request", "GetUsage is only available from the daemon"),
@@ -170,9 +210,26 @@ pub fn handle_changed(
                 err("no-pending-unlock", "no delayed unlock is pending for that window")
             }
         }
+        Request::RequestUninstallDelay => Response::UninstallPending { unlock_at: store.request_uninstall_delay(now) },
+        Request::CancelUninstallDelay => {
+            if store.cancel_uninstall_delay() {
+                Response::Ok
+            } else {
+                err("no-pending-uninstall", "no uninstall waiting period is running")
+            }
+        }
+        Request::SetUninstallWait { wait_ms } => match store.set_uninstall_wait(wait_ms, now) {
+            Ok(()) => Response::Ok,
+            Err(SetWaitError::BadValue) => err("bad-request", "wait_ms must be between 3600000 and 604800000"),
+            Err(SetWaitError::NeedsPermit) => err("needs-permit", "shortening the waiting period needs an uninstall permit"),
+        },
         Request::ResetClock => {
-            if store.windows.iter().any(|w| w.lock != crate::model::Lock::None && w.ends > now) || store.has_locked_limit() {
-                err("lock-active", "cannot reset the clock while a lock is active or scheduled")
+            if store.windows.iter().any(|w| w.lock != crate::model::Lock::None && w.ends > now)
+                || store.has_locked_limit()
+                || store.uninstall_pending.is_some()
+                || store.uninstall_permit.is_some()
+            {
+                err("lock-active", "cannot reset the clock while a lock, an uninstall waiting period or a permit is active")
             } else {
                 clock.reset(wall_ms, mono_ms);
                 store.high_water_ms = wall_ms;
