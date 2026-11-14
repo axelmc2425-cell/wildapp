@@ -9,6 +9,7 @@ import { renderSchedules } from './schedule-list.js';
 import { renderLimits, limitBlock, LOCKED_MSG } from './limit-list.js';
 import { nextOccurrence, isLockedActive } from '../schedule-logic.js';
 import { makeTzOffsetAt } from '../tz.js';
+import { mountUninstallSection } from './uninstall-section.js';
 
 const SOON = 'Coming in the next step';
 const RUNNING_MSG = 'This list is in a running block. Stop the block first.';
@@ -69,8 +70,9 @@ export function mountHome(root, controller, ctx, deps = {}) {
   const listsEl = h('section', { class: 'fr-lists', 'aria-labelledby': 'fr-lists-title' });
   const schedsEl = h('section', { class: 'fr-lists fr-schedules', 'aria-labelledby': 'fr-scheds-title' });
   const limitsEl = h('section', { class: 'fr-lists fr-limits-sec', 'aria-labelledby': 'fr-limits-title' });
+  const uninstallEl = h('div', { class: 'fr-uninstall-host' });
   const detailsEl = h('div', {});
-  const page = h('div', { class: 'page fr-home' }, headEl, notesEl, cardsEl, welcomeEl, listsEl, schedsEl, limitsEl, detailsEl);
+  const page = h('div', { class: 'page fr-home' }, headEl, notesEl, cardsEl, welcomeEl, listsEl, schedsEl, limitsEl, uninstallEl, detailsEl);
   root.innerHTML = '';
   root.append(page);
 
@@ -490,17 +492,21 @@ export function mountHome(root, controller, ctx, deps = {}) {
   }
 
   // ---- wiring ----
-  const unsubscribe = deps.subscribe ? deps.subscribe(() => render()) : () => {};
+  const sectionListeners = new Set(); // one controller subscription serves home and the uninstall section
+  const unsubscribe = deps.subscribe ? deps.subscribe(() => { render(); for (const f of [...sectionListeners]) f(); }) : () => {};
   const timers = [
     setInterval(tick, 1000),
     setInterval(() => { lastSig = ''; render(); }, 60000), // schedule rows show times that move on
     setInterval(() => { controller.refreshStatus(); if (typeof controller.refreshLimits === 'function') controller.refreshLimits(); }, 5000),
     setInterval(() => { if (controller.state.syncPending) controller.resync(); }, 30000),
   ];
+  // Mounted once: it keeps itself current (subscription and its own countdown timer).
+  const stopUninstall = mountUninstallSection(uninstallEl, controller, { subscribe: (f) => { sectionListeners.add(f); return () => sectionListeners.delete(f); }, openUnlockDialog: deps.openUnlockDialog, tzOffsetAt, now });
   render();
 
   return () => {
     alive = false;
+    try { stopUninstall(); } catch { /* ignore */ }
     try { unsubscribe(); } catch { /* ignore */ }
     for (const id of timers) clearInterval(id);
     try { details?.destroy(); } catch { /* ignore */ }

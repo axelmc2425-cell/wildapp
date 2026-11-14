@@ -464,3 +464,9 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-tab:hover { background: var(--hover); }
 .fr-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .fr-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+
+.fr-uninstall-sec { margin-top: 18px; }
+.fr-un-status { display: flex; flex-direction: column; gap: 2px; margin: 8px 0; overflow-wrap: anywhere; }
+.fr-un-status p { margin: 0; }
+.fr-un-down strong, .fr-un-warn strong { color: var(--danger, inherit); }
+.fr-un-waitset { margin-top: 12px; }
