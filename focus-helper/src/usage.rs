@@ -205,9 +205,10 @@ impl UsageStore {
             .collect())
     }
 
-    /// The latest day that has recorded usage.
-    pub fn latest_day(&self) -> Option<String> {
-        self.days.keys().next_back().cloned()
+    /// The newest recorded day that is a valid date and no later than `max_day_number` (days
+    /// since 1970-01-01); invalid keys and future days are skipped.
+    pub fn latest_day_at_most(&self, max_day_number: i64) -> Option<String> {
+        self.days.keys().rev().find(|k| day_number(k).is_some_and(|n| n <= max_day_number)).cloned()
     }
 
     /// Replaces the day (test seeding).

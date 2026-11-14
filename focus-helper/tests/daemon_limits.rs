@@ -354,3 +354,32 @@ fn until_day_rolls_over_month_and_year() {
         assert_eq!(st["decision"]["limitBlocks"][0]["until_day"], want, "{seed_day} {period}");
     }
 }
+
+fn persisted_day_pins(days: &[&str], name: &str) -> Option<bool> {
+    // Persist usage rows for `days` (game.exe over the cap), then reload at wall(0).
+    let (s, u) = paths(name);
+    let mut d = Daemon::load_with_usage_at(&s, &u, wall(0));
+    for day in days {
+        let mut du = DayUsage { day: (*day).into(), total: 100, ..Default::default() };
+        du.apps.insert("game.exe".into(), 100);
+        d.add_usage(du);
+    }
+    let mut d = Daemon::load_with_usage_at(&s, &u, wall(0));
+    let mut p = Fake::default();
+    let l = json!({"type":"PushLimits","limits":[lim("limit-a", &["game.exe"], &[], "daily", 100)]}).to_string();
+    d.handle_line(&l, wall(0), 0, [0; 16], &mut p);
+    let g: Value = serde_json::from_str(&d.handle_line(r#"{"type":"GetLimits"}"#, wall(0), 0, [0; 16], &mut p)).unwrap();
+    g["status"].get(0).map(|s| s["blocked"].as_bool().unwrap())
+}
+
+#[test]
+fn persisted_future_or_garbage_days_do_not_pin_current_day() {
+    // today + 2 is skipped; today's row (over the cap) still blocks.
+    assert_eq!(persisted_day_pins(&[&day(0), &day(2)], "pf-future"), Some(true));
+    assert_eq!(persisted_day_pins(&[&day(0), "9999-12-31", "zzzz"], "pf-garbage"), Some(true));
+    // today + 1 is used as the current day: its row is the period.
+    assert_eq!(persisted_day_pins(&[&day(1)], "pf-plus1"), Some(true));
+    // Only invalid or future rows: no day, no status, no block.
+    assert_eq!(persisted_day_pins(&["9999-12-31", "zzzz", &day(2)], "pf-none"), None);
+    assert_eq!(persisted_day_pins(&[], "pf-empty"), None);
+}

@@ -110,6 +110,15 @@ impl Daemon {
     }
 
     pub fn load_with_usage(state_path: &Path, usage_path: &Path) -> Daemon {
+        let wall_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        Daemon::load_with_usage_at(state_path, usage_path, wall_ms)
+    }
+
+    /// Like `load_with_usage` with the wall clock given (a seam for tests).
+    pub fn load_with_usage_at(state_path: &Path, usage_path: &Path, wall_ms: i64) -> Daemon {
         let (store, source) = persist::load_with_report(state_path);
         let unix_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -143,8 +152,9 @@ impl Daemon {
         };
         let clock = EffectiveClock::new(store.high_water_ms);
         // Limits keep blocking across a restart: until a sampler reports, the latest day with
-        // recorded usage stands in for today (at worst yesterday's period, which fails safe).
-        let current_day = usage.latest_day();
+        // recorded usage stands in for today (at worst yesterday's period, which fails safe). Only a valid day no later than UTC date + 1
+        // counts, so a future or garbage persisted day cannot pin the day forward and lift limits.
+        let current_day = usage.latest_day_at_most(wall_ms.div_euclid(86_400_000) + 1);
         Daemon {
             store,
             clock,
