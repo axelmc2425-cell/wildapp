@@ -148,15 +148,18 @@ fn site_matches(label: &str, domain: &str, stem: Option<&str>) -> bool {
     stem == Some(l.as_str()) || l == domain.trim().trim_matches('.').to_lowercase()
 }
 
-/// Seconds the limit's apps and sites used inside the period that ends on the latest day in
-/// `days` (the current day). Days outside that period and missing days count zero; each
-/// distinct item counts once. Browsing that matched no site never counts. Pass only days
-/// from the period (as `UsageStore::range` gives) so an old day cannot pose as the current one.
-pub fn used_secs(l: &Limit, days: &[DayUsage]) -> u64 {
-    let Some(current) = days.iter().map(|d| d.day.as_str()).filter(|d| number_of(d).is_some()).max() else {
-        return 0;
-    };
-    let Some((from, to)) = period_days(l.period, current) else { return 0 };
+/// Seconds the limit's apps and sites used inside the period that contains `current_day`
+/// (`period_days`). Rows outside that period are ignored, a missing current-day row counts
+/// zero, and an invalid `current_day` counts zero. Each distinct item counts once; browsing
+/// that matched no site never counts.
+///
+/// Site matching: see `site_matches`. A usage label (canonical `SITE_MAP` name or lowercase
+/// own-list stem) matches a limit domain when, lowercased with spaces removed, it equals the
+/// domain's stem or the whole lowercase domain; equality only, `other` never matches. Known
+/// limits: stems under 3 characters (`x.com`) cannot match, and multi-word labels such as
+/// `Google Docs` cannot match `docs.google.com` (its stem is `google`).
+pub fn used_secs(l: &Limit, days: &[DayUsage], current_day: &str) -> u64 {
+    let Some((from, to)) = period_days(l.period, current_day) else { return 0 };
     let apps: BTreeSet<String> = l.apps.iter().map(|a| a.to_lowercase()).collect();
     let domains: BTreeSet<String> = l.sites.iter().map(|s| s.trim().to_lowercase()).collect();
     let stems: Vec<(String, Option<String>)> = domains
@@ -194,6 +197,6 @@ pub fn is_weaker(old: &Limit, new: &Limit) -> bool {
 }
 
 /// Whether the pool is used up: `used_secs >= cap_secs`.
-pub fn is_exceeded(l: &Limit, days: &[DayUsage]) -> bool {
-    used_secs(l, days) >= l.cap_secs
+pub fn is_exceeded(l: &Limit, days: &[DayUsage], current_day: &str) -> bool {
+    used_secs(l, days, current_day) >= l.cap_secs
 }

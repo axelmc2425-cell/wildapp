@@ -151,20 +151,20 @@ fn used_apps_case_insensitive_and_period_only() {
     l.apps = vec!["Chrome.EXE".into()];
     // Daily: current day is the latest day in the data.
     let days = vec![day("2026-11-13", &[("chrome.exe", 500)], &[], 0), day("2026-11-14", &[("chrome.exe", 100), ("x.exe", 9)], &[], 0)];
-    assert_eq!(used_secs(&l, &days), 100);
+    assert_eq!(used_secs(&l, &days, "2026-11-14"), 100);
     l.period = Period::Weekly;
-    assert_eq!(used_secs(&l, &days), 600);
+    assert_eq!(used_secs(&l, &days, "2026-11-14"), 600);
     // The previous week does not count.
     let days = vec![day("2026-11-08", &[("chrome.exe", 500)], &[], 0), day("2026-11-09", &[("chrome.exe", 7)], &[], 0)];
-    assert_eq!(used_secs(&l, &days), 7);
+    assert_eq!(used_secs(&l, &days, "2026-11-09"), 7);
 }
 
 #[test]
 fn used_missing_and_empty() {
     let l = lim();
-    assert_eq!(used_secs(&l, &[]), 0);
+    assert_eq!(used_secs(&l, &[], "2026-11-14"), 0);
     let days = vec![day("2026-11-14", &[("other.exe", 5)], &[], 0)];
-    assert_eq!(used_secs(&l, &days), 0);
+    assert_eq!(used_secs(&l, &days, "2026-11-14"), 0);
 }
 
 #[test]
@@ -173,21 +173,21 @@ fn used_sites() {
     l.apps.clear();
     l.sites = vec!["youtube.com".into()];
     let d = |label: &str| vec![day("2026-11-14", &[], &[(label, 40)], 99)];
-    assert_eq!(used_secs(&l, &d("YouTube")), 40);
-    assert_eq!(used_secs(&l, &d("youtube")), 40);
-    assert_eq!(used_secs(&l, &d("Other browsing")), 0);
-    assert_eq!(used_secs(&l, &d("other")), 0);
-    assert_eq!(used_secs(&l, &d("YouTube Music")), 0);
-    assert_eq!(used_secs(&l, &d("notyoutube")), 0);
+    assert_eq!(used_secs(&l, &d("YouTube"), "2026-11-14"), 40);
+    assert_eq!(used_secs(&l, &d("youtube"), "2026-11-14"), 40);
+    assert_eq!(used_secs(&l, &d("Other browsing"), "2026-11-14"), 0);
+    assert_eq!(used_secs(&l, &d("other"), "2026-11-14"), 0);
+    assert_eq!(used_secs(&l, &d("YouTube Music"), "2026-11-14"), 0);
+    assert_eq!(used_secs(&l, &d("notyoutube"), "2026-11-14"), 0);
     // Other browsing seconds are never counted.
-    assert_eq!(used_secs(&l, &[day("2026-11-14", &[], &[], 500)]), 0);
+    assert_eq!(used_secs(&l, &[day("2026-11-14", &[], &[], 500)], "2026-11-14"), 0);
     // Multi-word canonical names match the domain with spaces dropped.
     l.sites = vec!["stackoverflow.com".into()];
-    assert_eq!(used_secs(&l, &d("Stack Overflow")), 40);
+    assert_eq!(used_secs(&l, &d("Stack Overflow"), "2026-11-14"), 40);
     // Own-list stems: co.uk and subdomains reduce to the stem.
     l.sites = vec!["www.bbc.co.uk".into()];
-    assert_eq!(used_secs(&l, &d("bbc")), 40);
-    assert_eq!(used_secs(&l, &d("BBC")), 40);
+    assert_eq!(used_secs(&l, &d("bbc"), "2026-11-14"), 40);
+    assert_eq!(used_secs(&l, &d("BBC"), "2026-11-14"), 40);
 }
 
 #[test]
@@ -196,7 +196,7 @@ fn used_counts_each_item_once() {
     l.apps = vec!["game.exe".into(), "GAME.exe".into()];
     l.sites = vec!["youtube.com".into(), "www.youtube.com".into()];
     let days = vec![day("2026-11-14", &[("game.exe", 10)], &[("YouTube", 5)], 0)];
-    assert_eq!(used_secs(&l, &days), 15);
+    assert_eq!(used_secs(&l, &days, "2026-11-14"), 15);
 }
 
 #[test]
@@ -244,7 +244,26 @@ fn weaker_rules() {
 fn exceeded_boundaries() {
     let l = lim();
     let at = |s| vec![day("2026-11-14", &[("game.exe", s)], &[], 0)];
-    assert!(!is_exceeded(&l, &at(3599)));
-    assert!(is_exceeded(&l, &at(3600)));
-    assert!(is_exceeded(&l, &at(3601)));
+    assert!(!is_exceeded(&l, &at(3599), "2026-11-14"));
+    assert!(is_exceeded(&l, &at(3600), "2026-11-14"));
+    assert!(is_exceeded(&l, &at(3601), "2026-11-14"));
+}
+
+#[test]
+fn current_day_selects_period() {
+    let l = lim();
+    let y = vec![day("2026-11-13", &[("game.exe", 500)], &[], 0)];
+    assert_eq!(used_secs(&l, &y, "2026-11-14"), 0);
+    assert!(!is_exceeded(&l, &y, "2026-11-14"));
+    let mut w = lim();
+    w.period = Period::Weekly;
+    let days = vec![day("2026-11-08", &[("game.exe", 500)], &[], 0)];
+    assert_eq!(used_secs(&w, &days, "2026-11-09"), 0);
+    assert_eq!(used_secs(&w, &days, "2026-11-14"), 0);
+    assert_eq!(used_secs(&w, &days, "2026-11-08"), 500);
+    // Days after current_day are outside the period too.
+    let later = vec![day("2026-11-15", &[("game.exe", 500)], &[], 0)];
+    assert_eq!(used_secs(&w, &later, "2026-11-14"), 0);
+    assert_eq!(used_secs(&w, &days, "nope"), 0);
+    assert_eq!(used_secs(&l, &days, "2026-02-30"), 0);
 }
