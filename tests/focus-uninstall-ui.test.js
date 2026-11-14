@@ -78,7 +78,7 @@ test('permit active shows the allowed-until text and no Start button', () => {
   const ctl = fake({ uninstall: { waitMs: 24 * H, pendingAt: null, permitUntil: Date.now() + 20 * 60000, known: true } });
   const { body, cleanup } = mount(ctl);
   assert.match(text(body), /You can uninstall until \d\d:\d\d/);
-  assert.ok(!byFk(body, 'un-wait') || dis(byFk(body, 'un-wait')));
+  assert.equal(byFk(body, 'un-wait'), undefined);
   assert.doesNotMatch(text(body), /Start the waiting period/);
   cleanup();
 });
@@ -170,6 +170,7 @@ test('the partner button opens the dialog and its success shows the accepted tex
   const { body, cleanup } = mount(ctl, { openUnlockDialog: (o) => { opts = o; return { close() {} }; } });
   await fire(byFk(body, 'un-partner'), 'click');
   assert.equal(opts.block.uninstall, true);
+  ctl.state.uninstall = { waitMs: 24 * H, pendingAt: null, permitUntil: Date.now() + 30 * 60000, known: true };
   opts.onDone({ ok: true });
   assert.match(text(body), /Your partner's code was accepted\. You can uninstall for the next 30 minutes\./);
   cleanup();
@@ -249,4 +250,117 @@ test('home mounts the section after Time limits', () => {
   assert.ok(t.indexOf('Time limits') < t.indexOf('Uninstall protection'));
   assert.ok(byFk(body, 'un-wait'));
   cleanup();
+});
+
+// ---- review round 1 ----
+const ACCEPTED = /Your partner's code was accepted/;
+async function accepted(extra = {}) {
+  let t0 = 1_000_000_000_000;
+  const ctl = fake();
+  let opts;
+  const m = mount(ctl, { now: () => t0, openUnlockDialog: (o) => { opts = o; return { close() {} }; }, ...extra });
+  await fire(byFk(m.body, 'un-partner'), 'click');
+  ctl.state.uninstall = { waitMs: 24 * H, pendingAt: null, permitUntil: t0 + 30 * 60000, known: true };
+  opts.onDone({ ok: true });
+  return { ctl, m, opts, advance: (ms) => { t0 += ms; }, now: () => t0 };
+}
+
+test('the accepted text goes away once the permit has expired', async () => {
+  const x = await accepted();
+  assert.match(text(x.m.body), ACCEPTED);
+  x.advance(31 * 60000);
+  x.m.listeners[0]();
+  assert.doesNotMatch(text(x.m.body), ACCEPTED);
+  assert.doesNotMatch(text(x.m.body), /You can uninstall/);
+  x.m.cleanup();
+});
+
+test('the accepted text goes away when the helper becomes unknown', async () => {
+  const x = await accepted();
+  x.ctl.state.helper = { kind: 'not-running' };
+  x.ctl.state.uninstall = { waitMs: 24 * H, pendingAt: null, permitUntil: null, known: false };
+  x.m.listeners[0]();
+  assert.doesNotMatch(text(x.m.body), ACCEPTED);
+  assert.match(text(x.m.body), /Enforcement is not running/);
+  x.m.cleanup();
+});
+
+test('the shorten note clears when a permit becomes live and when the dialog closes', async () => {
+  const ctl = fake();
+  let opts;
+  const m = mount(ctl, { openUnlockDialog: (o) => { opts = o; return { close() {} }; } });
+  const sel = byFk(m.body, 'un-setwait');
+  sel.value = String(6 * H);
+  await fire(sel, 'change');
+  assert.match(text(m.body), /Shortening the waiting period needs a permit/);
+  ctl.state.uninstall = { waitMs: 24 * H, pendingAt: null, permitUntil: Date.now() + 600000, known: true };
+  m.listeners[0]();
+  assert.doesNotMatch(text(m.body), /Shortening the waiting period needs a permit/);
+  m.cleanup();
+  const c2 = fake();
+  const m2 = mount(c2, { openUnlockDialog: (o) => { opts = o; return { close() {} }; } });
+  const s2 = byFk(m2.body, 'un-setwait');
+  s2.value = String(6 * H);
+  await fire(s2, 'change');
+  assert.match(text(m2.body), /Shortening the waiting period needs a permit/);
+  opts.onClose();
+  assert.doesNotMatch(text(m2.body), /Shortening the waiting period needs a permit/);
+  m2.cleanup();
+});
+
+test('a one-shot timeout at permitUntil removes the permit text without a poll', () => {
+  const set = globalThis.setTimeout, clr = globalThis.clearTimeout;
+  const timeouts = new Map();
+  let n = 0;
+  globalThis.setTimeout = (f, ms) => { timeouts.set(++n, { f, ms }); return n; };
+  globalThis.clearTimeout = (id) => { timeouts.delete(id); };
+  try {
+    let t0 = 1_000_000_000_000;
+    const ctl = fake({ uninstall: { waitMs: 24 * H, pendingAt: null, permitUntil: t0 + 60000, known: true } });
+    const m = mount(ctl, { now: () => t0 });
+    assert.match(text(m.body), /You can uninstall until/);
+    assert.equal(timeouts.size, 1);
+    const [{ f, ms }] = [...timeouts.values()];
+    assert.ok(ms >= 60000 && ms < 61000);
+    t0 += 61000;
+    timeouts.clear(); // it fired
+    f();
+    assert.doesNotMatch(text(m.body), /You can uninstall until/);
+    m.cleanup();
+    assert.equal(timeouts.size, 0);
+  } finally { globalThis.setTimeout = set; globalThis.clearTimeout = clr; }
+});
+
+test('focus survives a busy cycle by data-fk', async () => {
+  const ctl = fake();
+  const { body, cleanup } = mount(ctl);
+  byFk(body, 'un-wait').focus();
+  const p = fire(byFk(body, 'un-wait'), 'click');
+  await p;
+  assert.equal(document.activeElement.getAttribute('data-fk'), 'un-wait');
+  assert.ok(document.activeElement.isConnected);
+  cleanup();
+});
+
+test('no partner: Add a partner opens the setup only when helper is known', async () => {
+  const calls = [];
+  const deps = { openPartnerSetup: (o) => calls.push(o) };
+  const a = mount(fake({ partner: { set: false, name: null } }), deps);
+  await fire(byFk(a.body, 'un-addpartner'), 'click');
+  assert.equal(calls.length, 1);
+  a.cleanup();
+  const b = mount(fake(), deps);
+  assert.equal(byFk(b.body, 'un-addpartner'), undefined);
+  b.cleanup();
+  const c = mount(fake({ partner: { set: false }, helper: { kind: 'not-running' }, uninstall: { waitMs: 24 * H, known: false } }), deps);
+  assert.equal(byFk(c.body, 'un-addpartner'), undefined);
+  c.cleanup();
+});
+
+test('unmounting closes an open flow dialog', async () => {
+  let closed = 0;
+  const m = mount(fake(), { openUnlockDialog: () => ({ close() { closed++; } }) });
+  await fire(byFk(m.body, 'un-partner'), 'click');
+  m.cleanup();
+  assert.equal(closed, 1);
 });

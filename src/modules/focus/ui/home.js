@@ -501,7 +501,7 @@ export function mountHome(root, controller, ctx, deps = {}) {
     setInterval(() => { if (controller.state.syncPending) controller.resync(); }, 30000),
   ];
   // Mounted once: it keeps itself current (subscription and its own countdown timer).
-  const stopUninstall = mountUninstallSection(uninstallEl, controller, { subscribe: (f) => { sectionListeners.add(f); return () => sectionListeners.delete(f); }, openUnlockDialog: deps.openUnlockDialog, tzOffsetAt, now });
+  const stopUninstall = mountUninstallSection(uninstallEl, controller, { subscribe: (f) => { sectionListeners.add(f); return () => sectionListeners.delete(f); }, openUnlockDialog: deps.openUnlockDialog, openPartnerSetup: partnerSetupDep(), tzOffsetAt, now });
   render();
 
   return () => {

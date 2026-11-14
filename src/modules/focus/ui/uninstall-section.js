@@ -28,6 +28,8 @@ export function mountUninstallSection(root, controller, deps = {}) {
   let msg = null; // { kind: 'err' | 'ok' | 'note', text }
   let lastSig = '';
   let timer = null;
+  let expiry = null;
+  let savedFk = null; // focus to restore after a busy cycle rebuilt the buttons
   let detailEl = null;
   let dialog = null;
 
@@ -50,11 +52,23 @@ export function mountUninstallSection(root, controller, deps = {}) {
     return uninstallStatusText(s.u, t, s.kind, s.partner, finite(off) ? off : undefined);
   }
 
-  function stopTimer() { if (timer != null) { clearInterval(timer); timer = null; } }
+  function stopTimer() {
+    if (timer != null) { clearInterval(timer); timer = null; }
+    if (expiry != null) { clearTimeout(expiry); expiry = null; }
+  }
+  // A message must not outlive the state it describes.
+  function reconcileMsg(s, t) {
+    if (!msg) return;
+    const known = s.kind === 'ok' && s.u && s.u.known === true;
+    const permitLive = known && finite(s.u.permitUntil) && s.u.permitUntil > t;
+    if (msg.kind === 'ok' && !permitLive) msg = null;
+    else if (msg.kind === 'note' && (!known || permitLive || !dialog)) msg = null;
+  }
   function tick() {
     if (!alive) return;
     const s = snapshot();
     const t = now();
+    reconcileMsg(s, t);
     const st = statusFor(s, t);
     const sig = sigOf(s, st);
     if (sig !== lastSig) { render(); return; }
@@ -65,6 +79,8 @@ export function mountUninstallSection(root, controller, deps = {}) {
   async function act(call, { done } = {}) {
     if (busy) return;
     busy = true; msg = null;
+    const a = document.activeElement;
+    savedFk = a && sec.contains(a) ? a.getAttribute('data-fk') : null;
     render();
     let res;
     try { res = await call(); } catch (e) { res = { ok: false, message: (e && e.message) || 'That did not work.' }; }
@@ -73,6 +89,7 @@ export function mountUninstallSection(root, controller, deps = {}) {
     if (!res || res.ok !== true) msg = { kind: 'err', text: (res && res.message) || 'That did not work. Try again.' };
     else if (done) msg = done(res);
     render();
+    savedFk = null;
   }
 
   function openFlow(s, note) {
@@ -82,7 +99,7 @@ export function mountUninstallSection(root, controller, deps = {}) {
     d = deps.openUnlockDialog({
       controller, block: uninstallBlock(s.u.waitMs), subscribe: deps.subscribe,
       onDone: () => { msg = { kind: 'ok', text: UNINSTALL_ACCEPTED }; if (alive) render(); },
-      onClose: () => { if (dialog === d) dialog = null; },
+      onClose: () => { if (dialog === d) dialog = null; if (msg && msg.kind === 'note') msg = null; if (alive) render(); },
     });
     dialog = d;
     render();
@@ -104,12 +121,13 @@ export function mountUninstallSection(root, controller, deps = {}) {
     if (!alive) return;
     const s = snapshot();
     const t = now();
+    reconcileMsg(s, t);
     const st = statusFor(s, t);
     const sig = sigOf(s, st);
     if (sig === lastSig) return;
     lastSig = sig;
     const active = document.activeElement;
-    const fk = active && sec.contains(active) ? active.getAttribute('data-fk') : null;
+    const fk = (active && sec.contains(active) ? active.getAttribute('data-fk') : null) || savedFk;
 
     const known = s.kind === 'ok' && s.u && s.u.known === true;
     const permitLive = known && finite(s.u.permitUntil) && s.u.permitUntil > t;
@@ -140,6 +158,9 @@ export function mountUninstallSection(root, controller, deps = {}) {
     }
     sec.append(actions);
     if (known && !s.partner) {
+      if (typeof deps.openPartnerSetup === 'function') {
+        actions.append(h('button', { type: 'button', 'data-fk': 'un-addpartner', disabled: busy, onclick: () => deps.openPartnerSetup({ controller, onDone: () => { if (alive) { lastSig = ''; render(); } } }) }, 'Add a partner'));
+      }
       sec.append(h('p', { class: 'fr-muted fr-small' }, 'Add a partner so someone else can approve uninstalling with a code, without the wait.'));
     }
 
@@ -165,6 +186,7 @@ export function mountUninstallSection(root, controller, deps = {}) {
     }
     stopTimer();
     if (counting) timer = setInterval(tick, 1000);
+    if (permitLive) expiry = setTimeout(() => { expiry = null; render(); }, Math.max(0, s.u.permitUntil - t) + 50);
   }
 
   const unsubscribe = typeof deps.subscribe === 'function' ? deps.subscribe(() => render()) : () => {};
