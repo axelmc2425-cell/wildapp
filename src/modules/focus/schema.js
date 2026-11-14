@@ -59,6 +59,22 @@ const V4 = [
   'INSERT OR IGNORE INTO focus_schedule_lists(schedule_id, list_id) SELECT id, list_id FROM focus_schedules',
 ];
 
+// v5: time limits. AUTOINCREMENT so a deleted limit's id is never reused (the helper tombstones deleted ids).
+const V5 = [
+  `CREATE TABLE IF NOT EXISTS focus_limits (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     name TEXT NOT NULL,
+     period TEXT NOT NULL,
+     cap_secs INTEGER NOT NULL,
+     lock TEXT NOT NULL DEFAULT 'none',
+     unlock_delay_ms INTEGER,
+     enabled INTEGER NOT NULL DEFAULT 1)`,
+  `CREATE TABLE IF NOT EXISTS focus_limit_items (
+     limit_id INTEGER NOT NULL,
+     kind TEXT NOT NULL,
+     value TEXT NOT NULL)`,
+];
+
 export async function migrateFocus(db) {
   await db.run('CREATE TABLE IF NOT EXISTS focus_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
   const rows = await db.all("SELECT value FROM focus_meta WHERE key = 'schema_version'");
@@ -88,6 +104,13 @@ export async function migrateFocus(db) {
     await db.batch([
       ...V4.map(sql => ({ sql })),
       { sql: "INSERT OR REPLACE INTO focus_meta(key, value) VALUES ('schema_version', '4')" },
+    ]);
+    version = 4;
+  }
+  if (version < 5) {
+    await db.batch([
+      ...V5.map(sql => ({ sql })),
+      { sql: "INSERT OR REPLACE INTO focus_meta(key, value) VALUES ('schema_version', '5')" },
     ]);
   }
 }

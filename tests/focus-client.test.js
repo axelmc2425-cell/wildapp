@@ -90,3 +90,13 @@ test('getSessions sends the day and returns the reply', async () => {
   assert.deepEqual(await f.client.getSessions('2026-11-13'), reply);
   assert.equal(f.sent[0], '{"type":"GetSessions","day":"2026-11-13"}');
 });
+
+test('limit methods send exact JSON', async () => {
+  const lim = { id: 'limit-1', name: 'g', apps: ['a.exe'], sites: [], period: 'daily', cap_secs: 60, lock: 'none' };
+  let f = fake('{"type":"LimitsPushed","applied":1,"kept_locked":0,"skipped_tombstoned":0}');
+  assert.equal((await f.client.pushLimits([lim])).applied, 1);
+  assert.equal(f.sent[0], JSON.stringify({ type: 'PushLimits', limits: [lim] }));
+  f = fake('{"type":"Limits","limits":[],"status":[],"pending_unlocks":[]}');
+  assert.equal((await f.client.getLimits()).type, 'Limits');
+  assert.equal(f.sent[0], '{"type":"GetLimits"}');
+});

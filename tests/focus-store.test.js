@@ -407,3 +407,41 @@ test('listSchedules skips corrupt rows and listSchedulesChecked counts them', as
   assert.deepEqual(schedules.map(s => s.id), [4]);
   assert.deepEqual((await listSchedules(db)).map(s => s.id), [4]);
 });
+
+import { listLimits, saveLimit, deleteLimit, setLimitEnabled } from '../src/modules/focus/store.js';
+
+const limitInput = (p = {}) => ({ name: 'Games', period: 'daily', capSecs: 3600, lock: 'none', unlockDelayMs: null, apps: ['Game.exe'], sites: ['https://www.YouTube.com/x'], ...p });
+
+test('limits: save, list, update, toggle and delete round trip', async () => {
+  const db = await fresh();
+  const id = await saveLimit(db, limitInput());
+  assert.deepEqual(await listLimits(db), [{
+    id, name: 'Games', period: 'daily', capSecs: 3600, lock: 'none', unlockDelayMs: null,
+    enabled: true, apps: ['game.exe'], sites: ['youtube.com'],
+  }]);
+  const id2 = await saveLimit(db, limitInput({ name: 'Two', lock: 'locked', unlockDelayMs: 3_600_000, apps: [], sites: ['a.com', 'b.com'] }));
+  assert.notEqual(id2, id);
+  assert.equal(await saveLimit(db, { ...limitInput({ apps: ['x.exe'], sites: [], capSecs: 120 }), id }), id);
+  const [a, b] = await listLimits(db);
+  assert.equal(a.capSecs, 120);
+  assert.deepEqual([a.apps, a.sites], [['x.exe'], []]);
+  assert.equal(b.unlockDelayMs, 3_600_000);
+  await setLimitEnabled(db, id, false);
+  assert.equal((await listLimits(db))[0].enabled, false);
+  await setLimitEnabled(db, id, true);
+  assert.equal((await listLimits(db))[0].enabled, true);
+  await deleteLimit(db, id);
+  assert.equal((await listLimits(db)).length, 1);
+  assert.equal((await db.all('SELECT * FROM focus_limit_items WHERE limit_id = ?', [id])).length, 0);
+});
+
+test('limits: invalid input throws and ids are not reused', async () => {
+  const db = await fresh();
+  await assert.rejects(saveLimit(db, limitInput({ capSecs: 30 })));
+  await assert.rejects(saveLimit(db, limitInput({ apps: [], sites: [] })));
+  await assert.rejects(saveLimit(db, { ...limitInput(), id: 99 }));
+  const id = await saveLimit(db, limitInput());
+  await deleteLimit(db, id);
+  assert.ok((await saveLimit(db, limitInput())) > id);
+  assert.equal((await db.all('SELECT * FROM focus_limits')).length, 1);
+});
