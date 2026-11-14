@@ -296,7 +296,7 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-limit-editor .fr-dialog-actions { position: sticky; bottom: -18px; margin: 0 -20px -18px; padding: 10px 20px 18px; background: var(--panel); border-radius: 0 0 12px 12px; flex-wrap: wrap; }
 .fr-limit-editor .fr-dialog-actions .danger { margin-right: auto; }
 .fr-un-for { margin: 0 0 6px; overflow-wrap: anywhere; }
-@media (max-width: 520px) { .fr-limit { flex-wrap: wrap; } }
+@media (max-width: 520px) { .fr-limit { flex-wrap: wrap; } .fr-limit .fr-actions { flex-wrap: wrap; } }
 
 /* ---- Focus Room: partner setup ---- */
 .fr-dialog:has(.fr-ps) { width: min(520px, 100%); }

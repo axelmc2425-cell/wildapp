@@ -1,6 +1,8 @@
 // Focus Room screenshot scenarios (harness steps file). Run:
 //   node scripts/shot.mjs /tmp/focus-shots --helper target/debug/focus-helper --steps scripts/focus-steps.mjs [--dark]
-import { saveList, createSessions, saveSchedule } from '../src/modules/focus/store.js';
+// Only the Time limits scenes (helper built with --features test-clock):
+//   FOCUS_STEPS_ONLY=limits node scripts/shot.mjs /tmp/focus-shots --helper target/debug/focus-helper --steps scripts/focus-steps.mjs [--dark]
+import { saveList, createSessions, saveSchedule, saveLimit, setLimitEnabled } from '../src/modules/focus/store.js';
 import { readFileSync } from 'node:fs';
 import { generatePartnerKeys, signUnlock } from '../src/modules/focus/unlock.js';
 import { lockedWarning } from '../src/modules/focus/lock-logic.js';
@@ -22,6 +24,10 @@ export default async function steps(page, shot, h) {
     await h.db.run('DELETE FROM focus_partner'); await h.db.run('INSERT INTO focus_partner(public_key, name) VALUES (?, ?)', [partnerKeys.publicKey, 'Sam']);
     await page.reload();
     await scheduleScenarios(page, shot, h);
+    return;
+  }
+  if (process.env.FOCUS_STEPS_ONLY === 'limits') {
+    await limitScenarios(page, shot, h);
     return;
   }
   // (a) first run
@@ -924,4 +930,108 @@ async function scheduleScenarios(page, shot, h) {
 
   // clean up the schedule rows this scenario created
   await h.db.run('DELETE FROM focus_schedule_lists'); await h.db.run('DELETE FROM focus_schedules');
+}
+
+// ---- Time limits: empty, several states, the editor (new, editing a locked limit), helper down; desktop and phone ----
+async function limitScenarios(page, shot, h) {
+  const closed = () => page.waitForFunction(() => !document.querySelector('.fr-dialog'));
+  const noOverflow = (what) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth).then((v) => ok(v, `no horizontal overflow: ${what}`));
+  const today = new Date().toISOString().slice(0, 10);
+  await page.goto(page.url().split('#')[0] + '#/focus');
+  await page.waitForSelector('.fr-home');
+  partnerKeys = await generatePartnerKeys();
+  const sp = await h.helperCall({ type: 'SetPartner', public_key: partnerKeys.publicKey });
+  ok(sp.type === 'Ok', 'partner set for the locked limit: ' + JSON.stringify(sp));
+  await h.db.run('DELETE FROM focus_partner'); await h.db.run('INSERT INTO focus_partner(public_key, name) VALUES (?, ?)', [partnerKeys.publicKey, 'Sam']);
+  await page.reload();
+  await page.waitForSelector('.fr-banner.fr-ok', { timeout: 8000 });
+  await page.waitForSelector('.fr-limits-sec');
+  ok((await text(page, '.fr-limits-sec')).includes('No time limits yet'), 'empty state says "No time limits yet"');
+  await page.locator('.fr-limits-sec').scrollIntoViewIfNeeded();
+  await shot('limits-1-empty');
+
+  // Several states. Ids are the helper's limit-<n>.
+  const mk = (name, over) => saveLimit(h.db, { name, period: 'daily', capSecs: 3600, lock: 'none', unlockDelayMs: null, apps: [], sites: [], ...over });
+  const games = await mk('Games', { apps: ['game.exe'] });
+  const video = await mk('Video', { sites: ['youtube.com'], capSecs: 1800 });
+  const social = await mk('Social media', { sites: ['reddit.com', 'x.com', 'facebook.com'], capSecs: 3600 });
+  const pods = await mk('Podcasts', { period: 'weekly', capSecs: 5 * 3600, sites: ['spotify.com'] });
+  await setLimitEnabled(h.db, pods, false);
+  const study = await mk('Study guard', { apps: ['steam.exe', 'discord.exe'], capSecs: 2 * 3600, lock: 'locked', unlockDelayMs: 24 * 3600000 });
+  ok([games, video, social, pods, study].every(Number.isInteger), 'five limits saved');
+  // The sampler's current day, then usage: Games 20 min of 1 h, Video 27 of 30 min, Social used up, Study guard 10 min.
+  const rep = await h.helperCall({ type: 'ReportForeground', exe: 'code.exe', title: null, idle_secs: 0, day: today, hour: 12 });
+  ok(rep.type === 'Ok', 'sampler day reported');
+  const use = await h.helperCall({ type: 'AddUsage', day: { day: today, total: 6000, apps: { 'game.exe': 1200, 'steam.exe': 600, 'chrome.exe': 4200 }, sites: { YouTube: 1620, Reddit: 3600 }, other_browsing: 0 } });
+  ok(use.type === 'Ok', 'usage seeded');
+  await page.reload();
+  await page.waitForSelector('.fr-banner.fr-ok', { timeout: 8000 });
+  await page.waitForSelector('.fr-limit .fr-limit-bar', { timeout: 10000 });
+  await page.waitForFunction(() => document.querySelectorAll('.fr-limit').length === 5);
+  await page.waitForFunction(() => !!document.querySelector('.fr-limit-blocked'), null, { timeout: 10000 });
+  const rows = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.fr-limit')].map((r) => [r.querySelector('.fr-list-name').textContent, r.innerText.replace(/\n+/g, ' | ')])));
+  console.log(JSON.stringify(rows, null, 1));
+  ok(/Blocked/.test(rows['Social media']), 'the used-up limit says Blocked');
+  ok(/Locked/.test(rows['Study guard']), 'the locked limit shows Locked');
+  ok(/Resume/.test(rows['Podcasts']), 'the paused limit offers Resume');
+  await noOverflow('limit rows at 1280');
+  await page.locator('.fr-limits-sec').scrollIntoViewIfNeeded();
+  await shot('limits-2-rows');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(200);
+  await noOverflow('limit rows at phone width');
+  await page.locator('.fr-limits-sec').scrollIntoViewIfNeeded();
+  await shot('limits-3-rows-phone');
+
+  // The editor: new limit (phone width, then desktop).
+  await page.click('[data-fk="limit-add"]');
+  await page.waitForSelector('.fr-dialog .fr-limit-editor');
+  await shot('limits-4-editor-new-phone');
+  await noOverflow('limit editor at phone width');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.waitForTimeout(200);
+  await shot('limits-5-editor-new');
+  await page.keyboard.press('Escape'); await closed();
+
+  // Editing the locked limit: the lock options and the confirmation.
+  await page.click(`[data-fk="limit-edit-${study}"]`);
+  await page.waitForSelector('.fr-dialog .fr-limit-editor');
+  await page.waitForTimeout(200);
+  const editText = await text(page, '.fr-dialog');
+  console.log(editText.replace(/\n+/g, ' | '));
+  const boxes = await page.locator('.fr-dialog input[type="checkbox"]').count();
+  console.log('checkboxes in the locked editor:', boxes);
+  await shot('limits-6-editor-locked');
+  await page.evaluate(() => { for (let e = document.querySelector('.fr-limit-editor'); e; e = e.parentElement) e.scrollTop = e.scrollHeight; });
+  await page.waitForTimeout(100);
+  await shot('limits-6b-editor-locked-bottom');
+  await page.keyboard.press('Escape'); await closed();
+
+  // A new locked limit shows the confirmation checkbox.
+  await page.click('[data-fk="limit-add"]');
+  await page.waitForSelector('.fr-dialog .fr-limit-editor');
+  await page.locator('.fr-limit-editor .fr-moderow:has-text("Locked")').click();
+  await page.waitForTimeout(200);
+  await page.evaluate(() => { for (let e = document.querySelector('.fr-limit-editor'); e; e = e.parentElement) e.scrollTop = e.scrollHeight; });
+  await page.waitForTimeout(100);
+  await shot('limits-7-editor-new-locked');
+  await page.locator('.fr-limit-editor .fr-lockwarn input, .fr-limit-editor input[type="checkbox"]').first().check();
+  await shot('limits-7b-editor-new-locked-confirmed');
+  await page.keyboard.press('Escape'); await closed();
+
+  // Helper down: saved limits, "Enforcement is not running", never zero numbers.
+  h.setHelperDown(true);
+  await page.waitForSelector('.fr-banner.fr-error', { timeout: 8000 });
+  await page.waitForTimeout(300);
+  const downText = await text(page, '.fr-limits-sec');
+  ok(/not running/i.test(downText) && !/0m left|0 min left/.test(downText), 'helper down: limits say enforcement is not running, no fake zeros');
+  await page.locator('.fr-limits-sec').scrollIntoViewIfNeeded();
+  await shot('limits-8-helper-down');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(200);
+  await noOverflow('limits with the helper down at phone width');
+  await page.locator('.fr-limits-sec').scrollIntoViewIfNeeded();
+  await shot('limits-9-helper-down-phone');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  h.setHelperDown(false);
 }

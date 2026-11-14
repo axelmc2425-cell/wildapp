@@ -1,6 +1,6 @@
 # Focus Room daily and weekly time limits (sub-project 6b)
 
-Date: 2026-11-14. Status: approved by the owner's "build the rest"; the calls marked (call) are the controller's and can be changed.
+Date: 2026-11-14. Status: built (the calls marked (call) were the controller's).
 
 Builds on `2026-11-08-focus-room-design.md` (helper, blocking), `2026-11-09-focus-locks-design.md` (locks, partner/waiting unlock) and `2026-11-13-focus-detailed-analytics-design.md` (usage tracking, which this reuses).
 
