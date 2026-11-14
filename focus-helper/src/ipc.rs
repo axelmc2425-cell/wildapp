@@ -171,7 +171,7 @@ pub fn handle_changed(
             }
         }
         Request::ResetClock => {
-            if store.windows.iter().any(|w| w.lock != crate::model::Lock::None && w.ends > now) {
+            if store.windows.iter().any(|w| w.lock != crate::model::Lock::None && w.ends > now) || store.has_locked_limit() {
                 err("lock-active", "cannot reset the clock while a lock is active or scheduled")
             } else {
                 clock.reset(wall_ms, mono_ms);

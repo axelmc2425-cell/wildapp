@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::clock::EffectiveClock;
 use crate::decide::decide;
-use crate::enforce::{any_window_active, enforce_once, ProcessTable};
+use crate::enforce::{any_window_active, enforce_with, ProcessTable};
 use crate::ipc::{self, LimitStatus, Request, Response};
 use crate::limits::{period_days, period_ends_day, used_secs, Limit};
 use crate::lockstore::LockStore;
@@ -632,8 +632,13 @@ impl Daemon {
     }
 
     fn apply(&mut self, now: i64, platform: &mut dyn Platform) {
+        // The VPN-kill and DoH-off friction follow the block WINDOWS only. A used-up limit adds
+        // its apps and sites to the block lists but never counts as an active window. Accepted
+        // consequence: DoH and VPNs can bypass a site limit (same trust level as the rest of the
+        // friction design).
+        let friction = any_window_active(&decide(&self.store.windows, now));
         let decision = self.full_decision(now);
-        enforce_once(&decision, platform.process_table(), std::process::id());
+        enforce_with(&decision, platform.process_table(), std::process::id(), friction);
 
         let mut errors = Vec::new();
         let mut sites = decision.block_sites.clone();
@@ -665,7 +670,7 @@ impl Daemon {
             }
         }
 
-        if any_window_active(&decision) {
+        if friction {
             if !self.doh_on {
                 match platform.set_doh_off() {
                     Ok(w) => {

@@ -42,7 +42,14 @@ pub fn is_killable_name(name: &str) -> bool {
 /// Terminates and returns every blocked process. Never touches `self_pid`, pid 0/4 or any
 /// CRITICAL_APPS entry; that guard is enforced here independently of `is_blocked_app`.
 pub fn enforce_once(d: &Decision, table: &dyn ProcessTable, self_pid: u32) -> Vec<Proc> {
-    if !any_window_active(d) {
+    enforce_with(d, table, self_pid, any_window_active(d))
+}
+
+/// Like `enforce_once`, with the VPN friction decided by the caller. `friction` must come from
+/// block WINDOWS only: a used-up time limit adds its apps and sites to `d` but must not turn on
+/// the VPN kill. Nothing is killed when `d` has no blocks and `friction` is off.
+pub fn enforce_with(d: &Decision, table: &dyn ProcessTable, self_pid: u32, friction: bool) -> Vec<Proc> {
+    if !friction && d.block_apps.is_empty() && d.block_folders.is_empty() {
         return Vec::new();
     }
     let mut killed = Vec::new();
@@ -58,7 +65,7 @@ pub fn enforce_once(d: &Decision, table: &dyn ProcessTable, self_pid: u32) -> Ve
             continue;
         }
         let blocked = is_blocked_app(d, &p.name)
-            || VPN_APPS.iter().any(|v| *v == n)
+            || (friction && VPN_APPS.iter().any(|v| *v == n))
             || p.path.as_deref().map_or(false, |x| is_blocked_path(d, x));
         if blocked && table.kill(p.pid) {
             killed.push(p);

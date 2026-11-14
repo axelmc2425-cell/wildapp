@@ -1,4 +1,5 @@
 //! Daemon enforcement of time limits and the PushLimits/GetLimits protocol.
+use std::cell::RefCell;
 use std::io;
 use std::path::PathBuf;
 
@@ -382,4 +383,109 @@ fn persisted_future_or_garbage_days_do_not_pin_current_day() {
     // Only invalid or future rows: no day, no status, no block.
     assert_eq!(persisted_day_pins(&["9999-12-31", "zzzz", &day(2)], "pf-none"), None);
     assert_eq!(persisted_day_pins(&[], "pf-empty"), None);
+}
+
+/// A process table that lists a fixed set and records kills; the platform counts DoH changes.
+struct Procs {
+    list: Vec<Proc>,
+    killed: RefCell<Vec<String>>,
+}
+impl ProcessTable for Procs {
+    fn list(&self) -> Vec<Proc> {
+        self.list.clone()
+    }
+    fn kill(&self, pid: u32) -> bool {
+        let n = self.list.iter().find(|p| p.pid == pid).unwrap().name.clone();
+        self.killed.borrow_mut().push(n);
+        true
+    }
+}
+struct Fric {
+    procs: Procs,
+    doh_off_calls: u32,
+}
+impl Platform for Fric {
+    fn enforce_hosts(&mut self, _: &[String]) -> io::Result<bool> {
+        Ok(true)
+    }
+    fn set_doh_off(&mut self) -> io::Result<Vec<String>> {
+        self.doh_off_calls += 1;
+        Ok(Vec::new())
+    }
+    fn clear_doh_off(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+    fn flush_dns(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+    fn process_table(&self) -> &dyn ProcessTable {
+        &self.procs
+    }
+}
+fn fric() -> Fric {
+    let names = ["game.exe", "openvpn.exe", "tor.exe", "cloudflare-warp.exe", "notepad.exe"];
+    let list = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| Proc { pid: 100 + i as u32, name: n.to_string(), path: None })
+        .collect();
+    Fric { procs: Procs { list, killed: RefCell::new(Vec::new()) }, doh_off_calls: 0 }
+}
+
+#[test]
+fn exceeded_app_limit_kills_its_app_but_no_vpn_and_leaves_doh_alone() {
+    let (s, u) = paths("fric-app");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = fric();
+    let mut call = |d: &mut Daemon, p: &mut Fric, l: String| -> Value {
+        serde_json::from_str(&d.handle_line(&l, wall(0), 0, [0; 16], p)).unwrap()
+    };
+    call(&mut d, &mut p, json!({"type":"PushLimits","limits":[lim("limit-a", &["game.exe"], &[], "daily", 60)]}).to_string());
+    let rep = json!({"type":"ReportForeground","exe":"game.exe","title":null,"idle_secs":0,"day":day(0)}).to_string();
+    call(&mut d, &mut p, rep.clone());
+    let mut mono = 0;
+    for _ in 0..6 {
+        mono += 10_000;
+        let l = rep.clone();
+        d.handle_line(&l, wall(0), mono, [0; 16], &mut p);
+    }
+    d.tick(wall(0), mono, &mut p);
+    let killed = p.procs.killed.borrow().clone();
+    assert!(killed.contains(&"game.exe".to_string()), "{killed:?}");
+    assert_eq!(killed.len(), 1, "no VPN may be killed: {killed:?}");
+    assert_eq!(p.doh_off_calls, 0);
+}
+
+#[test]
+fn exceeded_site_limit_does_not_kill_vpns() {
+    // Accepted: this means DoH/VPN can bypass a site limit.
+    let (s, u) = paths("fric-site");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = fric();
+    d.handle_line(&json!({"type":"PushLimits","limits":[lim("limit-y", &[], &["youtube.com"], "daily", 60)]}).to_string(), wall(0), 0, [0; 16], &mut p);
+    let rep = json!({"type":"ReportForeground","exe":"chrome.exe","title":"Cats - YouTube","idle_secs":0,"day":day(0)}).to_string();
+    let mut mono = 0;
+    d.handle_line(&rep, wall(0), mono, [0; 16], &mut p);
+    for _ in 0..6 {
+        mono += 10_000;
+        d.handle_line(&rep, wall(0), mono, [0; 16], &mut p);
+    }
+    d.tick(wall(0), mono, &mut p);
+    let st: Value = serde_json::from_str(&d.handle_line(r#"{"type":"GetStatus"}"#, wall(0), mono, [0; 16], &mut p)).unwrap();
+    assert_eq!(st["decision"]["blockSites"], json!(["youtube.com"]));
+    assert!(p.procs.killed.borrow().is_empty(), "{:?}", p.procs.killed);
+    assert_eq!(p.doh_off_calls, 0);
+}
+
+#[test]
+fn active_block_window_still_triggers_friction() {
+    let (s, u) = paths("fric-win");
+    let mut d = Daemon::load_with_usage(&s, &u);
+    let mut p = fric();
+    let w = json!({"id":"w","starts":wall(0)-1000,"ends":wall(0)+7_200_000,"lock":"none","mode":"block","sites":["x.com"],"apps":[]});
+    d.handle_line(&json!({"type":"PushWindows","windows":[w]}).to_string(), wall(0), 0, [0; 16], &mut p);
+    d.tick(wall(0), 0, &mut p);
+    let killed = p.procs.killed.borrow().clone();
+    assert!(killed.contains(&"openvpn.exe".to_string()) && killed.contains(&"tor.exe".to_string()), "{killed:?}");
+    assert_eq!(p.doh_off_calls, 1);
 }
