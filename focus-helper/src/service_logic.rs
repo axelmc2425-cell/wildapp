@@ -474,6 +474,13 @@ pub fn uninstall_gate(store: &LockStore, now_ms: i64) -> Result<(), String> {
     if store.permit_valid(now_ms) { Ok(()) } else { Err(UNINSTALL_HOWTO.to_string()) }
 }
 
+/// `uninstall_gate` on a store that first has a due waiting period converted to a permit.
+/// Returns the verdict and whether the store changed (the caller persists it so the file agrees).
+pub fn uninstall_gate_converting(store: &mut LockStore, now_ms: i64) -> (Result<(), String>, bool) {
+    let changed = store.expire_pending(now_ms);
+    (uninstall_gate(store, now_ms), changed)
+}
+
 /// Gate for `uninstall` and for an upgrade that would stop the services: refused while any
 /// locked/frozen window has `ends > now`. Returns the user-facing refusal message.
 pub fn uninstall_decision(windows: &[Window], now_ms: i64) -> Result<(), String> {
@@ -597,6 +604,24 @@ mod tests {
         s.windows.clear();
         s.high_water_ms = 200;
         assert_eq!(uninstall_gate(&s, 50), Err(UNINSTALL_HOWTO.to_string()), "effective clock");
+    }
+
+    #[test]
+    fn gate_converting_turns_due_wait_into_permit() {
+        use crate::lockstore::{LockStore, UNINSTALL_HOWTO};
+        let mut s = LockStore::default();
+        let unlock_at = s.request_uninstall_delay(1_000);
+        let mut early = s.clone();
+        let (r, changed) = uninstall_gate_converting(&mut early, unlock_at - 1);
+        assert_eq!(r, Err(UNINSTALL_HOWTO.to_string()));
+        assert!(!changed);
+        let (r, changed) = uninstall_gate_converting(&mut s, unlock_at);
+        assert_eq!(r, Ok(()));
+        assert!(changed);
+        assert!(s.uninstall_pending.is_none());
+        let (r, changed) = uninstall_gate_converting(&mut s, unlock_at + 1);
+        assert_eq!(r, Ok(()));
+        assert!(!changed);
     }
 
     #[test]

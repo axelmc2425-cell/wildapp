@@ -38,6 +38,32 @@ fn load_store_and_now() -> (LockStore, i64) {
     (store, now)
 }
 
+/// Loads the store, converts a due waiting period to a permit (saving the converted state so
+/// the file agrees; best effort) and applies the uninstall gate (lock-pending first, then permit).
+fn gate_now() -> (Result<(), String>, LockStore) {
+    let (mut store, now) = load_store_and_now();
+    let (verdict, changed) = logic::uninstall_gate_converting(&mut store, now);
+    if changed {
+        if let Err(e) = persist::save(&paths::state_file(), &store) {
+            ilog(&format!("uninstall: cannot save the converted waiting period: {e}"));
+        }
+    }
+    (verdict, store)
+}
+
+/// State kept after a successful removal: the used permit is cleared and saved (best effort;
+/// the state directory is SYSTEM-owned, so write access is taken first unless it is a link).
+fn clear_permit_after_removal() {
+    let (mut store, _) = load_store_and_now();
+    store.clear_permit();
+    if !paths::state_dir_is_reparse() {
+        admin_write(&paths::state_dir().to_string_lossy());
+    }
+    if let Err(e) = persist::save(&paths::state_file(), &store) {
+        ilog(&format!("uninstall: cannot clear the used permit: {e}"));
+    }
+}
+
 fn failed(e: impl ToString) -> CmdError {
     CmdError::Failed(e.to_string())
 }
@@ -252,9 +278,8 @@ fn same_file(a: &Path, b: &Path) -> bool {
 }
 
 pub fn uninstall(purge_state: bool) -> Result<(), CmdError> {
-    let (store, now) = load_store_and_now();
-    logic::uninstall_decision(&store.windows, now)
-        .map_err(|why| CmdError::LockPending(format!("uninstall refused: {why}")))?;
+    let (verdict, _) = gate_now();
+    verdict.map_err(|why| CmdError::LockPending(format!("uninstall refused: {why}")))?;
     let existing = existing_services()?;
     ilog("uninstall: starting");
 
@@ -265,8 +290,8 @@ pub fn uninstall(purge_state: bool) -> Result<(), CmdError> {
     }
 
     // A lock may have been pushed while we were stopping; re-check right before deleting.
-    let (store, now) = load_store_and_now();
-    if let Err(why) = logic::uninstall_decision(&store.windows, now) {
+    let (verdict, _) = gate_now();
+    if let Err(why) = verdict {
         restore();
         return Err(CmdError::LockPending(format!("uninstall refused: {why}")));
     }
@@ -308,6 +333,10 @@ pub fn uninstall(purge_state: bool) -> Result<(), CmdError> {
                 problems.push(format!("cannot remove {}: {e}", dir.display()));
             }
         }
+    }
+
+    if problems.is_empty() && !purge_state {
+        clear_permit_after_removal();
     }
 
     if problems.is_empty() {
