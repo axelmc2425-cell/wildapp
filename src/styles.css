@@ -466,6 +466,8 @@ kbd { font: 11px monospace; border: 1px solid var(--border); border-radius: 4px;
 .fr-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
 
 .fr-uninstall-sec { margin-top: 18px; }
+.fr-uninstall-sec select { padding: 6px 9px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; max-width: 100%; box-sizing: border-box; }
+.fr-uninstall-sec .fr-actions { flex-wrap: wrap; align-items: stretch; }
 .fr-un-status { display: flex; flex-direction: column; gap: 2px; margin: 8px 0; overflow-wrap: anywhere; }
 .fr-un-status p { margin: 0; }
 .fr-un-down strong, .fr-un-warn strong { color: var(--danger, inherit); }

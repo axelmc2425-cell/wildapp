@@ -314,13 +314,55 @@ Accepted limits (not failures):
 - Silence never unblocks: a used-up limit stays blocking until the first sampler report of a new day, which can be a while after sign-in.
 - A local user who can write to the helper pipe can spoof a report for a day one ahead of the UTC date and so lift a day early, the same trust level as spoofing usage reports.
 - Moving the system clock forward can lift a limit a day early, as it can for locks.
-- Locked limits do not yet gate uninstall or stopping the service; that is part of the uninstall protection project (6c).
+- Locked limits are covered by uninstall protection (section 20): uninstalling and stopping the service always need a permit.
 - One shared pool per limit: there is no per-app split inside a limit.
 - A standard user can change the Windows time zone without admin rights. Moving east makes the sampler report local date = UTC date + 1, which the helper accepts as the current day, so a used-up limit resets for the rest of that real day. Moving west does not lift anything. This is not prevented.
 - The sampler runs as the signed-in user, who can end it. While it is not running nothing is counted, so the limit never reaches its cap; the app shows "Not counting right now" (the helper reports `usage_tracking: false`), but nothing restarts it by force.
 - An unlisted site (one outside the built-in site map) counts only while its limit exists in the helper: the domain stem used to label usage comes from pushed limits, so earlier or paused time on it was recorded as `other` and is never counted retroactively.
 - Limit blocks do not trigger the VPN-kill or encrypted-DNS-off friction; only block windows do. So DoH and VPN apps can bypass a site limit. Accepted, the same trust level as the rest of the friction design.
 - Weeks start on Monday (local time), not on a setting.
+
+## 20. Uninstall protection (sub-project 6c)
+
+Uninstalling MyBrain, and stopping the `MyBrainFocus` service, always needs an uninstall permit, even when no block or limit is running. A permit comes from the partner's signed code (valid 30 minutes) or from a waiting period (24 hours by default, 1 hour to 7 days; the permit then lasts 60 minutes). The permit lives in the helper state, like locks do. Needs an installed build, a partner set in Focus Room, and an Administrator PowerShell with the `Send-Focus` helper from section 13. Check the permit with `Send-Focus @{type='GetStatus'}` (`uninstall` shows `wait_ms`, `pending_at`, `permit_until`).
+
+- [ ] With no permit, run the MyBrain uninstaller (Settings > Apps > Uninstall) — Expected: it stops with a message box that says "Uninstall is protected by MyBrain Focus Room. Open MyBrain, then Focus Room, then Uninstall protection, ask your partner for a code or start the waiting period, then run the uninstaller again."; the exit code of `focus-helper.exe uninstall` is 1 and the message from the helper is the shorter "Uninstall is protected. Open MyBrain, ..." text; both services are still running and the app still works
+- [ ] In Focus Room > Uninstall protection choose "Ask for a partner code", send the code to the partner, paste the signed token — Expected: the section says "You can uninstall until HH:MM" (30 minutes ahead); run the uninstaller within that time — Expected: it completes and removes the services
+- [ ] Reinstall, then in Uninstall protection choose "Start the waiting period"; reboot and reopen the app in between — Expected: the countdown survives; before the time is reached the uninstaller is still refused; after it, the section shows a permit until 60 minutes later and the uninstaller works inside that time
+- [ ] Get a permit by waiting (or by partner code), do not uninstall, and wait until it has run out — Expected: the section says protection is back on, `permit_until` is null, and the uninstaller refuses again with the how-to message
+- [ ] With no permit, open Services (`services.msc`), select MyBrain Focus and choose Stop; also try `sc stop MyBrainFocus` — Expected: refused (access denied or "the service cannot accept control messages"); the service keeps running. Get a permit and repeat — Expected: Stop works. Then start it again. Shutdown and restart of Windows always work with or without a permit
+- [ ] With no permit, run an upgrade install of a newer MyBrain version over the existing one — Expected: it works without a permit (accepted limit, see below); the services keep running and state, partner and any pending wait are kept
+- [ ] Start a Locked block (or Frozen), then get a permit by partner code and run the uninstaller — Expected: still refused with the lock message while the window is pending; after the window ends (or is unlocked) the permit, if still valid, allows the uninstall
+- [ ] Create a locked limit with the partner set and run the uninstaller with no permit — Expected: refused for lack of a permit; locked limits add no separate rule because every uninstall needs a permit
+- [ ] Get a permit, stop the services by hand first (so uninstall finds them stopped), then start a Locked block in a second session just before running the uninstaller, so the second check in `uninstall` refuses — Expected: the uninstaller is refused and both services are running again (auto-start restored) afterwards. If the timing cannot be arranged, record it as not tested
+- [ ] After an uninstall that kept the state (keep data), reinstall — Expected: the new install starts with no permit and nothing pending. If the helper could not save the cleared permit after removal (see `service.log`), a stale permit of up to 60 minutes can remain: record it and check `permit_until`; it runs out by itself
+- [ ] Compare the NSIS message (installer-hooks.nsh) with the helper's `UNINSTALL_HOWTO` (`focus-helper/src/lockstore.rs`) — Expected: the same steps in the same order; the NSIS text is the longer variant (it names the product and the uninstaller); keep them in step when either changes
+- [ ] Stop the service and open Focus Room > Uninstall protection — Expected: "Enforcement is not running", no wait or code buttons, no zero or fake numbers
+
+### Recovery if you are locked out
+
+For an Administrator who cannot get a permit (partner unreachable, wait not wanted) and accepts losing the protection and the Focus Room data. This is deliberately a manual, multi-step procedure; it is friction, not a lock the Administrator cannot open. Names below are from `focus-helper/src/service_logic.rs` (`MAIN_SERVICE`, `WATCHDOG_SERVICE`, `DIR_NAME`, `RUN_KEY_PATH`, `SAMPLER_RUN_VALUE`).
+
+1. Boot Windows normally and sign in as an Administrator (not Safe Mode: the services are the thing being turned off).
+2. Open an elevated Command Prompt. Take ownership of the helper's install folder and state folder so the service account no longer protects them: `takeown /f "%ProgramFiles%\MyBrainFocus" /r /d y` then `icacls "%ProgramFiles%\MyBrainFocus" /grant Administrators:F /t`, and the same two commands for `%ProgramData%\MyBrainFocus`. The services themselves are changed with `sc` (step 3); if `sc` says access denied on a service, take ownership of its registry key `HKLM\SYSTEM\CurrentControlSet\Services\MyBrainFocus` (and `MyBrainFocusWatchdog`) in `regedit` and grant Administrators full control.
+3. Disable both services: `sc config MyBrainFocus start= disabled` and `sc config MyBrainFocusWatchdog start= disabled` (the space after `start=` is required).
+4. Reboot. Both services stay stopped.
+5. Delete the folder `%ProgramFiles%\MyBrainFocus` and the state folder `%ProgramData%\MyBrainFocus` (this erases the permit, partner key, waits, usage and limits held by the helper).
+6. Remove the sampler's Run entry: `reg delete HKLM\Software\Microsoft\Windows\CurrentVersion\Run /v MyBrainFocusSampler /f`.
+7. Optionally remove the services for good: `sc delete MyBrainFocus` and `sc delete MyBrainFocusWatchdog`, then uninstall MyBrain from Settings > Apps. If the helper is missing the uninstaller no longer needs a permit; if it still refuses, delete the app's own install folder by hand.
+
+- [ ] On a test machine, follow the recovery steps above with no permit — Expected: each command works as written, the services stay stopped after the reboot, the folders and the `MyBrainFocusSampler` value are gone, and MyBrain can then be removed or reinstalled cleanly
+
+If the app cannot reach the helper (service stopped or crashed), the Uninstall protection section shows "Enforcement is not running" and offers nothing to click; the uninstaller still needs a permit, which the app cannot obtain until the helper runs again. Start the service (`sc start MyBrainFocus`) first, or use the recovery steps.
+
+Accepted limits (not failures):
+- An Administrator can always remove it (recovery steps above, or by editing the system). This is friction against a weak moment, not a guarantee.
+- Moving the system clock forward can shorten a waiting period, the same existing limit as for locks and limits.
+- A permit lasts 30 minutes (partner code) or 60 minutes (waiting period); whoever is at the PC in that time can uninstall.
+- Installing a newer version over the existing one needs no permit (upgrades must keep working).
+- If the helper is missing or broken, the app files can be deleted by hand and the uninstaller has nothing to refuse.
+- DoH settings and VPN apps are not part of this protection and are not affected by it.
+- If the post-removal save of the cleared permit fails after an uninstall that keeps its state, a stale permit of up to 60 minutes can remain.
 
 ## Report back
 

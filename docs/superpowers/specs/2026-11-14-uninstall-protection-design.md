@@ -1,6 +1,6 @@
 # Focus Room uninstall protection (sub-project 6c)
 
-Date: 2026-11-14. Status: approved by the owner's "build the rest"; the owner's earlier decision stands: **uninstalling always needs the partner's code or a waiting period**, even when no block is running. Calls marked (call) are the controller's.
+Date: 2026-11-14. Status: built (end to end test and Windows checklist section 20 added). Approved by the owner's "build the rest"; the owner's earlier decision stands: **uninstalling always needs the partner's code or a waiting period**, even when no block is running. Calls marked (call) are the controller's.
 
 Builds on `2026-11-09-focus-locks-design.md` (partner key, challenge tokens, waiting periods, tombstones) and the helper install/uninstall code (`focus-helper/src/win/install.rs`, `service_logic.rs`, `src-tauri/installer-hooks.nsh`).
 

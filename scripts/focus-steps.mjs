@@ -1,5 +1,6 @@
 // Focus Room screenshot scenarios (harness steps file). Run:
 //   node scripts/shot.mjs /tmp/focus-shots --helper target/debug/focus-helper --steps scripts/focus-steps.mjs [--dark]
+// Only the Uninstall protection scenes (same build): FOCUS_STEPS_ONLY=uninstall
 // Only the Time limits scenes (helper built with --features test-clock):
 //   FOCUS_STEPS_ONLY=limits node scripts/shot.mjs /tmp/focus-shots --helper target/debug/focus-helper --steps scripts/focus-steps.mjs [--dark]
 import { saveList, createSessions, saveSchedule, saveLimit, setLimitEnabled } from '../src/modules/focus/store.js';
@@ -28,6 +29,10 @@ export default async function steps(page, shot, h) {
   }
   if (process.env.FOCUS_STEPS_ONLY === 'limits') {
     await limitScenarios(page, shot, h);
+    return;
+  }
+  if (process.env.FOCUS_STEPS_ONLY === 'uninstall') {
+    await uninstallScenarios(page, shot, h);
     return;
   }
   // (a) first run
@@ -1034,4 +1039,86 @@ async function limitScenarios(page, shot, h) {
   await shot('limits-9-helper-down-phone');
   await page.setViewportSize({ width: 1280, height: 800 });
   h.setHelperDown(false);
+}
+
+// ---- Uninstall protection: no partner, protected, pending, shorten flow, helper down, permit active; desktop and phone ----
+async function uninstallScenarios(page, shot, h) {
+  const closed = () => page.waitForFunction(() => !document.querySelector('.fr-dialog'));
+  const noOverflow = (what) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth).then((v) => ok(v, `no horizontal overflow: ${what}`));
+  const sec = '.fr-uninstall-sec';
+  const both = async (name) => {
+    await page.locator(sec).scrollIntoViewIfNeeded();
+    await shot(name);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForTimeout(200);
+    await noOverflow(name + ' at phone width');
+    await page.locator(sec).scrollIntoViewIfNeeded();
+    await shot(name + '-phone');
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.waitForTimeout(100);
+  };
+  const reload = async () => { await page.reload(); await page.waitForSelector(sec); await page.waitForTimeout(400); };
+  await page.goto(page.url().split('#')[0] + '#/focus');
+  await page.waitForSelector(sec);
+  await page.waitForTimeout(400);
+
+  // No partner: the wait is the only way.
+  ok(/Add a partner/.test(await text(page, sec)), 'no partner: the Add a partner button is shown');
+  await both('uninstall-1-no-partner');
+
+  // Protected (partner set).
+  partnerKeys = await generatePartnerKeys();
+  const sp = await h.helperCall({ type: 'SetPartner', public_key: partnerKeys.publicKey });
+  ok(sp.type === 'Ok', 'partner set: ' + JSON.stringify(sp));
+  await h.db.run('DELETE FROM focus_partner'); await h.db.run('INSERT INTO focus_partner(public_key, name) VALUES (?, ?)', [partnerKeys.publicKey, 'Sam']);
+  await reload();
+  const prot = await text(page, sec);
+  ok(/Ask for a partner code/.test(prot) && /Start the waiting period/.test(prot), 'protected: both ways are offered');
+  await both('uninstall-2-protected');
+
+  // Shorten the wait without a permit: the partner-code dialog opens with the explanation.
+  await page.selectOption('#fr-un-wait-sel', { index: 0 });
+  await page.waitForSelector('.fr-dialog');
+  await page.waitForTimeout(300);
+  await shot('uninstall-3-shorten-dialog');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(200);
+  await noOverflow('shorten dialog at phone width');
+  await shot('uninstall-3-shorten-dialog-phone');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.keyboard.press('Escape'); await closed();
+
+  // Ask for a partner code: the dialog.
+  await page.click('[data-fk="un-partner"]');
+  await page.waitForSelector('.fr-dialog');
+  await page.waitForTimeout(300);
+  await shot('uninstall-4-partner-dialog');
+  await page.keyboard.press('Escape'); await closed();
+
+  // Waiting period running.
+  const r = await h.helperCall({ type: 'RequestUninstallDelay' });
+  ok(r.type === 'UninstallPending', 'waiting period started: ' + JSON.stringify(r));
+  await reload();
+  ok(/Cancel the waiting period/.test(await text(page, sec)), 'pending: Cancel is offered');
+  await both('uninstall-5-pending');
+
+  // Helper down.
+  h.setHelperDown(true);
+  await page.waitForSelector('.fr-banner.fr-error', { timeout: 8000 });
+  await page.waitForTimeout(400);
+  ok(/not running/i.test(await text(page, sec)), 'helper down: the section says enforcement is not running');
+  await both('uninstall-6-helper-down');
+  h.setHelperDown(false);
+
+  // Permit active through the partner route.
+  await h.helperCall({ type: 'CancelUninstallDelay' });
+  const c = await h.helperCall({ type: 'RequestChallenge', window_id: 'uninstall' });
+  ok(c.type === 'Challenge', 'uninstall challenge: ' + JSON.stringify(c));
+  const st = await h.helperCall({ type: 'GetStatus' });
+  const tok = await signUnlock(partnerKeys.privateKeyJwk, c.code, st.now_ms);
+  const sub = await h.helperCall({ type: 'SubmitToken', token: tok });
+  ok(sub.type === 'Ok', 'token accepted: ' + JSON.stringify(sub));
+  await reload();
+  ok(/You can uninstall/.test(await text(page, sec)), 'permit: the section says you can uninstall');
+  await both('uninstall-7-permit');
 }
