@@ -21,6 +21,9 @@ pub const MIN_CAP_SECS: u64 = 60;
 pub const MAX_DAILY_CAP_SECS: u64 = 24 * 3600;
 pub const MAX_WEEKLY_CAP_SECS: u64 = 168 * 3600;
 
+/// Every limit id starts with this; window ids may not, so the two never collide.
+pub const LIMIT_ID_PREFIX: &str = "limit-";
+
 const MAX_ID_CHARS: usize = 64;
 const MAX_NAME_CHARS: usize = 64;
 
@@ -48,7 +51,9 @@ pub struct Limit {
 /// Checks a limit; the error is a short reason code.
 pub fn validate_limit(l: &Limit) -> Result<(), String> {
     let bad = |s: &str| Err(s.to_string());
-    if l.id.is_empty() || l.id.chars().count() > MAX_ID_CHARS || l.id.chars().any(|c| c.is_control()) {
+    if l.id.is_empty() || l.id.chars().count() > MAX_ID_CHARS || l.id.chars().any(|c| c.is_control())
+        || !l.id.starts_with(LIMIT_ID_PREFIX)
+    {
         return bad("bad-id");
     }
     if l.name.trim().is_empty() || l.name.chars().count() > MAX_NAME_CHARS || l.name.chars().any(|c| c.is_control()) {

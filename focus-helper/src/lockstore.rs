@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::limits::{is_weaker, validate_limit, Limit, MAX_LIMITS};
+use crate::limits::{is_weaker, validate_limit, Limit, LIMIT_ID_PREFIX, MAX_LIMITS};
 use crate::model::{Lock, Mode, Window};
 use crate::unlock::{self, Challenge, UnlockError, CHALLENGE_TTL_MS};
 
@@ -28,6 +28,8 @@ pub enum Invalid {
     BadLock,
     TooLong,
     BadDelay,
+    /// Window id uses the `limit-` prefix or a reserved id.
+    BadId,
 }
 
 impl Invalid {
@@ -38,6 +40,7 @@ impl Invalid {
             Invalid::BadLock => "bad-lock",
             Invalid::TooLong => "too-long",
             Invalid::BadDelay => "bad-delay",
+            Invalid::BadId => "bad-id",
         }
     }
 }
@@ -68,13 +71,20 @@ pub enum PushError {
 /// Ids a limit may not use (reserved for other protected items).
 pub const RESERVED_LIMIT_IDS: &[&str] = &["uninstall"];
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LimitPushReport {
     /// Ids of stored locked limits whose incoming copy was missing or weaker (ignored).
     pub kept_locked: Vec<String>,
     /// Incoming limits stored or replaced.
     pub applied: usize,
+    /// Incoming locked limits skipped because a partner unlocked that id and the app has not yet
+    /// synced the unlock (push it unlocked first).
+    pub skipped_tombstoned: Vec<String>,
 }
+
+/// Most limit tombstones kept; the oldest are dropped.
+pub const MAX_LIMIT_TOMBSTONES: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PartnerError {
@@ -145,8 +155,8 @@ pub struct LockStore {
     pub pending_unlocks: Vec<PendingUnlock>,
     /// Time limits (portable pool caps). Absent in state written before limits existed.
     pub limits: Vec<Limit>,
-    /// Locked limits unlocked by a partner; their `ends` is `i64::MAX` (limits never expire),
-    /// so a stale locked copy stays skipped.
+    /// Locked limits unlocked by a partner (`ends` is `i64::MAX`). A stale locked copy stays
+    /// skipped until the app pushes the id unlocked or deleted. At most `MAX_LIMIT_TOMBSTONES`.
     pub limit_tombstones: Vec<Tombstone>,
 }
 
@@ -175,6 +185,9 @@ fn cap_for(lock: Lock) -> Option<i64> {
 }
 
 fn validate_window(w: &Window) -> Result<(), Invalid> {
+    if w.id.starts_with(LIMIT_ID_PREFIX) || RESERVED_LIMIT_IDS.contains(&w.id.as_str()) {
+        return Err(Invalid::BadId);
+    }
     if w.ends <= w.starts {
         return Err(Invalid::BadTimes);
     }
@@ -377,6 +390,8 @@ impl LockStore {
             }
         }
 
+        let incoming_unlocked: Vec<String> =
+            incoming.iter().filter(|l| l.lock == Lock::None).map(|l| l.id.clone()).collect();
         let mut report = LimitPushReport::default();
         let mut next: Vec<Limit> = Vec::new();
         for old in self.limits.iter().filter(|l| l.lock == Lock::Locked) {
@@ -399,6 +414,7 @@ impl LockStore {
             if !was_locked && n.lock == Lock::Locked && self.limit_tombstones.iter().any(|t| t.id == n.id) {
                 // Stale locked copy of an unlocked id: skipped, the unlocked one stays.
                 next.extend(self.limits.iter().find(|l| l.id == n.id).cloned());
+                report.skipped_tombstoned.push(n.id.clone());
                 continue;
             }
             report.applied += 1;
@@ -407,6 +423,16 @@ impl LockStore {
         if next.len() > MAX_LIMITS {
             return Err(PushError::BadLimit("too-many".into()));
         }
+        // An unlocked incoming copy proves the app synced the unlock; an id that is gone from the
+        // result proves it synced the delete. Either way the tombstone has done its job.
+        let mut tombs = std::mem::take(&mut self.limit_tombstones);
+        tombs.retain(|t| {
+            let synced_unlock = incoming_unlocked.contains(&t.id);
+            !synced_unlock && (next.iter().any(|l| l.id == t.id) || report.skipped_tombstoned.contains(&t.id))
+        });
+        let excess = tombs.len().saturating_sub(MAX_LIMIT_TOMBSTONES);
+        tombs.drain(..excess);
+        self.limit_tombstones = tombs;
         self.limits = next;
         self.high_water_ms = now_ms;
         Ok(report)
@@ -513,6 +539,8 @@ impl LockStore {
         l.unlock_delay_ms = None;
         self.limit_tombstones.retain(|t| t.id != id);
         self.limit_tombstones.push(Tombstone { id: id.to_string(), ends: i64::MAX });
+        let excess = self.limit_tombstones.len().saturating_sub(MAX_LIMIT_TOMBSTONES);
+        self.limit_tombstones.drain(..excess);
         self.pending_unlocks.retain(|p| p.window_id != id);
         true
     }

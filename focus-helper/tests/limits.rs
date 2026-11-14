@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 fn lim() -> Limit {
     Limit {
-        id: "l1".into(),
+        id: "limit-1".into(),
         name: "Games".into(),
         apps: vec!["game.exe".into()],
         sites: vec![],
@@ -31,6 +31,10 @@ fn validation_table() {
     let mut l = lim();
     l.id = "".into();
     assert_eq!(err(&l), "bad-id");
+    l.id = "x".into();
+    assert_eq!(err(&l), "bad-id");
+    l.id = "limit-".into();
+    assert_eq!(validate_limit(&l), Ok(()));
     let mut l = lim();
     l.name = "  ".into();
     assert_eq!(err(&l), "bad-name");

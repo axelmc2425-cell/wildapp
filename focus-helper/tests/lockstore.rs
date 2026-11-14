@@ -764,25 +764,25 @@ fn limit_store(id: &str) -> (LockStore, SigningKey) {
 
 #[test]
 fn limit_push_validation_leaves_store_unchanged() {
-    let (mut s, _) = limit_store("keep");
+    let (mut s, _) = limit_store("limit-keep");
     let before = s.clone();
-    let many: Vec<Limit> = (0..=MAX_LIMITS).map(|i| lim(&format!("l{i}"), Lock::None)).collect();
+    let many: Vec<Limit> = (0..=MAX_LIMITS).map(|i| lim(&format!("limit-{i}"), Lock::None)).collect();
     assert!(matches!(s.push_limits(many.clone(), NOW), Err(PushError::BadLimit(_))));
     assert_eq!(s, before);
     assert!(s.push_limits(many[..MAX_LIMITS - 1].to_vec(), NOW).is_ok());
     let mut s = before.clone();
-    assert_eq!(s.push_limits(vec![lim("d", Lock::None), lim("d", Lock::None)], NOW), Err(PushError::DuplicateId));
-    let mut bad = lim("c", Lock::None);
+    assert_eq!(s.push_limits(vec![lim("limit-d", Lock::None), lim("limit-d", Lock::None)], NOW), Err(PushError::DuplicateId));
+    let mut bad = lim("limit-c", Lock::None);
     bad.cap_secs = 5;
     assert_eq!(s.push_limits(vec![bad], NOW), Err(PushError::BadLimit("bad-cap".into())));
     assert_eq!(s.push_limits(vec![lim("uninstall", Lock::None)], NOW), Err(PushError::BadLimit("reserved-id".into())));
     assert_eq!(s, before);
     // locked limit without a partner
     let mut s = LockStore::default();
-    assert_eq!(s.push_limits(vec![lim("a", Lock::Locked)], NOW), Err(PushError::NoPartner));
+    assert_eq!(s.push_limits(vec![lim("limit-a", Lock::Locked)], NOW), Err(PushError::NoPartner));
     // locked kept limits count toward the cap
-    let (mut s, _) = limit_store("keep");
-    let batch: Vec<Limit> = (0..MAX_LIMITS).map(|i| lim(&format!("l{i}"), Lock::None)).collect();
+    let (mut s, _) = limit_store("limit-keep");
+    let batch: Vec<Limit> = (0..MAX_LIMITS).map(|i| lim(&format!("limit-{i}"), Lock::None)).collect();
     assert!(matches!(s.push_limits(batch, NOW), Err(PushError::BadLimit(_))));
     assert_eq!(s.limits.len(), 1);
 }
@@ -790,8 +790,8 @@ fn limit_push_validation_leaves_store_unchanged() {
 #[test]
 fn unlocked_limits_replace_and_delete_freely() {
     let mut s = LockStore::default();
-    s.push_limits(vec![lim("a", Lock::None), lim("b", Lock::None)], NOW).unwrap();
-    let mut a = lim("a", Lock::None);
+    s.push_limits(vec![lim("limit-a", Lock::None), lim("limit-b", Lock::None)], NOW).unwrap();
+    let mut a = lim("limit-a", Lock::None);
     a.cap_secs = 7200;
     let r = s.push_limits(vec![a], NOW).unwrap();
     assert_eq!((r.applied, r.kept_locked.len()), (1, 0));
@@ -813,72 +813,72 @@ fn locked_limit_weakening_is_ignored() {
         })),
     ];
     for (name, f) in weaken {
-        let (mut s, _) = limit_store("L");
+        let (mut s, _) = limit_store("limit-L");
         let orig = s.limits.clone();
-        let mut l = lim("L", Lock::Locked);
+        let mut l = lim("limit-L", Lock::Locked);
         f(&mut l);
         let r = s.push_limits(vec![l], NOW).unwrap();
-        assert_eq!(r.kept_locked, vec!["L".to_string()], "{name}");
+        assert_eq!(r.kept_locked, vec!["limit-L".to_string()], "{name}");
         assert_eq!(s.limits, orig, "{name}");
     }
-    let (mut s, _) = limit_store("L");
+    let (mut s, _) = limit_store("limit-L");
     let r = s.push_limits(vec![], NOW).unwrap();
-    assert_eq!(r.kept_locked, vec!["L".to_string()]);
+    assert_eq!(r.kept_locked, vec!["limit-L".to_string()]);
     assert_eq!(s.limits.len(), 1);
 }
 
 #[test]
 fn locked_limit_tightening_applies_and_new_locked_is_stored() {
-    let (mut s, _) = limit_store("L");
-    let mut l = lim("L", Lock::Locked);
+    let (mut s, _) = limit_store("limit-L");
+    let mut l = lim("limit-L", Lock::Locked);
     l.cap_secs = 1800;
     l.apps.push("other.exe".into());
-    let r = s.push_limits(vec![l.clone(), lim("N", Lock::Locked)], NOW).unwrap();
+    let r = s.push_limits(vec![l.clone(), lim("limit-N", Lock::Locked)], NOW).unwrap();
     assert!(r.kept_locked.is_empty());
     assert_eq!(r.applied, 2);
-    assert_eq!(s.limits.iter().find(|x| x.id == "L"), Some(&l));
-    assert_eq!(s.limits.iter().find(|x| x.id == "N").unwrap().lock, Lock::Locked);
+    assert_eq!(s.limits.iter().find(|x| x.id == "limit-L"), Some(&l));
+    assert_eq!(s.limits.iter().find(|x| x.id == "limit-N").unwrap().lock, Lock::Locked);
 }
 
 #[test]
 fn token_unlock_of_a_limit_then_tombstone() {
-    let (mut s, sk) = limit_store("L");
+    let (mut s, sk) = limit_store("limit-L");
     assert!(s.has_locked_limit());
-    let n = nonce_of(&s.request_challenge("L", NOW, [7; 16]).unwrap());
-    assert_eq!(s.submit_token(&token(&sk, &n, "L", NOW + 600_000), NOW + 1000), Ok("L".to_string()));
+    let n = nonce_of(&s.request_challenge("limit-L", NOW, [7; 16]).unwrap());
+    assert_eq!(s.submit_token(&token(&sk, &n, "limit-L", NOW + 600_000), NOW + 1000), Ok("limit-L".to_string()));
     assert_eq!(s.limits[0].lock, Lock::None);
     assert_eq!(s.limits[0].unlock_delay_ms, None);
     assert!(!s.has_locked_limit());
     assert_eq!(s.limit_tombstones.len(), 1);
     // stale locked copy is skipped
-    let r = s.push_limits(vec![lim("L", Lock::Locked)], NOW + 2000).unwrap();
+    let r = s.push_limits(vec![lim("limit-L", Lock::Locked)], NOW + 2000).unwrap();
     assert_eq!(r.applied, 0);
     assert_eq!(s.limits[0].lock, Lock::None);
     // an unlocked edit is accepted
-    let mut e = lim("L", Lock::None);
+    let mut e = lim("limit-L", Lock::None);
     e.cap_secs = 9000;
     assert_eq!(s.push_limits(vec![e], NOW + 3000).unwrap().applied, 1);
     assert_eq!(s.limits[0].cap_secs, 9000);
     // a second use of the same token fails
-    assert!(s.submit_token(&token(&sk, &n, "L", NOW + 600_000), NOW + 4000).is_err());
+    assert!(s.submit_token(&token(&sk, &n, "limit-L", NOW + 600_000), NOW + 4000).is_err());
 }
 
 #[test]
 fn challenge_for_unknown_or_unlocked_limit_refused() {
     let (mut s, _) = with_partner();
-    s.push_limits(vec![lim("U", Lock::None)], NOW).unwrap();
-    assert_eq!(s.request_challenge("U", NOW, [1; 16]), Err(ChallengeError::NoSuchLock));
+    s.push_limits(vec![lim("limit-U", Lock::None)], NOW).unwrap();
+    assert_eq!(s.request_challenge("limit-U", NOW, [1; 16]), Err(ChallengeError::NoSuchLock));
     assert_eq!(s.request_challenge("zzz", NOW, [1; 16]), Err(ChallengeError::NoSuchLock));
-    assert_eq!(s.request_delayed_unlock("U", NOW), Err(DelayError::NoSuchLock));
+    assert_eq!(s.request_delayed_unlock("limit-U", NOW), Err(DelayError::NoSuchLock));
 }
 
 #[test]
 fn delayed_unlock_of_a_limit() {
-    let (mut s, _) = limit_store("L");
-    let at = s.request_delayed_unlock("L", NOW).unwrap();
+    let (mut s, _) = limit_store("limit-L");
+    let at = s.request_delayed_unlock("limit-L", NOW).unwrap();
     assert_eq!(at, NOW + 86_400_000);
     // a repeat does not restart or shorten
-    assert_eq!(s.request_delayed_unlock("L", NOW + H).unwrap(), at);
+    assert_eq!(s.request_delayed_unlock("limit-L", NOW + H).unwrap(), at);
     assert!(!s.expire_pending(at - 1));
     assert_eq!(s.limits[0].lock, Lock::Locked);
     assert!(s.expire_pending(at));
@@ -886,11 +886,11 @@ fn delayed_unlock_of_a_limit() {
     assert_eq!(s.limits[0].unlock_delay_ms, None);
     assert!(s.pending_unlocks.is_empty());
     assert_eq!(s.limit_tombstones.len(), 1);
-    assert!(s.push_limits(vec![lim("L", Lock::Locked)], at + 1).unwrap().applied == 0);
+    assert!(s.push_limits(vec![lim("limit-L", Lock::Locked)], at + 1).unwrap().applied == 0);
     // cancel before due
-    let (mut s, _) = limit_store("L");
-    s.request_delayed_unlock("L", NOW).unwrap();
-    assert!(s.cancel_delayed_unlock("L"));
+    let (mut s, _) = limit_store("limit-L");
+    s.request_delayed_unlock("limit-L", NOW).unwrap();
+    assert!(s.cancel_delayed_unlock("limit-L"));
     assert!(!s.expire_pending(NOW + 2 * 86_400_000));
     assert_eq!(s.limits[0].lock, Lock::Locked);
 }
@@ -899,17 +899,93 @@ fn delayed_unlock_of_a_limit() {
 fn old_state_without_limits_loads_and_round_trips() {
     let s: LockStore = serde_json::from_str(r#"{"version":3,"windows":[]}"#).unwrap();
     assert!(s.limits.is_empty() && s.limit_tombstones.is_empty());
-    let (mut s, _) = limit_store("L");
-    s.request_delayed_unlock("L", NOW).unwrap();
+    let (mut s, _) = limit_store("limit-L");
+    s.request_delayed_unlock("limit-L", NOW).unwrap();
     let back: LockStore = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
     assert_eq!(back, s);
 }
 
 #[test]
 fn partner_cannot_change_while_locked_limit_exists() {
-    let (mut s, sk) = limit_store("L");
+    let (mut s, sk) = limit_store("limit-L");
     let other = b64u_encode(SigningKey::from_bytes(&[5u8; 32].into()).unwrap().verifying_key().to_encoded_point(false).as_bytes());
     assert_eq!(s.set_partner(&other, NOW), Err(PartnerError::LockActive));
-    unlock(&mut s, &sk, "L", NOW);
+    unlock(&mut s, &sk, "limit-L", NOW);
     assert!(s.set_partner(&other, NOW + 5000).is_ok());
+}
+
+#[test]
+fn limit_ids_need_prefix_and_window_ids_may_not_use_it() {
+    let (mut s, _) = with_partner();
+    assert_eq!(s.push_limits(vec![lim("x", Lock::None)], NOW), Err(PushError::BadLimit("bad-id".into())));
+    assert_eq!(
+        s.push(vec![win("limit-1", Lock::None, NOW - H, NOW + H)], NOW),
+        Err(PushError::Invalid(Invalid::BadId))
+    );
+    assert_eq!(Invalid::BadId.reason(), "bad-id");
+    assert_eq!(
+        s.push(vec![win("uninstall", Lock::None, NOW - H, NOW + H)], NOW),
+        Err(PushError::Invalid(Invalid::BadId))
+    );
+    assert!(s.windows.is_empty() && s.limits.is_empty());
+}
+
+#[test]
+fn limit_id_unlock_paths_only_resolve_limits() {
+    let (mut s, sk) = with_partner();
+    // a locked window with a non-prefixed id never answers to a limit id
+    s.push(vec![win("X", Lock::Locked, NOW - H, NOW + H)], NOW).unwrap();
+    s.push_limits(vec![lim("limit-1", Lock::Locked)], NOW).unwrap();
+    assert_eq!(s.request_delayed_unlock("limit-1", NOW).unwrap(), NOW + 86_400_000);
+    let n = nonce_of(&s.request_challenge("limit-1", NOW, [3; 16]).unwrap());
+    assert_eq!(s.submit_token(&token(&sk, &n, "limit-1", NOW + 600_000), NOW + 1), Ok("limit-1".to_string()));
+    assert_eq!(s.limits[0].lock, Lock::None);
+    assert!(s.windows.iter().all(|w| w.ends == NOW + H), "window untouched");
+    assert!(s.ended_early.is_empty());
+    // and the window id never resolves a limit
+    assert_eq!(s.request_delayed_unlock("X", NOW + 2).unwrap(), NOW + 2 + 86_400_000);
+    assert_eq!(s.pending_unlocks.len(), 1);
+    assert_eq!(s.pending_unlocks[0].window_id, "X");
+}
+
+#[test]
+fn tombstone_cleared_by_synced_unlock_then_relock_works() {
+    let (mut s, sk) = limit_store("limit-L");
+    unlock(&mut s, &sk, "limit-L", NOW);
+    // locked push right after unlock: skipped and reported
+    let r = s.push_limits(vec![lim("limit-L", Lock::Locked)], NOW + 2000).unwrap();
+    assert_eq!((r.applied, r.skipped_tombstoned.clone()), (0, vec!["limit-L".to_string()]));
+    assert_eq!(s.limit_tombstones.len(), 1);
+    assert_eq!(s.limits[0].lock, Lock::None);
+    // the unlocked copy syncs: accepted, tombstone gone
+    let r = s.push_limits(vec![lim("limit-L", Lock::None)], NOW + 3000).unwrap();
+    assert_eq!((r.applied, r.skipped_tombstoned.len()), (1, 0));
+    assert!(s.limit_tombstones.is_empty());
+    // now a fresh lock is accepted
+    let r = s.push_limits(vec![lim("limit-L", Lock::Locked)], NOW + 4000).unwrap();
+    assert_eq!(r.applied, 1);
+    assert_eq!(s.limits[0].lock, Lock::Locked);
+}
+
+#[test]
+fn tombstone_cleared_when_delete_is_synced() {
+    let (mut s, sk) = limit_store("limit-L");
+    unlock(&mut s, &sk, "limit-L", NOW);
+    // omitting an unlocked limit leaves it stored? no: unlocked limits are deleted by an omitting push
+    s.push_limits(vec![], NOW + 2000).unwrap();
+    assert!(s.limits.is_empty());
+    assert!(s.limit_tombstones.is_empty());
+    assert_eq!(s.push_limits(vec![lim("limit-L", Lock::Locked)], NOW + 3000).unwrap().applied, 1);
+}
+
+#[test]
+fn limit_tombstones_are_capped() {
+    let (mut s, sk) = limit_store("limit-new");
+    s.limit_tombstones = (0..MAX_LIMIT_TOMBSTONES)
+        .map(|i| Tombstone { id: format!("limit-old{i}"), ends: i64::MAX })
+        .collect();
+    unlock(&mut s, &sk, "limit-new", NOW);
+    assert_eq!(s.limit_tombstones.len(), MAX_LIMIT_TOMBSTONES);
+    assert_eq!(s.limit_tombstones.last().unwrap().id, "limit-new");
+    assert!(s.limit_tombstones.iter().all(|t| t.id != "limit-old0"));
 }
