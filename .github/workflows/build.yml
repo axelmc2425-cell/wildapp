@@ -1,6 +1,8 @@
 name: build-windows
 on:
+  # Windows runners use free minutes twice as fast, so build only on main (plus a manual button).
   push:
+    branches: [main]
   workflow_dispatch:
 jobs:
   windows:
