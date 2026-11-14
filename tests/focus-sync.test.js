@@ -276,3 +276,48 @@ test('folders are pushed as app_folders; a forbidden folder skips the window and
   assert.deepEqual(r.pushed[0].map((w) => w.id), ['s1']);
   assert.deepEqual(r.pushed[0][0].app_folders, ['C:\\Games\\Foo']);
 });
+
+// ---- time limits ----
+import { syncLimits, limitsForPush } from '../src/modules/focus/limit-sync.js';
+
+async function addLimit(db, { name = 'G', lock = 'none', delay = null, enabled = 1, app = 'game.exe' } = {}) {
+  await db.run('INSERT INTO focus_limits(name, period, cap_secs, lock, unlock_delay_ms, enabled) VALUES (?, ?, ?, ?, ?, ?)', [name, 'daily', 3600, lock, delay, enabled]);
+  const [{ id }] = await db.all('SELECT MAX(id) AS id FROM focus_limits');
+  await db.run("INSERT INTO focus_limit_items(limit_id, kind, value) VALUES (?, 'app', ?)", [id, app]);
+  return id;
+}
+function limRec(reply = { type: 'LimitsPushed', applied: 1, kept_locked: [], skipped_tombstoned: [] }) {
+  const pushed = [];
+  return { pushed, client: { pushLimits: async (l) => { pushed.push(l); return reply; } } };
+}
+
+test('syncLimits pushes enabled limits with real ids and omits disabled unlocked ones', async () => {
+  const db = await mk();
+  const a = await addLimit(db);
+  await addLimit(db, { name: 'Off', enabled: 0 });
+  const r = limRec();
+  const res = await syncLimits(db, r.client);
+  assert.deepEqual(r.pushed[0].map((l) => l.id), [`limit-${a}`]);
+  assert.deepEqual(res, { pushed: 1, applied: 1, keptLocked: [], skippedTombstoned: [] });
+});
+
+test('syncLimits never omits a locked limit, even one stored disabled', async () => {
+  const db = await mk();
+  const a = await addLimit(db, { lock: 'locked', delay: H, enabled: 0 });
+  const r = limRec();
+  await syncLimits(db, r.client);
+  assert.deepEqual(r.pushed[0].map((l) => l.id), [`limit-${a}`]);
+  assert.equal(r.pushed[0][0].unlock_delay_ms, H);
+  assert.equal(limitsForPush([{ enabled: false, lock: 'none' }]).length, 0);
+});
+
+test('syncLimits with no limits does nothing unless forced, and reports kept_locked and skipped_tombstoned', async () => {
+  const db = await mk();
+  const r = limRec({ type: 'LimitsPushed', applied: 0, kept_locked: ['limit-1'], skipped_tombstoned: ['limit-2'] });
+  assert.equal(await syncLimits(db, r.client), null);
+  assert.equal(r.pushed.length, 0);
+  const res = await syncLimits(db, r.client, { force: true });
+  assert.deepEqual(r.pushed[0], []);
+  assert.deepEqual(res.keptLocked, ['limit-1']);
+  assert.deepEqual(res.skippedTombstoned, ['limit-2']);
+});

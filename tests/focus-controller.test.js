@@ -19,7 +19,7 @@ async function setup() {
   const db = await openNodeDb(join(mkdtempSync(join(tmpdir(), 'focus-ctl-')), 't.db'));
   await migrateFocus(db);
   let clock = T0;
-  const calls = { pushes: [], statuses: 0, active: 0, maxActive: 0, lock: [] };
+  const calls = { pushes: [], statuses: 0, active: 0, maxActive: 0, lock: [], limitPushes: [], limitGets: 0 };
   const client = {
     fail: null, statusFail: null, delay: 0,
     async pushWindows(w) {
@@ -40,10 +40,36 @@ async function setup() {
     },
     lockErr: null,
     async requestChallenge(id) { calls.lock.push(['challenge', id]); if (client.lockErr) throw client.lockErr; return { type: 'Challenge', code: 'CODE-' + id }; },
-    async submitToken(t) { calls.lock.push(['token', t]); if (client.lockErr) throw client.lockErr; client.windows = []; return { type: 'Ok' }; },
+    async submitToken(t) { calls.lock.push(['token', t]); if (client.lockErr) throw client.lockErr; client.windows = []; if (client.tokenUnlocks) client.unlockLimit(client.tokenUnlocks); return { type: 'Ok' }; },
     async setPartner(k) { calls.lock.push(['partner', k]); if (client.lockErr) throw client.lockErr; return { type: 'Ok' }; },
     async requestDelayedUnlock(id) { calls.lock.push(['delay', id]); if (client.lockErr) throw client.lockErr; client.pending = [{ window_id: id, unlock_at: T0 + 99 }]; return { type: 'UnlockPending', unlock_at: T0 + 99 }; },
     async cancelDelayedUnlock(id) { calls.lock.push(['cancel', id]); if (client.lockErr) throw client.lockErr; client.pending = []; return { type: 'Ok' }; },
+    // A small model of the helper's limit rules: unlocked replaced freely, locked kept against weakening.
+    hLimits: [], tomb: new Set(), limitFail: null, getFail: null, limStatus: [], limitPending: [],
+    async pushLimits(ls) {
+      calls.limitPushes.push(ls);
+      if (client.limitFail) throw client.limitFail;
+      const kept = [], skipped = [];
+      const next = [];
+      for (const old of client.hLimits) {
+        const inc = ls.find((x) => x.id === old.id);
+        if (old.lock === 'locked' && (!inc || inc.cap_secs > old.cap_secs || inc.lock !== 'locked')) { kept.push(old.id); next.push(old); }
+      }
+      for (const inc of ls) {
+        if (kept.includes(inc.id)) continue;
+        if (inc.lock === 'locked' && client.tomb.has(inc.id)) { skipped.push(inc.id); continue; }
+        if (inc.lock === 'unlocked' || inc.lock === 'none') client.tomb.delete(inc.id);
+        next.push(inc);
+      }
+      client.hLimits = next;
+      return { type: 'LimitsPushed', applied: ls.length, kept_locked: kept, skipped_tombstoned: skipped };
+    },
+    async getLimits() {
+      calls.limitGets++;
+      if (client.getFail) throw client.getFail;
+      return { type: 'Limits', limits: client.hLimits, status: client.limStatus, pending_unlocks: client.limitPending };
+    },
+    unlockLimit(id) { client.hLimits = client.hLimits.map((l) => (l.id === id ? { ...l, lock: 'none', unlock_delay_ms: undefined } : l)); client.tomb.add(id); },
   };
   let changes = 0;
   const ctl = createController({ db, client, now: () => clock, tzOffsetAt: utc, onChange: () => { changes++; } });
@@ -1139,4 +1165,300 @@ test('getSessions resolves {ok, stretches}, never throws, and flags an unreachab
   assert.equal((await mk(undefined).getSessions('d')).ok, false);
   const stub = await createController({ db: {}, client: HELPER_UNAVAILABLE_CLIENT, now: () => 0, tzOffsetAt: () => 0, onChange() {} }).getSessions('d');
   assert.deepEqual([stub.ok, stub.down, stub.unavailable], [false, true, true]);
+});
+
+// ---- time limits ----
+const lim = (o = {}) => ({ name: 'Games', period: 'daily', capSecs: 3600, lock: 'none', unlockDelayMs: null, apps: ['game.exe'], sites: [], ...o });
+const lockedLim = (o = {}) => lim({ lock: 'locked', unlockDelayMs: 24 * 3600000, ...o });
+const limRows = (db) => db.all('SELECT id, name, cap_secs, lock, unlock_delay_ms, enabled FROM focus_limits ORDER BY id');
+
+test('new unlocked limit is saved and pushed with its real id', async () => {
+  const { ctl, calls, db } = await setup();
+  await ctl.load();
+  const r = await ctl.saveLimit(lim());
+  assert.equal(r.ok, true);
+  assert.equal(typeof r.id, 'number');
+  const rows = await limRows(db);
+  assert.equal(rows.length, 1);
+  const pushed = calls.limitPushes[calls.limitPushes.length - 1];
+  assert.deepEqual(pushed.map((l) => l.id), [`limit-${r.id}`]);
+  assert.equal(pushed[0].cap_secs, 3600);
+  assert.equal(ctl.state.limitsState.limits.length, 1);
+});
+
+test('invalid limit returns field errors and writes nothing', async () => {
+  const { ctl, calls, db } = await setup();
+  const r = await ctl.saveLimit(lim({ name: '', capSecs: 30 }));
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.name && r.errors.cap);
+  assert.equal((await limRows(db)).length, 0);
+  assert.equal(calls.limitPushes.length, 0);
+});
+
+test('new locked limit persists only after the helper accepts; id is never undefined', async () => {
+  const { ctl, calls, db } = await setup();
+  const r = await ctl.saveLimit(lockedLim());
+  assert.equal(r.ok, true);
+  const pushed = calls.limitPushes[calls.limitPushes.length - 1];
+  assert.equal(pushed[0].id, `limit-${r.id}`);
+  assert.ok(!JSON.stringify(calls.limitPushes).includes('undefined'));
+  assert.equal(pushed[0].lock, 'locked');
+  assert.equal((await limRows(db))[0].lock, 'locked');
+});
+
+test('a helper bad-limit rejection of a new limit deletes the row and returns field errors', async () => {
+  const { ctl, client, db } = await setup();
+  client.limitFail = mkErr('bad-limit', 'bad-cap');
+  const r = await ctl.saveLimit(lockedLim());
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.cap);
+  assert.equal((await limRows(db)).length, 0);
+  assert.equal(ctl.state.limitsState.limits.length, 0);
+});
+
+test('new locked limit with the helper unreachable is not kept', async () => {
+  const { ctl, client, db } = await setup();
+  client.limitFail = mkErr('unreachable', 'pipe closed');
+  const r = await ctl.saveLimit(lockedLim());
+  assert.equal(r.ok, false);
+  assert.match(r.message, /Nothing was saved/);
+  assert.equal((await limRows(db)).length, 0);
+});
+
+test('new locked limit without a partner is refused and rolled back', async () => {
+  const { ctl, client, db } = await setup();
+  client.limitFail = mkErr('no-partner', 'a partner key is required');
+  const r = await ctl.saveLimit(lockedLim());
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.form);
+  assert.equal((await limRows(db)).length, 0);
+});
+
+test('a new unlocked limit is kept with a warning when the helper is unreachable', async () => {
+  const { ctl, client, db } = await setup();
+  client.limitFail = mkErr('unreachable', 'pipe closed');
+  const r = await ctl.saveLimit(lim());
+  assert.equal(r.ok, true);
+  assert.equal(r.unconfirmed, true);
+  assert.ok(r.warning);
+  assert.equal((await limRows(db)).length, 1);
+  assert.equal(ctl.state.syncPending, true);
+});
+
+test('a helper rejection of an edit restores the previous row', async () => {
+  const { ctl, client, db } = await setup();
+  const a = await ctl.saveLimit(lim());
+  client.limitFail = mkErr('bad-limit', 'bad-item');
+  const r = await ctl.saveLimit({ ...lim({ capSecs: 7200, name: 'Changed' }), id: a.id });
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.items);
+  const rows = await limRows(db);
+  assert.equal(rows[0].cap_secs, 3600);
+  assert.equal(rows[0].name, 'Games');
+});
+
+test('weakening a locked limit needs unlock and writes nothing', async () => {
+  const { ctl, calls, db } = await setup();
+  const a = await ctl.saveLimit(lockedLim());
+  const before = calls.limitPushes.length;
+  const r = await ctl.saveLimit({ ...lockedLim({ capSecs: 7200 }), id: a.id });
+  assert.deepEqual(r, { ok: false, needsUnlock: true, limitId: a.id });
+  assert.equal((await limRows(db))[0].cap_secs, 3600);
+  assert.equal(calls.limitPushes.length, before);
+});
+
+test('dropping the lock or disabling a locked limit needs unlock', async () => {
+  const { ctl, db } = await setup();
+  const a = await ctl.saveLimit(lockedLim());
+  assert.equal((await ctl.saveLimit({ ...lim(), id: a.id })).needsUnlock, true);
+  assert.equal((await ctl.setLimitEnabled(a.id, false)).needsUnlock, true);
+  assert.equal((await limRows(db))[0].enabled, 1);
+});
+
+test('tightening a locked limit applies and is pushed', async () => {
+  const { ctl, calls, db } = await setup();
+  const a = await ctl.saveLimit(lockedLim());
+  const r = await ctl.saveLimit({ ...lockedLim({ capSecs: 1800 }), id: a.id });
+  assert.equal(r.ok, true);
+  assert.equal((await limRows(db))[0].cap_secs, 1800);
+  assert.equal(calls.limitPushes[calls.limitPushes.length - 1][0].cap_secs, 1800);
+});
+
+test('kept_locked reloads from the helper and sets the notice', async () => {
+  const { ctl, client, db } = await setup();
+  const a = await ctl.saveLimit(lockedLim());
+  // The app row drifted weaker than the helper's locked copy.
+  await db.run('UPDATE focus_limits SET cap_secs = 7200 WHERE id = ?', [a.id]);
+  await ctl.resync();
+  assert.equal(ctl.state.notice, 'Games is locked and was kept.');
+  assert.equal((await limRows(db))[0].cap_secs, 3600);
+  assert.equal(ctl.state.limitsState.limits[0].capSecs, 3600);
+  assert.equal(client.hLimits[0].cap_secs, 3600);
+});
+
+test('skipped_tombstoned sets a notice and the next sync retries', async () => {
+  const { ctl, client, calls } = await setup();
+  const a = await ctl.saveLimit(lockedLim());
+  client.hLimits = [];
+  client.tomb.add(`limit-${a.id}`);
+  await ctl.resync();
+  assert.match(ctl.state.notice, /Games/);
+  assert.match(ctl.state.notice, /unlock/i);
+  const n = calls.limitPushes.length;
+  client.tomb.clear();
+  await ctl.resync();
+  assert.equal(calls.limitPushes.length, n + 1);
+  assert.equal(client.hLimits.length, 1);
+  assert.equal(ctl.state.notice, null);
+});
+
+test('a disabled unlocked limit is omitted from the push; a locked one never is', async () => {
+  const { ctl, calls, client } = await setup();
+  const a = await ctl.saveLimit(lim());
+  const b = await ctl.saveLimit(lockedLim({ name: 'Locked' }));
+  assert.equal((await ctl.setLimitEnabled(a.id, false)).ok, true);
+  let pushed = calls.limitPushes[calls.limitPushes.length - 1];
+  assert.deepEqual(pushed.map((l) => l.id), [`limit-${b.id}`]);
+  assert.equal((await ctl.setLimitEnabled(a.id, true)).ok, true);
+  pushed = calls.limitPushes[calls.limitPushes.length - 1];
+  assert.equal(pushed.length, 2);
+  assert.equal(client.hLimits.length, 2);
+});
+
+test('delete of an unlocked limit works and is pushed', async () => {
+  const { ctl, client, db } = await setup();
+  const a = await ctl.saveLimit(lim());
+  const r = await ctl.deleteLimit(a.id);
+  assert.equal(r.ok, true);
+  assert.equal((await limRows(db)).length, 0);
+  assert.deepEqual(client.hLimits, []);
+});
+
+test('delete of a locked limit needs unlock; it stays', async () => {
+  const { ctl, db } = await setup();
+  const a = await ctl.saveLimit(lockedLim());
+  const r = await ctl.deleteLimit(a.id);
+  assert.deepEqual(r, { ok: false, needsUnlock: true, limitId: a.id });
+  assert.equal((await limRows(db)).length, 1);
+});
+
+test('delete of a locked limit the helper no longer holds succeeds', async () => {
+  const { ctl, client, db } = await setup();
+  const a = await ctl.saveLimit(lockedLim());
+  client.hLimits = [];
+  const r = await ctl.deleteLimit(a.id);
+  assert.equal(r.ok, true);
+  assert.equal((await limRows(db)).length, 0);
+});
+
+test('delete of a locked limit with the helper unreachable is refused, not needsUnlock', async () => {
+  const { ctl, client, db } = await setup();
+  const a = await ctl.saveLimit(lockedLim());
+  client.getFail = mkErr('unreachable', 'down');
+  const r = await ctl.deleteLimit(a.id);
+  assert.equal(r.ok, false);
+  assert.notEqual(r.needsUnlock, true);
+  assert.equal((await limRows(db)).length, 1);
+});
+
+test('partner token unlock of a limit id then deletion succeeds', async () => {
+  const { ctl, client, calls, db } = await setup();
+  const a = await ctl.saveLimit(lockedLim());
+  const id = `limit-${a.id}`;
+  const ch = await ctl.requestPartnerChallenge(id);
+  assert.equal(ch.ok, true);
+  assert.equal(ch.code, 'CODE-' + id);
+  client.tokenUnlocks = id;
+  const r = await ctl.submitPartnerToken(id, 'TOKEN');
+  assert.equal(r.ok, true);
+  assert.deepEqual(calls.lock.filter((x) => x[0] === 'challenge'), [['challenge', id]]);
+  const row = (await limRows(db))[0];
+  assert.equal(row.lock, 'none');
+  assert.equal(row.unlock_delay_ms, null);
+  // the unlocked copy was pushed, which clears the helper's tombstone
+  assert.equal(client.tomb.has(id), false);
+  assert.equal(client.hLimits[0].lock, 'none');
+  assert.equal((await ctl.deleteLimit(a.id)).ok, true);
+  assert.equal((await limRows(db)).length, 0);
+  assert.deepEqual(client.hLimits, []);
+});
+
+test('delayed unlock of a limit completes after the wait, then deletion succeeds', async () => {
+  const { ctl, client, db } = await setup();
+  const a = await ctl.saveLimit(lockedLim());
+  const id = `limit-${a.id}`;
+  const r = await ctl.startDelayedUnlock(id);
+  assert.deepEqual(r, { ok: true, unlockAt: T0 + 99 });
+  assert.equal((await limRows(db))[0].lock, 'locked');
+  client.unlockLimit(id); // the helper completes the wait
+  await ctl.refreshLimits();
+  assert.equal((await limRows(db))[0].lock, 'none');
+  assert.equal(client.tomb.has(id), false);
+  assert.equal((await ctl.deleteLimit(a.id)).ok, true);
+  const c = await ctl.cancelDelayedUnlock(id);
+  assert.equal(c.ok, false); // no longer locked
+});
+
+test('unlock requests for an unknown or unlocked limit are refused', async () => {
+  const { ctl } = await setup();
+  const a = await ctl.saveLimit(lim());
+  assert.equal((await ctl.requestPartnerChallenge('limit-999')).ok, false);
+  assert.equal((await ctl.requestPartnerChallenge(`limit-${a.id}`)).ok, false);
+});
+
+test('refreshLimits merges status by id and reports enforcement', async () => {
+  const { ctl, client } = await setup();
+  const a = await ctl.saveLimit(lim());
+  client.limStatus = [{ id: `limit-${a.id}`, used_secs: 600, cap_secs: 3600, blocked: false, period_ends_day: '2026-01-06' }];
+  client.limitPending = [{ window_id: `limit-${a.id}`, unlock_at: 5 }];
+  await ctl.refreshLimits();
+  const s = ctl.state.limitsState;
+  assert.equal(s.enforcement, true);
+  assert.equal(s.loaded, true);
+  assert.equal(s.limits[0].status.used_secs, 600);
+  assert.equal(s.pendingUnlocks.length, 1);
+});
+
+test('helper down keeps saved limits, enforcement false and no numbers', async () => {
+  const { ctl, client } = await setup();
+  const a = await ctl.saveLimit(lim());
+  client.limStatus = [{ id: `limit-${a.id}`, used_secs: 600, cap_secs: 3600, blocked: false, period_ends_day: 'x' }];
+  await ctl.refreshLimits();
+  assert.equal(ctl.state.limitsState.limits[0].status.used_secs, 600);
+  client.getFail = mkErr('unreachable', 'down');
+  await ctl.refreshLimits();
+  const s = ctl.state.limitsState;
+  assert.equal(s.enforcement, false);
+  assert.equal(s.limits.length, 1);
+  assert.equal(s.limits[0].status, undefined);
+});
+
+test('load reads saved limits, pushes them and fills limitsState', async () => {
+  const { ctl, client, db, calls } = await setup();
+  await db.run("INSERT INTO focus_limits(name, period, cap_secs, lock, enabled) VALUES ('G','daily',3600,'none',1)");
+  await db.run("INSERT INTO focus_limit_items(limit_id, kind, value) VALUES (1,'app','game.exe')");
+  await ctl.load();
+  assert.equal(calls.limitPushes.length >= 1, true);
+  assert.equal(client.hLimits[0].id, 'limit-1');
+  assert.equal(ctl.state.limitsState.loaded, true);
+  assert.equal(ctl.state.limitsState.enforcement, true);
+});
+
+test('a window push failure does not hide limits and a limit push failure sets syncPending', async () => {
+  const { ctl, client } = await setup();
+  await ctl.saveLimit(lim());
+  client.limitFail = mkErr('unreachable', 'down');
+  await ctl.resync();
+  assert.equal(ctl.state.syncPending, true);
+  client.limitFail = null;
+  await ctl.resync();
+  assert.equal(ctl.state.syncPending, false);
+});
+
+test('a 65th limit returns an error', async () => {
+  const { ctl, db } = await setup();
+  for (let i = 0; i < 64; i++) await db.run("INSERT INTO focus_limits(name, period, cap_secs, lock, enabled) VALUES ('G','daily',3600,'none',1)");
+  const r = await ctl.saveLimit(lim());
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.form);
 });

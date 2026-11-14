@@ -218,3 +218,11 @@ test('the committed page script runs on its own and produces tokens verifyUnlock
   const token = await vm.runInContext(`signUnlock(jwk, code, ${NOW})`, ctx);
   assert.deepEqual(await verifyUnlock(keys.publicKey, token, challenge, NOW + 1), { ok: true });
 });
+
+test('a token binds to a limit id like to a window id', async () => {
+  const keys = await generatePartnerKeys();
+  const ch = createChallenge('limit-3', 1000);
+  const token = await signUnlock(keys.privateKeyJwk, ch.code, 1000);
+  assert.deepEqual(await verifyUnlock(keys.publicKey, token, ch, 2000), { ok: true });
+  assert.deepEqual(await verifyUnlock(keys.publicKey, token, createChallenge('limit-4', 1000), 2000).then((r) => r.ok), false);
+});

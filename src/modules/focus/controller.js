@@ -5,10 +5,24 @@ import { syncWindows } from './sync.js';
 import { scheduleBlocks, nextOccurrence } from './schedule-logic.js';
 import { makeTzOffsetAt } from './tz.js';
 import { describeUnlockError, windowIdForBlock, pendingUnlockFor, resolveDelayHours } from './lock-logic.js';
+import { validateLimit, isWeakening } from './limit-logic.js';
+import { syncLimits, fromWire, limitDiffers } from './limit-sync.js';
 
 const MIN = 60000;
 const MAX_MINUTES = 1440;
 const PUSH_REJECTION_CODES = new Set(['bad-window', 'too-many', 'allow-needs-apps', 'frozen-unavailable']);
+const LIMIT_REJECTION_CODES = new Set(['bad-limit', 'no-partner']);
+const LIMIT_KEY_RE = /^limit-\d+$/;
+const LIMIT_REASONS = [
+  ['bad-name', 'name', 'Give the limit a name up to 64 characters.'],
+  ['no-items', 'items', 'Add at least one app or site.'],
+  ['too-many-items', 'items', 'A limit can hold up to 100 apps and sites.'],
+  ['bad-item', 'items', 'One of the apps or sites is not valid.'],
+  ['bad-cap', 'cap', 'The helper did not accept that time. Choose between 1 minute and 24 hours (168 hours for weekly).'],
+  ['bad-delay', 'delay', 'Choose a wait between 1 hour and 7 days.'],
+  ['bad-lock', 'delay', 'Choose a wait between 1 hour and 7 days.'],
+];
+const LIMIT_PARTNER_MSG = "Add your partner's key first, so someone else can end a locked limit early if you need.";
 const MAX_LOCKED_MINUTES = 10080;
 const NOT_SENT = 'Not sent. The lock is unchanged.';
 const FINISHED = 'That block has already finished.';
@@ -27,6 +41,7 @@ export function createUnavailableClient(message) {
   return {
     pushWindows: fail, status: fail, requestChallenge: fail, submitToken: fail, setPartner: fail,
     requestDelayedUnlock: fail, cancelDelayedUnlock: fail, getUsage: fail, getSessions: fail,
+    pushLimits: fail, getLimits: fail,
   };
 }
 
@@ -45,6 +60,13 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
   let loaded = false;
   let partnerSet = false;
   let partnerName = null;
+  let limits = [];
+  let limitStatus = new Map();
+  let limitPending = [];
+  let limitsLoaded = false;
+  let limitEnforcement = false;
+  let limitsEverPushed = false;
+  let reconciling = false;
 
   const changed = () => { try { onChange?.(); } catch { /* UI callback must not break the controller */ } };
 
@@ -73,6 +95,7 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
     lists = await store.listLists(db);
     sessions = await store.listSessions(db);
     schedules = await store.listSchedules(db);
+    limits = await store.listLimits(db);
     const [p] = await db.all('SELECT name FROM focus_partner LIMIT 1');
     partnerName = p && typeof p.name === 'string' ? p.name : null;
   }
@@ -155,8 +178,12 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
   async function doResync() {
     try {
       lastSync = await syncWindows(db, client, now(), tzOffsetAt);
+      const lim = await syncLimits(db, client, { force: limitsEverPushed });
+      if (lim && lim.pushed > 0) limitsEverPushed = true;
       syncPending = false;
       notice = null;
+      await afterLimitPush(lim);
+      if (limits.length > 0) await applyLimitsRes(await fetchLimits());
       await pollAndReconcile();
       changed();
       return true;
@@ -167,7 +194,7 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
       try {
         notice = err && PUSH_REJECTION_CODES.has(err.code)
           ? describePushProblem(err, lastSync?.skipped ?? 0, lists.map((l) => l.name))
-          : null;
+          : err && LIMIT_REJECTION_CODES.has(err.code) ? limitRejectNotice(err) : null;
       } catch { notice = null; }
       changed();
       return false;
@@ -197,7 +224,8 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
         changed();
         return;
       }
-      await doResync();
+      const ok = await doResync();
+      if (!ok || limits.length === 0) await applyLimitsRes(ok ? await fetchLimits() : null);
     });
   }
 
@@ -325,6 +353,278 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
     () => store.deleteSchedule(db, id, now(), tzOffsetAt),
     (msg) => ({ ok: false, reason: 'error', message: `Could not delete: ${msg}` }),
   );
+
+
+  // ---- time limits ----
+  const limitName = (wid) => {
+    const l = limits.find((x) => `limit-${x.id}` === wid);
+    return l ? l.name : wid;
+  };
+
+  function limitRejectNotice(err) {
+    if (err && err.code === 'no-partner') return LIMIT_PARTNER_MSG;
+    return `The helper did not accept a time limit (${errText(err)}). Open the limit and check it.`;
+  }
+
+  function limitRejectErrors(err) {
+    if (err && err.code === 'no-partner') return { form: LIMIT_PARTNER_MSG };
+    const msg = errText(err);
+    const errors = {};
+    for (const [reason, field, text] of LIMIT_REASONS) if (msg.includes(reason)) errors[field] = text;
+    return Object.keys(errors).length ? errors : { form: `The helper did not accept the limit (${msg}).` };
+  }
+
+  // Marks the helper state from a failed push, like a failed window push does.
+  function markDown(err) {
+    syncPending = true;
+    seq++;
+    try { helper = classifyHelperFailure(err); } catch { helper = { kind: 'unknown', message: 'Unknown error' }; }
+    changed();
+  }
+
+  // Runs inside the queue. Result of a limits push: ok (reply or null), rejected or failed.
+  async function pushLimitsOutcome() {
+    try {
+      const r = await syncLimits(db, client, { force: limitsEverPushed });
+      if (r && r.pushed > 0) limitsEverPushed = true;
+      return { kind: 'ok', r };
+    } catch (err) {
+      return { kind: LIMIT_REJECTION_CODES.has(err && err.code) ? 'rejected' : 'failed', err };
+    }
+  }
+
+  async function fetchLimits() {
+    try {
+      const res = await client.getLimits();
+      if (!res || res.type !== 'Limits' || !Array.isArray(res.limits)) return null;
+      return res;
+    } catch { return null; }
+  }
+
+  // Runs inside the queue. Applies a GetLimits answer (null: helper not answering) to the state, and lets
+  // the helper's copy of a locked limit win over the app row (kept_locked, or an unlock that finished).
+  async function applyLimitsRes(res) {
+    limitsLoaded = true;
+    if (!res) {
+      limitEnforcement = false;
+      limitStatus = new Map();
+      changed();
+      return;
+    }
+    limitEnforcement = true;
+    limitStatus = new Map((Array.isArray(res.status) ? res.status : []).filter((s) => s && typeof s.id === 'string').map((s) => [s.id, s]));
+    limitPending = Array.isArray(res.pending_unlocks) ? res.pending_unlocks : [];
+    if (!syncPending && !reconciling) {
+      reconciling = true;
+      try {
+        let adopted = false;
+        for (const row of limits) {
+          const h = res.limits.find((x) => x && x.id === `limit-${row.id}`);
+          if (!h) continue;
+          const helperLocked = h.lock === 'locked';
+          if ((helperLocked || row.lock === 'locked') && limitDiffers(row, h)) {
+            try {
+              await store.saveLimit(db, { ...fromWire(h), id: row.id, enabled: helperLocked ? true : row.enabled });
+              adopted = true;
+            } catch { /* retried on the next refresh */ }
+          }
+        }
+        if (adopted) {
+          await reloadSafe();
+          // An unlocked copy pushed back clears the helper's tombstone for it.
+          const out = await pushLimitsOutcome();
+          if (out.kind !== 'ok') markDown(out.err);
+        }
+      } finally { reconciling = false; }
+    }
+    changed();
+  }
+
+  // Runs inside the queue, right after a successful limits push.
+  async function afterLimitPush(r) {
+    if (!r) return;
+    const kept = r.keptLocked;
+    const tomb = r.skippedTombstoned;
+    if (kept.length) {
+      await reloadSafe();
+      await applyLimitsRes(await fetchLimits());
+    }
+    if (!syncPending) notice = null;
+    const parts = [];
+    for (const id of kept) parts.push(`${limitName(id)} is locked and was kept.`);
+    for (const id of tomb) parts.push(`The lock on ${limitName(id)} was not re-applied because its unlock is still being synced. It will be retried on the next sync.`);
+    if (parts.length) notice = parts.join(' ');
+    changed();
+  }
+
+  // For flows where a failed push is not fatal (delete, pause, unlock): settle and say what happened.
+  async function settleLimitPush(out) {
+    if (out.kind === 'ok') { await afterLimitPush(out.r); return null; }
+    if (out.kind === 'rejected') {
+      syncPending = true;
+      notice = limitRejectNotice(out.err);
+      changed();
+      return notice;
+    }
+    if (out.err && out.err.code === 'persist-failed') {
+      return 'The helper could not save the change to disk, so it may be lost on restart.';
+    }
+    markDown(out.err);
+    return "The helper couldn't be reached, so the change is not enforced yet. It will be sent again.";
+  }
+
+  const toLimitInput = (inp, id, enabled) => ({
+    ...inp, id, enabled, unlockDelayMs: inp.lock === 'locked' ? inp.unlockDelayMs : null,
+  });
+
+  function saveLimit(input) {
+    return enqueue(async () => {
+      const inp = input && typeof input === 'object' ? input : {};
+      const v = validateLimit(inp);
+      if (!v.ok) return { ok: false, errors: v.errors };
+      let existing = null;
+      try {
+        await reload();
+        if (inp.id !== undefined && inp.id !== null) {
+          existing = limits.find((l) => l.id === inp.id) || null;
+          if (!existing) return { ok: false, errors: { form: 'That limit no longer exists.' } };
+        }
+      } catch (e) {
+        return { ok: false, errors: { form: `Could not save: ${errText(e)}` } };
+      }
+      const prevLocked = !!existing && existing.lock === 'locked';
+      if (prevLocked && inp.enabled === false) return { ok: false, needsUnlock: true, limitId: existing.id };
+      const enabled = inp.lock === 'locked' ? true : inp.enabled === undefined ? (existing ? existing.enabled : true) : !!inp.enabled;
+      const next = toLimitInput(inp, existing ? existing.id : undefined, enabled);
+      if (prevLocked && isWeakening(existing, next)) return { ok: false, needsUnlock: true, limitId: existing.id };
+      // A lock the helper has not accepted must not exist here: new locked limits (or locking an old one)
+      // are saved only to get the id, and undone unless the helper takes them.
+      const needsAccept = inp.lock === 'locked' && !prevLocked;
+      let id;
+      try {
+        id = await store.saveLimit(db, next);
+      } catch (e) {
+        const msg = errText(e);
+        if (/too many/.test(msg)) return { ok: false, errors: { form: 'You can have up to 64 limits.' } };
+        if (msg === 'no such limit') return { ok: false, errors: { form: 'That limit no longer exists.' } };
+        return { ok: false, errors: { form: `Could not save: ${msg.replace(/^invalid limit: /, '')}` } };
+      }
+      const wid = `limit-${id}`;
+      await reloadSafe();
+      changed();
+      const undo = async () => {
+        try {
+          if (existing) await store.saveLimit(db, existing); else await store.deleteLimit(db, id);
+        } catch { await reloadSafe(); changed(); return false; }
+        await reloadSafe();
+        changed();
+        return true;
+      };
+      const undoFailed = () => {
+        syncPending = true;
+        return { ok: false, errors: { form: 'The helper did not take the change, and the save could not be undone here. Reopen the Focus Room to check.' } };
+      };
+      const success = async (r, extra = {}) => {
+        await afterLimitPush(r);
+        await applyLimitsRes(await fetchLimits());
+        return { ok: true, id, ...extra };
+      };
+      const out = await pushLimitsOutcome();
+      if (out.kind === 'rejected') {
+        if (!(await undo())) return undoFailed();
+        await doResync();
+        return { ok: false, errors: limitRejectErrors(out.err) };
+      }
+      if (out.kind === 'ok') {
+        const r = out.r;
+        if (r && r.keptLocked.includes(wid)) {
+          await afterLimitPush(r);
+          return { ok: false, needsUnlock: true, limitId: id };
+        }
+        if (needsAccept && r && r.skippedTombstoned.includes(wid)) {
+          if (!(await undo())) return undoFailed();
+          await doResync();
+          return { ok: false, errors: { form: 'The helper is still finishing the earlier unlock of this limit. Try again in a moment.' } };
+        }
+        return success(r);
+      }
+      // The push failed without a clear answer.
+      const err = out.err;
+      if (err && err.code === 'persist-failed') {
+        const msg = 'Saved, but the helper could not save it to disk, so it will be lost on restart.';
+        return success(null, { unconfirmed: true, message: msg, warning: msg });
+      }
+      if (needsAccept) {
+        // A timeout may still have applied: ask the helper before undoing.
+        if (isTimeout(err)) {
+          const res = await fetchLimits();
+          const held = res ? res.limits.some((x) => x && x.id === wid && x.lock === 'locked') : null;
+          if (held === true) return success(null);
+          if (held === null) {
+            markDown(err);
+            const msg = "Couldn't confirm the lock with the helper. It may be on. Check the Focus Room.";
+            return { ok: true, id, unconfirmed: true, message: msg, warning: msg };
+          }
+        }
+        if (!(await undo())) return undoFailed();
+        return { ok: false, message: `Nothing was saved. ${plainReason(err)}` };
+      }
+      markDown(err);
+      const msg = "Saved, but the helper couldn't be reached, so the limit is not enforced yet. It will be sent again.";
+      return { ok: true, id, unconfirmed: true, message: msg, warning: msg };
+    });
+  }
+
+  function setLimitEnabled(id, enabled) {
+    return enqueue(async () => {
+      let row;
+      try {
+        await reload();
+        row = limits.find((l) => l.id === id);
+        if (!row) return { ok: false, reason: 'error', message: 'That limit no longer exists.' };
+        if (row.lock === 'locked' && !enabled) return { ok: false, needsUnlock: true, limitId: id };
+        if (row.enabled === !!enabled) return { ok: true };
+        await store.setLimitEnabled(db, id, !!enabled);
+      } catch (e) {
+        return { ok: false, reason: 'error', message: `Could not save: ${errText(e)}` };
+      }
+      await reloadSafe();
+      changed();
+      const warning = await settleLimitPush(await pushLimitsOutcome());
+      return warning ? { ok: true, unconfirmed: true, message: warning, warning } : { ok: true };
+    });
+  }
+
+  function deleteLimit(id) {
+    return enqueue(async () => {
+      try {
+        await reload();
+        const row = limits.find((l) => l.id === id);
+        if (!row) return { ok: false, reason: 'error', message: 'That limit no longer exists.' };
+        if (row.lock === 'locked') {
+          // Only the helper can say a lock is over: ask it, and delete only if it is gone or unlocked.
+          const res = await fetchLimits();
+          if (!res) return { ok: false, reason: 'error', message: "Not deleted. Couldn't reach the helper to check the lock." };
+          const h = res.limits.find((x) => x && x.id === `limit-${id}`);
+          if (h && h.lock === 'locked') return { ok: false, needsUnlock: true, limitId: id };
+        }
+        await store.deleteLimit(db, id);
+      } catch (e) {
+        return { ok: false, reason: 'error', message: `Could not delete: ${errText(e)}` };
+      }
+      await reloadSafe();
+      changed();
+      const warning = await settleLimitPush(await pushLimitsOutcome());
+      await applyLimitsRes(await fetchLimits());
+      return warning ? { ok: true, helperStopped: false, message: warning, warning } : { ok: true, helperStopped: true };
+    });
+  }
+
+  /** Fresh numbers from the helper. The call itself runs outside the write queue. */
+  async function refreshLimits() {
+    const res = await fetchLimits();
+    await enqueue(() => applyLimitsRes(res), { quiet: true });
+  }
 
   function startBlock(input) {
     return enqueue(async () => {
@@ -520,14 +820,21 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
   function lockRequest(blockKey, expectType, call, done) {
     return enqueue(async () => {
       let block;
+      const forLimit = typeof blockKey === 'string' && LIMIT_KEY_RE.test(blockKey);
       try {
-        block = typeof blockKey === 'string' ? await findLiveBlock(blockKey) : null;
+        if (forLimit) {
+          await reload();
+          const row = limits.find((l) => `limit-${l.id}` === blockKey);
+          block = row ? { lock: row.lock, windowId: blockKey } : null;
+        } else {
+          block = typeof blockKey === 'string' ? await findLiveBlock(blockKey) : null;
+        }
       } catch (e) {
         return dbFail(e);
       }
       if (!block) return { ok: false, message: describeUnlockError({ code: 'no-such-lock' }) };
-      if (block.lock !== 'locked') return { ok: false, message: 'That block is not locked.' };
-      const windowId = windowIdForBlock(block);
+      if (block.lock !== 'locked') return { ok: false, message: forLimit ? 'That limit is not locked.' : 'That block is not locked.' };
+      const windowId = forLimit ? blockKey : windowIdForBlock(block);
       let res;
       try {
         res = await call(windowId);
@@ -537,7 +844,8 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
       if (!res || res.type !== expectType) {
         return { ok: false, message: 'The helper sent an unexpected reply. The lock is unchanged as far as we can tell. Refresh and try again.' };
       }
-      await pollAndReconcile();
+      if (forLimit) await applyLimitsRes(await fetchLimits());
+      else await pollAndReconcile();
       changed();
       return done(res, windowId);
     });
@@ -650,10 +958,17 @@ export function createController({ db, client, now, tzOffsetAt = makeTzOffsetAt(
   return {
     get state() {
       return {
+        limitsState: {
+          limits: limits.map((l) => ({ ...l, status: limitEnforcement ? limitStatus.get(`limit-${l.id}`) : undefined })),
+          pendingUnlocks: limitPending,
+          loaded: limitsLoaded,
+          enforcement: limitEnforcement,
+        },
         loaded, lists, schedules, blocks: allBlocks(now()), helper, syncPending, lastSync, notice,
         partner: { set: partnerSet, name: partnerSet ? partnerName : null },
       };
     },
+    saveLimit, setLimitEnabled, deleteLimit, refreshLimits,
     load, saveList, deleteList, saveSchedule, setScheduleEnabled, deleteSchedule, startBlock, extendBlock, cancelBlock, refreshStatus, resync,
     getUsage, getSessions, startLockedBlock, setPartner, requestPartnerChallenge, submitPartnerToken, startDelayedUnlock, cancelDelayedUnlock,
   };
