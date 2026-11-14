@@ -4,6 +4,7 @@ pub mod decide;
 pub mod enforce;
 pub mod hosts;
 pub mod ipc;
+pub mod limits;
 pub mod lockstore;
 pub mod model;
 pub mod persist;
